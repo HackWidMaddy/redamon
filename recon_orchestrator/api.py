@@ -1157,39 +1157,36 @@ async def start_recon(project_id: str, request: ReconStartRequest):
 
     # Guardrail / RoE pre-flight: fetch project settings and verify. Fails
     # CLOSED — a fetch failure refuses the start (503) rather than proceeding
-    # unverified (mcp_plan.md P0-1).
-    if request.webapp_api_url:
-        project = _fetch_project_for_preflight(project_id)
+    # unverified (mcp_plan.md P0-1). Unconditional: the fetch goes to the trusted
+    # webapp base, never to the client's webapp_api_url, so an empty value in the
+    # request is no reason to skip the one check that cannot be switched off.
+    project = _fetch_project_for_preflight(project_id)
 
-        # Hard guardrail: deterministic, non-disableable — always blocks
-        # government/public domains.
-        if not project.get('ipMode', False):
-            from hard_guardrail import is_hard_blocked
-            from batch_scope import guardrail_targets
-            # Domain batch has NO targetDomain: its targets are the derived
-            # group roots. Checking targetDomain alone would hand every batch
-            # a free pass through the one control that cannot be switched off,
-            # so check whatever this project actually scans.
-            targets = guardrail_targets(project)
-            if project.get('domainBatchMode', False) and not targets:
-                # Fail CLOSED: batch mode with nothing to check means the
-                # groups are missing or malformed, not that there is
-                # nothing to guard.
-                raise HTTPException(
-                    status_code=400,
-                    detail="Domain batch project has no valid domain groups. "
-                           "Re-save the project's hostname list before scanning.",
-                )
+    # Hard guardrail: deterministic, non-disableable — always blocks
+    # government/public domains.
+    if not project.get('ipMode', False):
+        from hard_guardrail import first_hard_blocked
+        from batch_scope import guardrail_targets
+        # Domain batch has NO targetDomain: its targets are the listed hosts and
+        # the derived group roots. Checking targetDomain alone would hand every
+        # batch a free pass through the one control that cannot be switched off,
+        # so check whatever this project actually scans.
+        targets = guardrail_targets(project)
+        if project.get('domainBatchMode', False) and not targets:
+            # Fail CLOSED: batch mode with nothing to check means the
+            # groups are missing or malformed, not that there is
+            # nothing to guard.
+            raise HTTPException(
+                status_code=400,
+                detail="Domain batch project has no valid domain groups. "
+                       "Re-save the project's hostname list before scanning.",
+            )
 
-            for target in targets:
-                blocked, reason = is_hard_blocked(target)
-                if blocked:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Hard guardrail: {reason}"
-                    )
+        hit = first_hard_blocked(targets)
+        if hit:
+            raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
 
-        _check_roe_time_window(project)
+    _check_roe_time_window(project)
 
     try:
         state = await container_manager.start_recon(
@@ -1346,14 +1343,17 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
     except PartialScopeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-    # Hard guardrail on EVERY root, as for a full recon. IPs are not hard-blocked
-    # (hard_guardrail.is_hard_blocked), and IP mode's root is a synthetic name.
+    # Hard guardrail on every host and root of the project, as for a full recon:
+    # a partial run reaches hosts beyond the roots it is narrowed to. IPs are not
+    # hard-blocked (hard_guardrail.is_hard_blocked), and IP mode's root is a
+    # synthetic name.
     if not project.get('ipMode', False):
-        from hard_guardrail import is_hard_blocked
-        for root in roots:
-            blocked, reason = is_hard_blocked(root)
-            if blocked:
-                raise HTTPException(status_code=403, detail=f"Hard guardrail: {reason}")
+        from hard_guardrail import first_hard_blocked
+        from batch_scope import guardrail_targets
+        names = guardrail_targets(project)
+        hit = first_hard_blocked(names + [r for r in roots if r not in names])
+        if hit:
+            raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
 
     _check_roe_time_window(project)
 

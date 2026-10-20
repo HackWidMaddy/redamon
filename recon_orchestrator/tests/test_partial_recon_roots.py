@@ -263,7 +263,8 @@ class TestEndpoint:
 
         monkeypatch.setattr("hard_guardrail.is_hard_blocked", _blocked)
         _start(_request())
-        assert seen == ["alpha.test", "beta.test", "gamma.test"]
+        # Each once; the order is the project's group order, not the sorted roots.
+        assert sorted(seen) == ["alpha.test", "beta.test", "gamma.test"]
 
     def test_a_blocked_root_anywhere_refuses_the_run(self, monkeypatch, spy):
         project = {"domainBatchMode": True, "domainBatchGroups": [
@@ -274,6 +275,20 @@ class TestEndpoint:
         with pytest.raises(HTTPException) as ei:
             _start(_request())
         assert ei.value.status_code == 403
+        assert spy.calls == []
+
+    def test_a_host_under_a_government_name_refuses_the_run(self, monkeypatch, spy):
+        # www.isa.org.jm groups under org.jm, which no rule names: only the
+        # listed host is blocked, so checking the roots alone let it through.
+        project = {"domainBatchMode": True, "domainBatchGroups": [
+            {"rootDomain": "alpha.test", "prefixes": ["*"], "hosts": ["*.alpha.test"]},
+            {"rootDomain": "org.jm", "prefixes": ["www.isa."], "hosts": ["www.isa.org.jm"]},
+        ]}
+        _project(monkeypatch, project)
+        with pytest.raises(HTTPException) as ei:
+            _start(_request())
+        assert ei.value.status_code == 403
+        assert "www.isa.org.jm" in ei.value.detail
         assert spy.calls == []
 
     def test_ip_mode_uses_the_synthetic_root_and_skips_the_guardrail(self, monkeypatch, spy):

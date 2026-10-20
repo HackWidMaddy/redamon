@@ -95,3 +95,32 @@ class TestBatchTargetsFailClosed:
             {'rootDomain': 'dup.com'}, {'rootDomain': 'dup.com'},
         ]}
         assert batch_guardrail_targets(project) == ['dup.com']
+
+
+class TestGuardrailNamesIncludeEveryHost:
+    """The hard guardrail checks every listed host, not only the group roots: a
+    host under a multi-label government name groups under a root no rule names."""
+
+    def test_batch_hosts_come_first_then_the_roots(self):
+        project = {'domainBatchMode': True, 'domainBatchGroups': [
+            {'rootDomain': 'example.com', 'prefixes': ['*', 'www.'], 'hosts': ['*.example.com', 'www.example.com']},
+            {'rootDomain': 'org.jm', 'prefixes': ['www.isa.'], 'hosts': ['www.isa.org.jm']},
+        ]}
+        assert guardrail_targets(project) == ['example.com', 'www.example.com', 'www.isa.org.jm', 'org.jm']
+
+    def test_a_host_with_an_embedded_star_or_bad_charset_is_dropped(self):
+        project = {'domainBatchMode': True, 'domainBatchGroups': [
+            {'rootDomain': 'example.com', 'prefixes': ['.'], 'hosts': ['a*b.example.com', 'bad host', 'example.com']},
+        ]}
+        assert guardrail_targets(project) == ['example.com']
+
+    def test_single_domain_adds_its_prefix_hosts(self):
+        project = {'targetDomain': 'org.jm', 'subdomainList': ['isa.', '.', '*']}
+        assert guardrail_targets(project) == ['org.jm', 'isa.org.jm']
+
+    def test_the_first_blocked_name_is_the_listed_host(self):
+        from hard_guardrail import first_hard_blocked
+        project = {'domainBatchMode': True, 'domainBatchGroups': [
+            {'rootDomain': 'gov.uk', 'prefixes': ['www.agency.'], 'hosts': ['www.agency.gov.uk']},
+        ]}
+        assert first_hard_blocked(guardrail_targets(project))[0] == 'www.agency.gov.uk'

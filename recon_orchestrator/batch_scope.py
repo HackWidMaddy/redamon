@@ -149,15 +149,47 @@ def validate_partial_overrides(overrides) -> dict:
     return dict(overrides)
 
 
+def _batch_hosts(project: dict) -> list[str]:
+    """The listed hosts of a Domain-batch project, from its derived groups.
+
+    A wildcard entry is stored as `*.<root>`: its marker is stripped. Anything
+    with a `*` elsewhere, or outside the charset, is dropped rather than repaired.
+    """
+    groups = project.get('domainBatchGroups')
+    hosts: list[str] = []
+    for entry in groups if isinstance(groups, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get('hosts'), list):
+            continue
+        for raw in entry['hosts']:
+            host = str(raw or '').strip().lower()
+            if host.startswith('*.'):
+                host = host[2:]
+            if host and _BATCH_ROOT_CHARSET.match(host) and '..' not in host and host not in hosts:
+                hosts.append(host)
+    return hosts
+
+
 def guardrail_targets(project: dict) -> list[str]:
-    """Every domain to hard-guardrail before starting a recon, whatever the mode.
+    """Every name to hard-guardrail before starting a recon, whatever the mode.
 
     IP mode returns [] (IPs are not hard-blocked; see hard_guardrail.is_hard_blocked).
-    Batch mode returns the group roots. Anything else returns the single target.
+    Batch mode returns every listed host, then every group root: a host under a
+    multi-label government name (`www.isa.org.jm`) groups under a root no rule
+    names (`org.jm`), so checking the roots alone lets it through. Anything else
+    returns the single target, then its prefix hosts.
     """
     if project.get('ipMode', False):
         return []
     if project.get('domainBatchMode', False):
-        return batch_guardrail_targets(project)
+        hosts = _batch_hosts(project)
+        return hosts + [r for r in batch_guardrail_targets(project) if r not in hosts]
     target = str(project.get('targetDomain') or '').strip()
-    return [target] if target else []
+    if not target:
+        return []
+    names = [target]
+    subs = project.get('subdomainList')
+    for raw in subs if isinstance(subs, list) else []:
+        prefix = str(raw or '').strip().lower().rstrip('.')
+        if prefix and '*' not in prefix and f'{prefix}.{target}' not in names:
+            names.append(f'{prefix}.{target}')
+    return names
