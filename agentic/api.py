@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shlex
+import time
 from contextlib import asynccontextmanager
 from typing import Any, List, Literal, Optional
 
@@ -2897,6 +2898,111 @@ async def command_whisperer(body: CommandWhispererRequest):
         command = command.split("\n", 1)[1].strip()
 
     return {"command": command, "model_used": requested_model}
+
+
+# =============================================================================
+# SKILL METADATA - the upload dialog's "Generate with AI" for user attack skills
+# =============================================================================
+
+import skill_metadata  # noqa: E402
+
+
+class SkillMetadataItem(BaseModel):
+    key: str
+    content: str
+    file_name: str = ""
+    # The current name, as context when only the description is asked.
+    name: str = ""
+    want_name: bool = False
+    want_description: bool = False
+
+
+class SkillMetadataRequest(BaseModel):
+    items: list[SkillMetadataItem]
+    other_names: list[str] = []
+    # Set by the webapp from the caller's saved "Skill names & descriptions"
+    # model and effective user, like every feature endpoint.
+    model: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+def _skill_metadata_size_error(body: SkillMetadataRequest, model: str) -> Optional[JSONResponse]:
+    def refuse(error: str) -> JSONResponse:
+        return JSONResponse(content={"error": error, "model_used": model}, status_code=400)
+
+    if not 1 <= len(body.items) <= skill_metadata.MAX_ITEMS:
+        return refuse(f"Send 1 to {skill_metadata.MAX_ITEMS} skills")
+    for item in body.items:
+        if not item.content.strip() or len(item.content) > 50 * 1024:
+            return refuse("Each skill needs a text of at most 50 KB")
+        if not (item.want_name or item.want_description):
+            return refuse("Each skill must ask for a name or a description")
+        if len(item.key) > 64:
+            return refuse("A skill key is at most 64 characters")
+    if len(body.other_names) > skill_metadata.OTHER_NAMES_MAX:
+        return refuse(f"At most {skill_metadata.OTHER_NAMES_MAX} other names")
+    return None
+
+
+@app.post("/skill-metadata/generate", tags=["Skills"],
+          dependencies=[Depends(require_master_internal_auth), Depends(require_internal_auth)])
+async def generate_skill_metadata(body: SkillMetadataRequest):
+    """Propose the missing name and/or description of up to 5 uploaded skills, on the caller's model.
+
+    Nothing is saved: the webapp re-validates the answer and the person reviews it.
+    """
+    started = time.monotonic()
+    model = (body.model or "").strip()
+    missing = _feature_request_error(model, body.user_id)
+    if missing:
+        return missing
+    too_big = _skill_metadata_size_error(body, model)
+    if too_big:
+        return too_big
+    llm, failure = await _build_feature_llm("Skill metadata", model, body.user_id)
+    if failure:
+        return failure
+
+    other_names = [n[:skill_metadata.NAME_MAX] for n in body.other_names]
+    gate = asyncio.Semaphore(skill_metadata.CONCURRENCY)
+    unavailable: list[JSONResponse] = []
+    call_failures: list[JSONResponse] = []
+
+    async def one(item: SkillMetadataItem) -> dict:
+        async with gate:
+            messages = skill_metadata.build_messages(item, other_names)
+            try:
+                response, failed = await asyncio.wait_for(
+                    _invoke_feature_llm("Skill metadata", model, llm, messages),
+                    skill_metadata.ITEM_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                return {"key": item.key, "error": "timeout"}
+        if failed:
+            if failed.status_code == 503:
+                unavailable.append(failed)
+            else:
+                call_failures.append(failed)
+            return {"key": item.key, "error": "model_call_failed"}
+        answer = skill_metadata.parse_answer(
+            normalize_content(response.content), item.want_name, item.want_description)
+        return {"key": item.key, **answer} if answer else {"key": item.key, "error": "unreadable_answer"}
+
+    try:
+        items = await asyncio.wait_for(asyncio.gather(*(one(i) for i in body.items)),
+                                       skill_metadata.REQUEST_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        return _feature_error("agent_timeout", model, 504, "The model took too long, try again")
+
+    failed = sum(1 for i in items if "error" in i)
+    # Counts only: a skill file, its name or the generated text can hold anything.
+    logger.info("skill_metadata user=%s model=%s items=%d ok=%d failed=%d ms=%d",
+                body.user_id, model, len(items), len(items) - failed, failed,
+                int((time.monotonic() - started) * 1000))
+    if unavailable:
+        return unavailable[0]
+    if call_failures and len(call_failures) == len(items):
+        return call_failures[0]
+    return {"items": items, "model_used": model}
 
 
 # =============================================================================

@@ -1,7 +1,7 @@
 /**
  * Global Settings → LLM Providers → "Models by feature".
  *
- * The grid shares ONE /api/models call across its eight pickers (each call
+ * The grid shares ONE /api/models call across its nine pickers (each call
  * makes the agent list every provider's models). Each change saves only its
  * own key. And the API Keys save must never carry `featureModels`: a stale
  * copy riding that save would put back models changed since the page loaded.
@@ -115,10 +115,10 @@ async function tile(id: string) {
 }
 
 describe('Models by feature section', () => {
-  test('eight tiles from ONE /api/models call, with their saved state', async () => {
+  test('nine tiles from ONE /api/models call, with their saved state', async () => {
     renderPage()
     const triage = await tile('triage')
-    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(8))
+    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(9))
     expect(calls('/api/models')).toHaveLength(1)
     expect(JSON.parse((calls('/api/models')[0][1] as RequestInit).body as string)).toEqual({ userId: 'user-1' })
 
@@ -136,7 +136,7 @@ describe('Models by feature section', () => {
     modelsAnswer = () => new Promise(() => {})
     renderPage()
     await screen.findByText('Models by feature')
-    expect(await screen.findAllByTestId('feature-model-skeleton')).toHaveLength(8)
+    expect(await screen.findAllByTestId('feature-model-skeleton')).toHaveLength(9)
     expect(document.querySelector('[data-feature]')).toBeNull()
   })
 
@@ -156,7 +156,7 @@ describe('Models by feature section', () => {
     expect(await within(triage).findByText('claude-haiku-4-5')).toBeInTheDocument()
     // The chip and the read-only value both say so.
     expect(within(await tile('multi_mute')).getAllByText('Not set')).toHaveLength(2)
-    expect(screen.getAllByRole('button', { name: /Retry/ })).toHaveLength(8)
+    expect(screen.getAllByRole('button', { name: /Retry/ })).toHaveLength(9)
     expect(screen.queryByText('Choose a model')).toBeNull()
 
     modelsAnswer = async () => ({ status: 200, body: MODELS })

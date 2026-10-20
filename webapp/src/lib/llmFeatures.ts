@@ -16,6 +16,7 @@ export type FeatureId =
   | 'tradecraft_section_picker'
   | 'report_narratives'
   | 'multi_mute'
+  | 'skill_metadata'
 
 /**
  * A plugin's own entry in Models by feature: `plugin:<pluginId>` (README.PLUGINS.md §7.3,
@@ -113,6 +114,14 @@ export const LLM_FEATURES: readonly LlmFeature[] = [
     description: 'Picks which page of a Tradecraft resource the agent reads.',
     hint: 'The smallest model is enough: it answers with one number. Not set: pages are picked by text match.',
     alsoEditedIn: ['Tradecraft resource form'],
+    excludeModelPrefixes: [],
+  },
+  {
+    id: 'skill_metadata',
+    label: 'Skill names & descriptions',
+    description: 'Writes the missing name and description of your agent skills, when you upload or edit them.',
+    hint: 'A small or mid-size model is enough: it reads the start of each skill file.',
+    alsoEditedIn: ['Upload agent skills dialog', 'Edit skill dialog'],
     excludeModelPrefixes: [],
   },
 ]

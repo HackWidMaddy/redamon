@@ -22,6 +22,7 @@ FEATURE_IDS = (
     "tradecraft_section_picker",
     "report_narratives",
     "multi_mute",
+    "skill_metadata",
 )
 
 
