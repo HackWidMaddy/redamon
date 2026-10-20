@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { SETTINGS_SKILLS_HREF } from '@/lib/settingsLinks'
-import { ChevronDown, Bug, KeyRound, Mail, Swords, Loader2, Settings, Zap, Database, Code2, Globe, Terminal, FolderTree, Download, ShieldAlert, FileCode2, Binary, Split, Search, GitBranch, ShieldOff, AlertTriangle } from 'lucide-react'
+import { ChevronDown, Bug, KeyRound, Mail, Swords, Loader2, Settings, Zap, Database, Code2, Globe, Terminal, FolderTree, Download, ShieldAlert, FileCode2, Binary, Split, Search, GitBranch, ShieldOff, AlertTriangle, Upload, Files } from 'lucide-react'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
 import { Toggle } from '@/components/ui/Toggle/Toggle'
@@ -22,7 +22,8 @@ import { usePluginSkillOverrides } from '@/components/plugins/skills/usePluginSk
 import { SkillVersionsModal } from '@/components/plugins/review/SkillVersionsModal'
 import { OverrideReviewModal } from '@/components/plugins/review/OverrideReviewModal'
 import { importSummary } from '@/components/settings/AgentSkillsTab'
-import { MAX_ENABLED_USER_SKILLS_PER_PROJECT } from '@/lib/userSkills'
+import { useSkillUpload } from '@/components/userSkills/useSkillUpload'
+import { MAX_ENABLED_USER_SKILLS_PER_PROJECT, MAX_SKILLS_PER_USER, USER_SKILL_LIMIT_TEXT } from '@/lib/userSkills'
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
 import styles from '../ProjectForm.module.css'
 
@@ -35,6 +36,8 @@ interface AttackSkillsSectionProps {
    * The saved project's id. Plugin version controls render only when it is set: the section
    * also renders in create mode (no project yet) and inside the chat SettingsModal, whose
    * debounced whole-row PUT swallows errors, so Reset/Delete are their own API calls (X23).
+   * The upload dialog saves skills, and with a saved project their toggles, through its own
+   * API call; only create-mode toggles go through `updateField`.
    */
   projectId?: string | null
 }
@@ -188,6 +191,10 @@ export function AttackSkillsSection({ data, updateField, projectId }: AttackSkil
   const [userOpen, setUserOpen] = useState(true)
   const [userSkills, setUserSkills] = useState<UserSkillDef[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  // Whose list is loaded: until it is the current user's, the cap and the free slots would be
+  // counted from an empty list, so the upload buttons wait.
+  const loadedFor = useRef<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [skillQuery, setSkillQuery] = useState('')
   const [enabledOnly, setEnabledOnly] = useState(false)
@@ -199,15 +206,27 @@ export function AttackSkillsSection({ data, updateField, projectId }: AttackSkil
   const [reviewChangeSetId, setReviewChangeSetId] = useState<string | null>(null)
 
   const config = getConfig(data)
+  // Create mode switches the new skills on from the toggles of the moment, not of a render ago.
+  const configRef = useRef(config)
+  configRef.current = config
+  const userSkillsRef = useRef(userSkills)
+  userSkillsRef.current = userSkills
 
-  // Fetch available user skills
   const fetchUserSkills = useCallback(async () => {
-    if (!userId) { setLoading(false); return }
+    if (!userId) return
+    if (loadedFor.current !== userId) setLoading(true)
     try {
       const resp = await fetch(`/api/users/${userId}/attack-skills`)
-      if (resp.ok) setUserSkills(await resp.json())
+      if (resp.ok) {
+        setUserSkills(await resp.json())
+        setLoadError(false)
+        loadedFor.current = userId
+      } else {
+        setLoadError(true)
+      }
     } catch (err) {
       console.error('Failed to fetch user attack skills:', err)
+      setLoadError(true)
     } finally {
       setLoading(false)
     }
@@ -238,6 +257,37 @@ export function AttackSkillsSection({ data, updateField, projectId }: AttackSkil
   // Only the owner's existing skills count, as on the server: a stale id in the map does not.
   const enabledCount = userSkills.filter(s => isUserEnabled(s.id)).length
   const atEnabledLimit = enabledCount >= MAX_ENABLED_USER_SKILLS_PER_PROJECT
+
+  /** Create mode only: the new project does not exist yet, so its toggles are form state. */
+  const enableInForm = useCallback((ids: string[]) => {
+    const current = configRef.current
+    let room = Math.max(0, MAX_ENABLED_USER_SKILLS_PER_PROJECT - userSkillsRef.current.filter(s => current.user[s.id] === true).length)
+    const user = { ...current.user }
+    let enabled = 0
+    let leftOff = 0
+    for (const id of ids) {
+      if (room > 0) { user[id] = true; room--; enabled++ } else { leftOff++ }
+    }
+    if (enabled) updateField('attackSkillConfig', { ...current, user } as unknown as FormData['attackSkillConfig'])
+    return { enabled, leftOff }
+  }, [updateField])
+
+  const upload = useSkillUpload({
+    userId,
+    existingCount: userSkills.length,
+    project: {
+      id: savedProjectId,
+      freeSlots: Math.max(0, MAX_ENABLED_USER_SKILLS_PER_PROJECT - enabledCount),
+      enableLocally: savedProjectId ? undefined : enableInForm,
+    },
+    onUploaded: () => { fetchUserSkills() },
+  })
+  const uploadTitle = loading
+    ? 'Loading your skills…'
+    : loadError ? 'Your skills could not be loaded. Reload the page to upload.'
+      : loadedFor.current !== userId ? 'Loading your skills…'
+        : userSkills.length >= MAX_SKILLS_PER_USER ? USER_SKILL_LIMIT_TEXT : undefined
+  const uploadDisabled = !userId || !!uploadTitle
   // Two members of one family on at once: the agent sees two versions of the same skill.
   const familyOn = new Map<string, UserSkillDef[]>()
   for (const s of userSkills) {
@@ -431,13 +481,37 @@ export function AttackSkillsSection({ data, updateField, projectId }: AttackSkil
 
       {/* User Agent Skills */}
       <div className={`${styles.section} ${styles.formSkin}`}>
-        <div className={styles.sectionHeader} onClick={() => setUserOpen(!userOpen)}>
-          <h2 className={styles.sectionTitle}>
-            <Swords size={16} />
-            User Agent Skills
-            <WikiInfoButton target="https://github.com/samugit83/redamon/wiki/Agent-Skills#community-skills" title="Open Community Agent Skills wiki section" />
-          </h2>
-          <div className={styles.sectionHeaderRight}>
+        <div className={`${styles.sectionHeader} ${styles.userSkillsHeader}`} onClick={() => setUserOpen(!userOpen)}>
+          <div className={styles.userSkillsHeaderTitle}>
+            <h2 className={styles.sectionTitle}>
+              <Swords size={16} />
+              User Agent Skills
+              <WikiInfoButton target="https://github.com/samugit83/redamon/wiki/Agent-Skills#community-skills" title="Open Community Agent Skills wiki section" />
+            </h2>
+            <ChevronDown
+              size={16}
+              className={`${styles.sectionIcon} ${userOpen ? styles.sectionIconOpen : ''}`}
+            />
+          </div>
+          <div className={styles.userSkillsHeaderActions}>
+            <button
+              type="button"
+              className={`${styles.sectionHeaderButton} ${styles.sectionHeaderButtonPrimary}`}
+              onClick={(e) => { e.stopPropagation(); upload.openSingle() }}
+              disabled={uploadDisabled}
+              title={uploadTitle ?? 'Upload one .md skill file'}
+            >
+              <Upload size={12} /> Upload Skill
+            </button>
+            <button
+              type="button"
+              className={styles.sectionHeaderButton}
+              onClick={(e) => { e.stopPropagation(); upload.openBatch() }}
+              disabled={uploadDisabled}
+              title={uploadTitle ?? 'Upload several .md skill files at once'}
+            >
+              <Files size={12} /> Upload Batch
+            </button>
             <button
               type="button"
               className={styles.sectionHeaderButton}
@@ -450,20 +524,15 @@ export function AttackSkillsSection({ data, updateField, projectId }: AttackSkil
                 : <Download size={12} />}
               Import from Community
             </button>
-            <ChevronDown
-              size={16}
-              className={`${styles.sectionIcon} ${userOpen ? styles.sectionIconOpen : ''}`}
-            />
           </div>
         </div>
 
         {userOpen && (
           <div className={styles.sectionContent}>
             <p className={styles.sectionDescription}>
-              Custom agent skills uploaded from Global Settings. Enable a skill to let the agent
-              classify requests into it and use its workflow. A skill is off until you turn it on
-              here; use the Import shortcut above to bulk-import community templates and
-              auto-enable them for this project.
+              Your own agent skills. Upload .md files here, one at a time or in a batch, or manage them
+              in Global Settings. A skill is off until you turn it on here; uploads and community imports
+              from this section can turn the new skills on for this project.
             </p>
 
             {userSkills.length > 0 && (
@@ -497,10 +566,14 @@ export function AttackSkillsSection({ data, updateField, projectId }: AttackSkil
               <div className={styles.skillListNote}>
                 <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Loading...
               </div>
+            ) : userSkills.length === 0 && loadError ? (
+              <div className={styles.skillListNote} role="alert">
+                Your skills could not be loaded. Reload the page.
+              </div>
             ) : userSkills.length === 0 ? (
               <div className={styles.skillEmptyState}>
                 <p>
-                  No user skills uploaded yet. Upload <code>.md</code> skill files from Global Settings to create custom attack workflows.
+                  No user skills uploaded yet. Upload <code>.md</code> skill files above, or manage them in Global Settings.
                 </p>
                 <Link href={SETTINGS_SKILLS_HREF} className={styles.skillEmptyLink}>
                   <Settings size={13} />
@@ -581,6 +654,10 @@ export function AttackSkillsSection({ data, updateField, projectId }: AttackSkil
           </div>
         )}
       </div>
+
+      {/* Outside the header: events from the portalled dialog bubble along the React tree,
+          and a click there would collapse the section. */}
+      {upload.dialogs}
 
       {savedProjectId && versionsSkill && (
         <SkillVersionsModal

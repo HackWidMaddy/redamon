@@ -1296,6 +1296,29 @@
   gap: var(--space-2);
 }
 
+/* The User Agent Skills header only: in the chat drawer (as narrow as 336 px, and not the
+   viewport's width) its buttons drop under the title instead of overflowing. */
+.userSkillsHeader {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+
+.userSkillsHeaderTitle {
+  flex: 1 1 12rem;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.userSkillsHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
 /* Node info tooltip */
 .nodeInfoIcon {
   color: #22c55e;
