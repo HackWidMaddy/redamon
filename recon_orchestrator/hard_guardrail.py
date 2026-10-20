@@ -4,36 +4,44 @@ Hard Guardrail — deterministic, non-disableable check for government/public do
 Blocks government, military, education, and international organization domains
 regardless of project settings. This check cannot be toggled off.
 
-Mirror of agentic/hard_guardrail.py — keep patterns in sync.
+Mirrors: agentic/orchestrator_helpers/hard_guardrail.py and
+webapp/src/lib/hard-guardrail.ts. All three read the same test vectors
+(tests/fixtures/hard_guardrail_vectors.json), so a pattern added to one copy
+only fails a test.
+
+This file is also COPY-bundled into the capture proxy, which FAILS OPEN when
+the import fails: keep it standard-library only.
 """
 
 import re
 
 # ---------------------------------------------------------------------------
-# TLD suffix patterns (case-insensitive, applied to the full domain)
+# TLD suffix patterns (case-insensitive, applied to the full domain).
+# Anchored on a label boundary, (?:^|\.), so the bare suffix is blocked too:
+# a batch whose hosts group under `gov.uk` hands this check `gov.uk` itself.
 # ---------------------------------------------------------------------------
 _TLD_PATTERNS = [
     # Government
-    r'\.gov$',
-    r'\.gov\.[a-z]{2,3}$',        # .gov.uk, .gov.au, .gov.br
-    r'\.gob\.[a-z]{2,3}$',        # .gob.mx, .gob.es (Spanish-speaking)
-    r'\.gouv\.[a-z]{2,3}$',       # .gouv.fr, .gouv.ci (French-speaking)
-    r'\.govt\.[a-z]{2,3}$',       # .govt.nz
-    r'\.go\.[a-z]{2}$',            # .go.jp, .go.kr, .go.id (2-letter ccTLDs only to avoid .go.dev etc.)
-    r'\.gv\.[a-z]{2}$',            # .gv.at (Austria) (2-letter ccTLDs only)
-    r'\.government\.[a-z]{2,3}$', # rare but exists
+    r'(?:^|\.)gov$',
+    r'(?:^|\.)gov\.[a-z]{2,3}$',        # .gov.uk, .gov.au, .gov.br
+    r'(?:^|\.)gob\.[a-z]{2,3}$',        # .gob.mx, .gob.es (Spanish-speaking)
+    r'(?:^|\.)gouv\.[a-z]{2,3}$',       # .gouv.fr, .gouv.ci (French-speaking)
+    r'(?:^|\.)govt\.[a-z]{2,3}$',       # .govt.nz
+    r'(?:^|\.)go\.[a-z]{2}$',            # .go.jp, .go.kr, .go.id (2-letter ccTLDs only to avoid .go.dev etc.)
+    r'(?:^|\.)gv\.[a-z]{2}$',            # .gv.at (Austria) (2-letter ccTLDs only)
+    r'(?:^|\.)government\.[a-z]{2,3}$', # rare but exists
 
     # Military
-    r'\.mil$',
-    r'\.mil\.[a-z]{2,3}$',        # .mil.br
+    r'(?:^|\.)mil$',
+    r'(?:^|\.)mil\.[a-z]{2,3}$',        # .mil.br
 
     # Education
-    r'\.edu$',
-    r'\.edu\.[a-z]{2,3}$',        # .edu.au
-    r'\.ac\.[a-z]{2,3}$',         # .ac.uk, .ac.jp
+    r'(?:^|\.)edu$',
+    r'(?:^|\.)edu\.[a-z]{2,3}$',        # .edu.au
+    r'(?:^|\.)ac\.[a-z]{2,3}$',         # .ac.uk, .ac.jp
 
     # International organizations
-    r'\.int$',                     # .int (NATO, WHO, EU agencies)
+    r'(?:^|\.)int$',                     # .int (NATO, WHO, EU agencies)
 ]
 
 _COMPILED_TLD_RE = re.compile('|'.join(f'(?:{p})' for p in _TLD_PATTERNS), re.IGNORECASE)
@@ -308,22 +316,38 @@ _EXACT_BLOCKED_DOMAINS: frozenset[str] = frozenset({
     'icglr.org',
     'isa.org.jm',          # International Seabed Authority
     'gggi.org',            # Global Green Growth Institute
+
+    # ===================================================================
+    # Government namespaces no keyword pattern matches. Under the Public
+    # Suffix List each label below them is a registrable org, so without
+    # these `*.met.police.uk` would be a valid, unblocked wildcard.
+    # ===================================================================
+    'police.uk',
+    'nhs.uk',
+    'mod.uk',
+    'sch.uk',
+    'parliament.uk',
+    'gc.ca',               # Government of Canada
+    'gouv.qc.ca',          # Government of Quebec
+    'gov.scot',
+    'gov.wales',
+    'llyw.cymru',          # gov.wales in Welsh
 })
 
 
 def _normalize_domain(raw: str) -> str:
-    """Lowercase, strip protocol/path/port/whitespace."""
+    """Lowercase; strip scheme, credentials, path, port, trailing dot and a
+    leading wildcard marker, so a raw batch entry cannot slip past as typed."""
     d = raw.strip().lower()
-    # Strip protocol
-    for prefix in ('https://', 'http://'):
-        if d.startswith(prefix):
-            d = d[len(prefix):]
-    # Strip path
-    d = d.split('/')[0]
-    # Strip port
+    d = re.sub(r'^[a-z][a-z0-9+.-]*://', '', d)
+    d = re.split(r'[/?#]', d, maxsplit=1)[0]
+    d = d.rsplit('@', 1)[-1]
     d = d.split(':')[0]
-    # Strip trailing dot (FQDN notation)
     d = d.rstrip('.')
+    if d.startswith('*.'):
+        d = d[2:]
+    elif d.startswith('*'):
+        d = d[1:]
     return d
 
 
@@ -343,7 +367,7 @@ def is_hard_blocked(domain: str) -> tuple[bool, str]:
     # Exact match (intergovernmental orgs on generic TLDs)
     if d in _EXACT_BLOCKED_DOMAINS:
         return True, (
-            f"'{d}' is a protected intergovernmental organization domain. "
+            f"'{d}' is a protected government or intergovernmental domain. "
             "Scanning government and public institutional websites is permanently blocked."
         )
 
@@ -363,3 +387,16 @@ def is_hard_blocked(domain: str) -> tuple[bool, str]:
         )
 
     return False, ''
+
+
+def first_hard_blocked(names) -> tuple[str, str] | None:
+    """The first blocked name in order, with its reason; None when all pass.
+
+    Callers pass every name a scope would touch (hosts, scan roots, orgs), so a
+    refusal can name the entry the operator typed rather than its group.
+    """
+    for name in names:
+        blocked, reason = is_hard_blocked(name)
+        if blocked:
+            return name, reason
+    return None
