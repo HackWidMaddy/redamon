@@ -212,21 +212,22 @@ async def initialize_node(state: AgentState, config, *, llm, neo4j_creds) -> dic
     # Hard guardrail: deterministic, non-disableable — always blocks government/public domains
     # Runs unconditionally regardless of AGENT_GUARDRAIL_ENABLED setting
     if not state.get("execution_trace") and not state.get("_guardrail_blocked"):
-        from orchestrator_helpers.hard_guardrail import is_hard_blocked
-        from project_settings import target_scope_domains
+        from orchestrator_helpers.hard_guardrail import first_hard_blocked
+        from project_settings import guardrail_names
         ip_mode = get_setting('IP_MODE', False)
-        # EVERY in-scope domain, not just TARGET_DOMAIN: a Domain-batch project
+        # EVERY in-scope name, not just TARGET_DOMAIN: a Domain-batch project
         # keeps its scope in DOMAIN_BATCH_GROUPS, and is_hard_blocked('') returns
         # "not blocked", so checking the empty field disarmed this guardrail
-        # entirely on batch projects. One blocked domain blocks the session.
+        # entirely on batch projects. Its listed hosts are checked as well as
+        # its roots. One blocked name blocks the session.
         if not ip_mode:
-            for target_domain in target_scope_domains():
-                blocked, reason = is_hard_blocked(target_domain)
-                if blocked:
-                    logger.warning(
-                        f"[{user_id}/{project_id}/{session_id}] HARD GUARDRAIL BLOCKED: {reason}"
-                    )
-                    return _build_guardrail_block(user_id, project_id, session_id, target_domain, reason)
+            hit = first_hard_blocked(guardrail_names())
+            if hit:
+                target_domain, reason = hit
+                logger.warning(
+                    f"[{user_id}/{project_id}/{session_id}] HARD GUARDRAIL BLOCKED: {reason}"
+                )
+                return _build_guardrail_block(user_id, project_id, session_id, target_domain, reason)
 
     # Soft guardrail (LLM-based): on first invocation, verify the project target is authorized
     # Skip if already blocked (avoid redundant LLM calls on retry in same session)

@@ -993,6 +993,32 @@ def target_scope_domains() -> list[str]:
     return [domain] if domain else []
 
 
+def guardrail_names() -> list[str]:
+    """Every name the hard guardrail must check for this project, in order.
+
+    A Domain batch adds its listed hosts (wildcard marker stripped) before its
+    group roots: a host under a multi-label government name (`www.isa.org.jm`)
+    groups under a root no rule names (`org.jm`), so checking the roots alone
+    lets it through. Single-domain mode is the target itself; IP mode is [].
+    Callers must treat an EMPTY list in batch mode as a refusal.
+    """
+    roots = target_scope_domains()
+    if get_setting('IP_MODE', False) or not get_setting('DOMAIN_BATCH_MODE', False):
+        return roots
+    names: list[str] = []
+    groups = get_setting('DOMAIN_BATCH_GROUPS', []) or []
+    for entry in groups if isinstance(groups, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get('hosts'), list):
+            continue
+        for raw in entry['hosts']:
+            host = str(raw or '').strip().lower()
+            if host.startswith('*.'):
+                host = host[2:]
+            if host and _SCOPE_DOMAIN_CHARSET.match(host) and '..' not in host and host not in names:
+                names.append(host)
+    return names + [r for r in roots if r not in names]
+
+
 def reload_settings(project_id: Optional[str] = None) -> dict[str, Any]:
     """Force reload of settings for a project."""
     global _settings, _current_project_id

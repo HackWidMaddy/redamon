@@ -24,7 +24,7 @@ from unittest.mock import patch
 _AGENTIC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTIC_DIR))
 
-from project_settings import target_scope_domains  # noqa: E402
+from project_settings import guardrail_names, target_scope_domains  # noqa: E402
 
 
 def _settings(**values):
@@ -139,6 +139,43 @@ class TestBatchScopeRejectsMalformedInput(unittest.TestCase):
         with patch('project_settings.get_setting', _settings(
                 DOMAIN_BATCH_MODE=True, DOMAIN_BATCH_GROUPS=[])):
             self.assertEqual(target_scope_domains(), [])
+
+
+
+class TestGuardrailNames(unittest.TestCase):
+    """The hard guardrail checks every listed host, then every group root."""
+
+    def test_batch_hosts_then_roots(self):
+        groups = [
+            {'rootDomain': 'example.com', 'prefixes': ['*'], 'hosts': ['*.example.com']},
+            {'rootDomain': 'org.jm', 'prefixes': ['www.isa.'], 'hosts': ['www.isa.org.jm']},
+        ]
+        with patch('project_settings.get_setting',
+                   _settings(DOMAIN_BATCH_MODE=True, DOMAIN_BATCH_GROUPS=groups)):
+            self.assertEqual(guardrail_names(), ['example.com', 'www.isa.org.jm', 'org.jm'])
+
+    def test_the_first_blocked_name_is_the_host_not_its_root(self):
+        from orchestrator_helpers.hard_guardrail import first_hard_blocked
+        groups = [{'rootDomain': 'org.jm', 'prefixes': ['www.isa.'], 'hosts': ['www.isa.org.jm']}]
+        with patch('project_settings.get_setting',
+                   _settings(DOMAIN_BATCH_MODE=True, DOMAIN_BATCH_GROUPS=groups)):
+            self.assertEqual(first_hard_blocked(guardrail_names())[0], 'www.isa.org.jm')
+
+    def test_a_host_outside_the_charset_or_with_a_star_inside_is_dropped(self):
+        groups = [{'rootDomain': 'example.com', 'prefixes': ['.'], 'hosts': ['a*b.example.com', 'b a.example.com']}]
+        with patch('project_settings.get_setting',
+                   _settings(DOMAIN_BATCH_MODE=True, DOMAIN_BATCH_GROUPS=groups)):
+            self.assertEqual(guardrail_names(), ['example.com'])
+
+    def test_single_domain_is_the_target(self):
+        with patch('project_settings.get_setting', _settings(TARGET_DOMAIN='example.com')):
+            self.assertEqual(guardrail_names(), ['example.com'])
+
+    def test_ip_mode_has_none(self):
+        with patch('project_settings.get_setting',
+                   _settings(IP_MODE=True, DOMAIN_BATCH_MODE=True, DOMAIN_BATCH_GROUPS=[
+                       {'rootDomain': 'x.com', 'hosts': ['x.com']}])):
+            self.assertEqual(guardrail_names(), [])
 
 
 if __name__ == '__main__':
