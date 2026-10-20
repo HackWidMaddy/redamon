@@ -33,7 +33,7 @@
  */
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
-import { validateDomainBatch, splitWildcard, MAX_BATCH_HOSTS } from '@/lib/domainBatch'
+import { validateDomainBatch, splitWildcard, scopeGuardrailNames, MAX_BATCH_HOSTS } from '@/lib/domainBatch'
 import {
   currentAuthorization,
   describeEngagement,
@@ -49,7 +49,7 @@ import {
   type EngagementProjectRow,
 } from '@/lib/engagement'
 import { describeScanWriters } from '@/lib/graphWriters'
-import { isHardBlockedDomain } from '@/lib/hard-guardrail'
+import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
@@ -230,11 +230,9 @@ async function findByIdempotencyKey(ctx: McpContext, key: string) {
  * either: it would carry an authorization record for a target nobody may touch.
  */
 export function refuseHardBlocked(domains: string[]): void {
-  for (const domain of domains) {
-    const check = isHardBlockedDomain(domain)
-    if (check.blocked) {
-      throw new McpToolError(`Target permanently blocked: ${domain}: ${check.reason}`, 'target_blocked')
-    }
+  const hit = firstHardBlocked(domains)
+  if (hit) {
+    throw new McpToolError(`Target permanently blocked: ${hit.name}: ${hit.reason}`, 'target_blocked')
   }
 }
 
@@ -279,7 +277,9 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
     // Same normalization as the HTTP routes: an agent that emits bug-bounty
     // scope notation must not turn `*.example.com` into a literal target.
     data.targetDomain = splitWildcard(args.targetDomain!.trim()).rest
-    refuseHardBlocked([data.targetDomain as string])
+    refuseHardBlocked(scopeGuardrailNames({
+      targetDomain: data.targetDomain as string, subdomainList: args.subdomainList,
+    }))
   } else if (mode === 'targetIps') {
     data.ipMode = true
     data.targetIps = args.targetIps!.map(s => s.trim()).filter(Boolean)
@@ -289,7 +289,8 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
     if (validation.errors.length > 0) {
       throw new McpToolError(validation.errors.join(' '), 'bad_args')
     }
-    refuseHardBlocked(validation.groups.map(g => g.rootDomain))
+    // Every host and root, so the refusal names the host that was listed.
+    refuseHardBlocked(scopeGuardrailNames({ domainBatchMode: true, domainBatchHosts: hosts }))
     data.domainBatchMode = true
     data.domainBatchHosts = hosts
     // The server re-derives the grouping from the raw host list and discards

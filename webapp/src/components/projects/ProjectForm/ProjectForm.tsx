@@ -6,8 +6,8 @@ import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import type { Project } from '@prisma/client'
 import { validateProjectForm } from '@/lib/validation'
-import { isHardBlockedDomain } from '@/lib/hard-guardrail'
-import { validateDomainBatch } from '@/lib/domainBatch'
+import { firstHardBlocked } from '@/lib/hard-guardrail'
+import { validateDomainBatch, scopeGuardrailNames } from '@/lib/domainBatch'
 import { ipModeRoot } from '@/lib/partialReconScope'
 import { tabForAnchor } from '@/lib/projectSettingsLinks'
 import { graphScanHref, type ScanModal } from '@/lib/scanModalLink'
@@ -222,21 +222,14 @@ function validateTargetForMode(formData: ProjectFormData): string | null {
   return null
 }
 
-/** The first target this project would scan that is permanently blocked, whatever
- *  the mode. A batch must be checked group by group: one blocked domain in a list
- *  of twenty is still a blocked scan. */
+/** The first name this project would scan that is permanently blocked, whatever
+ *  the mode: every batch host and group root, or the target and its prefix hosts.
+ *  One blocked host in a list of twenty is still a blocked scan. */
 function firstHardBlockedTarget(
   formData: ProjectFormData
 ): { domain: string; reason: string } | null {
-  const domains = formData.domainBatchMode
-    ? validateDomainBatch(formData.domainBatchHosts || []).groups.map(g => g.rootDomain)
-    : (!formData.ipMode && formData.targetDomain ? [formData.targetDomain] : [])
-
-  for (const domain of domains) {
-    const check = isHardBlockedDomain(domain)
-    if (check.blocked) return { domain, reason: check.reason }
-  }
-  return null
+  const hit = firstHardBlocked(scopeGuardrailNames(formData))
+  return hit ? { domain: hit.name, reason: hit.reason } : null
 }
 
 // Fetch defaults from the recon backend (single source of truth)

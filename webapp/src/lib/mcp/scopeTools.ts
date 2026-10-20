@@ -24,7 +24,7 @@
  */
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
-import { validateDomainBatch, type DomainGroup } from '@/lib/domainBatch'
+import { validateDomainBatch, scopeGuardrailNames, type DomainGroup } from '@/lib/domainBatch'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { seedProjectDomains } from '@/lib/graphSeedDomains'
 import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
@@ -153,9 +153,12 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
     const after = rootsOf(batch.groups)
     addedRoots = [...after].filter(r => !before.has(r)).sort()
     removedRoots = [...before].filter(r => !after.has(r)).sort()
-    // Every root this project would scan, not only the new ones: a root that
-    // joined the permanent blocklist since it was added must not ride along.
-    refuseHardBlocked([...after])
+    // Every host and root this project would scan, not only the new ones: a
+    // name that joined the permanent blocklist since it was added must not ride
+    // along, and a host under a government name must not hide behind its root.
+    refuseHardBlocked(scopeGuardrailNames({
+      domainBatchMode: true, domainBatchHosts: data.domainBatchHosts as string[],
+    }))
     // The grouping is the scope every reader uses, so it is derived here from
     // the host list and never accepted from a caller.
     data.domainBatchHosts = batch.groups.flatMap(g => g.hosts)

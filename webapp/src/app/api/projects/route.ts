@@ -7,7 +7,8 @@ import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmG
 import { requireEffectiveUser, ownerScope } from '@/lib/access'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
-import { validateDomainBatch, splitWildcard } from '@/lib/domainBatch'
+import { validateDomainBatch, splitWildcard, scopeGuardrailNames } from '@/lib/domainBatch'
+import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { actingAdminId } from '@/lib/roe/actor'
 import { buildCreateRoeArtefacts, stripRoeArtefacts } from '@/lib/roe/createRoe'
@@ -17,6 +18,7 @@ import { contentLengthProblem } from '@/lib/roe/upload'
 import { cleanOpenApiSources, normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
+const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
 
 // GET /api/projects - List the effective user's projects.
 // The client-supplied ?userId is ignored as an auth input: the list is always
@@ -190,19 +192,20 @@ export async function POST(request: NextRequest) {
     }
 
     // Hard guardrail: deterministic, non-disableable - always blocks government/public domains.
-    // Checks EVERY domain the project would scan, so a batch cannot smuggle one in.
-    const guardedDomains = domainBatchMode ? batchRoots : (!ipMode && targetDomain ? [targetDomain] : [])
-    if (guardedDomains.length > 0) {
-      const { isHardBlockedDomain } = await import('@/lib/hard-guardrail')
-      for (const domain of guardedDomains) {
-        const hardCheck = isHardBlockedDomain(domain)
-        if (hardCheck.blocked) {
-          return NextResponse.json(
-            { error: `Target permanently blocked: ${domain}: ${hardCheck.reason}` },
-            { status: 403 }
-          )
-        }
-      }
+    // Checks every host AND every group root the project would scan, so a batch
+    // cannot smuggle one in, and the refusal names the host that was listed.
+    const rawSubdomains = optionalParams.subdomainList
+    const blocked = firstHardBlocked(scopeGuardrailNames({
+      ipMode, domainBatchMode, domainBatchHosts: batchHosts, targetDomain,
+      subdomainList: Array.isArray(rawSubdomains)
+        ? rawSubdomains.filter((s): s is string => typeof s === 'string')
+        : typeof rawSubdomains === 'string' ? rawSubdomains.split(',') : [],
+    }))
+    if (blocked) {
+      return NextResponse.json(
+        { error: `Target permanently blocked: ${blocked.name}: ${blocked.reason}` },
+        { status: 403 }
+      )
     }
 
     // Soft guardrail (LLM-based): check if domain/IPs are allowed before creating
@@ -211,6 +214,8 @@ export async function POST(request: NextRequest) {
         const guardrailResponse = await fetch(`${AGENT_API_URL}/guardrail/check-target`, {
           method: 'POST',
           headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
+          // Fail-open by design, so a hung agent must not stall the create either.
+          signal: AbortSignal.timeout(SOFT_GUARDRAIL_TIMEOUT_MS),
           body: JSON.stringify({
             // Batch mode has no single targetDomain. Send the roots as a LIST:
             // joining them into target_domain feeds a singular prompt that can
@@ -278,9 +283,11 @@ export async function POST(request: NextRequest) {
     // `roeEnabled` joins these because it is DERIVED from whether any engagement
     // limit is set, and nothing writes it. Creating a project with it set would
     // store a value that disagrees with the derivation from the first moment.
+    // `domainBatchGroups` is always derived from the host list below, so a
+    // client value is never stored, not even on a project that is not a batch.
     const NON_SETTABLE = new Set([
       'id', 'userId', 'name', 'targetDomain', 'ipMode', 'createdAt', 'updatedAt',
-      'roeEnabled',
+      'roeEnabled', 'domainBatchGroups',
     ])
 
     // Build type map from Prisma DMMF for type coercion
@@ -383,8 +390,11 @@ export async function POST(request: NextRequest) {
         ...sanitizedParams,
         // After sanitizedParams so a client-supplied domainBatchGroups cannot win.
         domainBatchMode: domainBatchMode || false,
+        // A non-batch project keeps no batch scope: recon's auth scope and the
+        // agent's replay read these columns whatever the mode.
         ...(batch ? { domainBatchHosts: batch.groups.flatMap(g => g.hosts),
-                      domainBatchGroups: batch.groups as unknown as Prisma.InputJsonValue } : {}),
+                      domainBatchGroups: batch.groups as unknown as Prisma.InputJsonValue }
+                  : { domainBatchHosts: [] }),
       }
     })
 

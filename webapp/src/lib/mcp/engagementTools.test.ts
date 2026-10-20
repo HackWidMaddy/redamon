@@ -311,11 +311,28 @@ describe('B-3: create_project runs the hard guardrail the form runs', () => {
     })).rejects.toThrow(/permanently blocked/)
   })
 
-  test('one blocked root refuses the whole batch', async () => {
+  test('one blocked host refuses the whole batch, and the refusal names that host', async () => {
     await expect(createProject(ctx(), {
       name: 'test', engagementKind: 'internal',
       domainBatchHosts: ['a.example.com', 'portal.example.gov'],
-    })).rejects.toThrow(/permanently blocked: example\.gov/)
+    })).rejects.toThrow(/permanently blocked: portal\.example\.gov:/)
+    expect(h.createProject).not.toHaveBeenCalled()
+  })
+
+  test.each(['www.agency.gov.uk', 'www.isa.org.jm', 'x.met.police.uk'])(
+    'a batch host %s under a government name is refused although its root is not blocked',
+    async (host) => {
+      await expect(createProject(ctx(), {
+        name: 'test', engagementKind: 'internal', domainBatchHosts: ['a.example.com', host],
+      })).rejects.toThrow(new RegExp(`permanently blocked: ${host.replace(/\./g, '\\.')}:`))
+      expect(h.createProject).not.toHaveBeenCalled()
+    },
+  )
+
+  test('a single-domain prefix that makes a blocked host is refused', async () => {
+    await expect(createProject(ctx(), {
+      name: 'test', engagementKind: 'internal', targetDomain: 'org.jm', subdomainList: ['isa.'],
+    })).rejects.toThrow(/permanently blocked: isa\.org\.jm:/)
     expect(h.createProject).not.toHaveBeenCalled()
   })
 })

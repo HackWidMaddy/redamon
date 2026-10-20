@@ -9,9 +9,9 @@ import aiStyles from '../AiPipelinePanel.module.css'
 import { useHasJevProvider } from '@/hooks/useHasJevProvider'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
-import { isHardBlockedDomain } from '@/lib/hard-guardrail'
+import { isHardBlockedDomain, firstHardBlocked } from '@/lib/hard-guardrail'
 import { classifyIpTargets } from '@/lib/ip-target-utils'
-import { validateDomainBatch, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS, ROOT_DOMAIN_PREFIX } from '@/lib/domainBatch'
+import { validateDomainBatch, scopeGuardrailNames, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS, ROOT_DOMAIN_PREFIX } from '@/lib/domainBatch'
 import { deriveRoeEnabled } from '@/lib/engagement'
 import { FileImportButton } from '../FileImportButton'
 import { ModelPicker } from '@/components/shared/ModelPicker'
@@ -142,15 +142,13 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
     () => (batchMode ? validateDomainBatch(batchHosts) : null),
     [batchMode, batchHosts]
   )
-  // Every group root gets the same non-disableable check the single domain gets.
+  // Every listed host and every group root gets the same non-disableable check
+  // the single domain gets, and the message names the host that was listed.
   const batchBlocked = useMemo(() => {
     if (!batchResult) return null
-    for (const g of batchResult.groups) {
-      const check = isHardBlockedDomain(g.rootDomain)
-      if (check.blocked) return { domain: g.rootDomain, reason: check.reason }
-    }
-    return null
-  }, [batchResult])
+    const hit = firstHardBlocked(scopeGuardrailNames({ domainBatchMode: true, domainBatchHosts: batchHosts }))
+    return hit ? { domain: hit.name, reason: hit.reason } : null
+  }, [batchResult, batchHosts])
 
   // Nothing caps how many domains may be enumerated, so the count is what the
   // operator is shown instead - here, and again in the start-scan confirmation.

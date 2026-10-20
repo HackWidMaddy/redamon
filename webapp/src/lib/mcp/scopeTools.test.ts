@@ -154,6 +154,13 @@ describe('values are validated as the form validates them', () => {
       .rejects.toThrow(/permanently blocked/)
     expect(h.projectUpdateMany).not.toHaveBeenCalled()
   })
+
+  test('a host under a government name is refused though no group root is blocked', async () => {
+    // www.isa.org.jm groups under org.jm, which no rule names: only the host is.
+    await expect(call({ domainBatchHosts: ['a.example.com', 'www.isa.org.jm'] }))
+      .rejects.toThrow(/permanently blocked: www\.isa\.org\.jm:/)
+    expect(h.projectUpdateMany).not.toHaveBeenCalled()
+  })
 })
 
 describe('widening a third-party engagement needs an authorization', () => {

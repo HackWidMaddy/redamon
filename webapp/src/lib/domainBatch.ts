@@ -241,6 +241,49 @@ export function groupSlug(rootDomain: string): string {
   return /[a-z0-9]/.test(slug) ? slug : 'group'
 }
 
+/** The scope fields of a project row or a create/update body. */
+export interface ScopeFields {
+  ipMode?: boolean | null
+  domainBatchMode?: boolean | null
+  domainBatchHosts?: readonly string[] | null
+  targetDomain?: string | null
+  subdomainList?: readonly string[] | null
+}
+
+/**
+ * Every name the hard guardrail must check before a scope is saved or scanned,
+ * whatever the mode, in input order: each batch host (wildcard marker stripped)
+ * then each group root; or the single target then its prefix hosts. IP mode has
+ * none (IPs are not hard-blocked).
+ *
+ * Checking the hosts and not only the roots is what blocks a host under a
+ * multi-label government name: `www.isa.org.jm` groups under `org.jm`, which no
+ * rule names. The list starts with the hosts so a refusal names the entry the
+ * operator typed, not the group it landed in.
+ */
+export function scopeGuardrailNames(scope: ScopeFields): string[] {
+  if (scope.ipMode) return []
+  const names: string[] = []
+  const add = (n: string) => { if (n && !names.includes(n)) names.push(n) }
+
+  if (scope.domainBatchMode) {
+    const { groups } = groupHostsByRootDomain(scope.domainBatchHosts ?? [])
+    for (const g of groups) for (const h of g.hosts) add(splitWildcard(h).rest)
+    for (const g of groups) add(g.rootDomain)
+    return names
+  }
+
+  const target = splitWildcard(normalizeHost(scope.targetDomain ?? '')).rest
+  if (!target) return names
+  add(target)
+  for (const raw of scope.subdomainList ?? []) {
+    // The root marker "." strips to nothing; "*" is not a host.
+    const prefix = String(raw).trim().toLowerCase().replace(/\.+$/, '')
+    if (prefix && !prefix.includes(WILDCARD_PREFIX)) add(`${prefix}.${target}`)
+  }
+  return names
+}
+
 export interface BatchValidation {
   ok: boolean
   errors: string[]

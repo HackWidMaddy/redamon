@@ -153,3 +153,54 @@ describe('the hard guardrail still checks every batch root', () => {
     expect(mockProjectCreate).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * A batch used to be guardrailed on its group roots only, and a root is the last
+ * two labels: www.agency.gov.uk grouped under `gov.uk`, which no pattern blocked
+ * (they all needed a leading dot), and www.isa.org.jm under `org.jm`, which no
+ * rule names. Every host is checked now, and the refusal names the host.
+ */
+describe('the hard guardrail checks every host and names it', () => {
+  test.each([
+    'www.agency.gov.uk', 'www.isa.org.jm', 'x.met.police.uk',
+  ])('a batch carrying %s is refused, naming it', async (host) => {
+    const res = await POST(postReq({
+      ...BATCH_BASE, targetGuardrailEnabled: false,
+      domainBatchHosts: ['ok.example.com', host],
+    }))
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toContain(`blocked: ${host}:`)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('a wildcard on a government suffix never reaches creation', async () => {
+    const res = await POST(postReq({
+      ...BATCH_BASE, targetGuardrailEnabled: false, domainBatchHosts: ['*.gov.uk'],
+    }))
+    expect(res.status).toBeGreaterThanOrEqual(400)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('a single-domain government target is refused', async () => {
+    const res = await POST(postReq({
+      userId: 'user-1', name: 'S', targetDomain: 'agency.gov.uk', targetGuardrailEnabled: false,
+    }))
+    expect(res.status).toBe(403)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+})
+
+describe('a non-batch project stores no batch scope', () => {
+  test('a client domainBatchGroups on a single-domain create is not stored', async () => {
+    const res = await POST(postReq({
+      userId: 'user-1', name: 'S', targetDomain: 'example.com', targetGuardrailEnabled: false,
+      domainBatchMode: false,
+      domainBatchGroups: [{ rootDomain: 'attacker-chosen.com', prefixes: ['*'] }],
+      domainBatchHosts: ['*.attacker-chosen.com'],
+    }))
+    expect(res.status).toBe(201)
+    const data = mockProjectCreate.mock.calls[0][0].data
+    expect(data).not.toHaveProperty('domainBatchGroups')
+    expect(data.domainBatchHosts).toEqual([])
+  })
+})
