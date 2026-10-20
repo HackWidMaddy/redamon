@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUserAccess } from '@/lib/session'
 import prisma from '@/lib/prisma'
-import { isNameTaken, nameProblem, normalizeName, suggestVersionName } from '@/lib/userSkillNames'
+import { readJsonBody } from '@/lib/jsonBody'
+import { MAX_SKILLS_PER_BATCH } from '@/lib/userSkills'
+import { requireOwnBrowserRequest } from '@/lib/userSkillRouteGuard'
+import { checkNames, isNameTaken, nameProblem, normalizeName, suggestVersionName } from '@/lib/userSkillNames'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -46,5 +49,32 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   } catch (error) {
     console.error('Failed to check a skill name:', error)
     return NextResponse.json({ error: 'Failed to check the name' }, { status: 500 })
+  }
+}
+
+// Far above a real name: a typed 101-character name is answered name_too_long, not refused.
+const MAX_RAW_NAME_CHARS = 1000
+
+/**
+ * POST .../name-check {names: string[]} → {results: NameCheckResult[]} in order: the upload
+ * dialog's early answer for a whole batch, duplicates inside the batch included.
+ */
+export async function POST(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { id } = await params
+    const eff = await requireOwnBrowserRequest(request, id)
+    if (eff instanceof NextResponse) return eff
+    const parsed = await readJsonBody(request)
+    if (parsed instanceof NextResponse) return parsed
+    const names = parsed.body.names
+    if (!Array.isArray(names) || names.length < 1 || names.length > MAX_SKILLS_PER_BATCH
+      || !names.every((n) => typeof n === 'string' && n.length <= MAX_RAW_NAME_CHARS)) {
+      return NextResponse.json(
+        { error: `names must be 1 to ${MAX_SKILLS_PER_BATCH} strings`, code: 'names_invalid' }, { status: 400 })
+    }
+    return NextResponse.json({ results: await checkNames(prisma, id, names as string[]) })
+  } catch (error) {
+    console.error('Failed to check skill names:', error)
+    return NextResponse.json({ error: 'Failed to check the names' }, { status: 500 })
   }
 }

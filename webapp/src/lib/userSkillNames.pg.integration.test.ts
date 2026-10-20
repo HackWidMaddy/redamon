@@ -34,8 +34,8 @@ vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => undefined) }))
 
 import type { PrismaClient } from '@prisma/client'
 import { MAX_SKILLS_PER_USER, NAME_MAX_CHARS } from './userSkills'
-import { isNameTaken, nameKeys, normalizeName, suggestVersionName } from './userSkillNames'
-import { createUserSkill, type AuditActor } from './userSkillWrites'
+import { checkNames, isNameTaken, nameKeys, normalizeName, suggestVersionName } from './userSkillNames'
+import { createUserSkill, createUserSkillsBatch, type AuditActor } from './userSkillWrites'
 
 const MARKER = 'plugins_pg_integration_test_marker'
 const db = () => h.db as PrismaClient
@@ -230,6 +230,21 @@ describe.skipIf(!URL)('user skill names on a real Postgres (PLUGINS_PG_TEST_URL)
       await createUserSkill({ userId: 'alice', name: '  Café  flow\t', content: '# n' }, ACTOR)
       const [row] = await db().userAttackSkill.findMany({ where: { userId: 'alice' } })
       expect(row.name).toBe('Café flow')
+    })
+  })
+
+  describe('a batch: duplicates inside it are keyed in SQL too', () => {
+    const NAMES = ['My Flow', 'my  flow', 'Caf\u00e9', 'Cafe\u0301']
+
+    test('checkNames flags the later of two equal names, case, spacing and NFC included', async () => {
+      const results = await checkNames(db(), 'alice', NAMES)
+      expect(results.map((r) => r.reason ?? 'ok')).toEqual(['ok', 'name_duplicate', 'ok', 'name_duplicate'])
+    })
+
+    test('createUserSkillsBatch with the same names creates nothing', async () => {
+      const items = NAMES.map((name, i) => ({ name, content: `# ${i}` }))
+      await expect(createUserSkillsBatch({ userId: 'alice', items }, ACTOR)).rejects.toMatchObject({ code: 'batch_refused' })
+      expect(await db().userAttackSkill.count({ where: { userId: 'alice' } })).toBe(0)
     })
   })
 })
