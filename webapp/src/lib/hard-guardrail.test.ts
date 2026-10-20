@@ -39,3 +39,11 @@ describe('firstHardBlocked', () => {
     expect(firstHardBlocked(['example.com', 'acme.co.uk', 'alice.github.io', ''])).toBeNull()
   })
 })
+
+describe('the session-only guardrail proxy route stays deleted', () => {
+  // /api/guardrail/check-target had no caller, checked a session but not project
+  // ownership, and forwarded any projectId to the agent.
+  test('no route file exists', () => {
+    expect(existsSync(join(process.cwd(), 'src', 'app', 'api', 'guardrail', 'check-target', 'route.ts'))).toBe(false)
+  })
+})
