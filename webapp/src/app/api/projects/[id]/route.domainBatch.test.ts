@@ -14,6 +14,7 @@
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { Prisma } from '@prisma/client'
 
 const mockFindUnique = vi.fn()
 const mockUpdate = vi.fn()
@@ -198,7 +199,9 @@ describe('F2: a client-supplied scope is never trusted', () => {
       domainBatchGroups: [{ rootDomain: 'attacker-chosen.com', prefixes: ['.'] }],
     }))
     expect(res.status).toBe(200)
-    expect(mockUpdate.mock.calls[0][0].data).not.toHaveProperty('domainBatchGroups')
+    // Cleared, never stored: recon and replay read the column whatever the mode.
+    expect(mockUpdate.mock.calls[0][0].data.domainBatchGroups).toBe(Prisma.DbNull)
+    expect(mockUpdate.mock.calls[0][0].data.domainBatchHosts).toEqual([])
   })
 })
 
@@ -283,5 +286,96 @@ describe('editing batch scope is guarded', () => {
     const res = await put({ domainBatchMode: true, domainBatchHosts: ['*.example.com', 'api.other.com'] })
     expect(res.status).toBe(200)
     expect(runs).toEqual(['example.com', 'other.com'])
+  })
+})
+
+/**
+ * The scope gates (busy 409, hard and soft guardrail) used to run only for a
+ * batch host-list edit. A single-domain target change, a batch -> single flip
+ * and entering IP mode re-point the engagement just as much, and got neither.
+ */
+describe('every mode is guarded on update, not only a batch host list', () => {
+  const SINGLE_ROW = {
+    id: PROJECT_ID, userId: 'u1', domainBatchMode: false, ipMode: false,
+    targetDomain: 'example.com', subdomainList: ['www.'], targetIps: [],
+    domainBatchHosts: [], domainBatchGroups: null,
+  }
+
+  test('a single-domain target change to a government domain is refused, naming it', async () => {
+    mockFindUnique.mockResolvedValue(SINGLE_ROW)
+    const res = await put(fullFormBody({ targetDomain: 'agency.gov.uk' }))
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toContain('agency.gov.uk')
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('a prefix that makes a blocked host is refused too', async () => {
+    mockFindUnique.mockResolvedValue(SINGLE_ROW)
+    const res = await put(fullFormBody({ targetDomain: 'org.jm', subdomainList: ['isa.'] }))
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toContain('isa.org.jm')
+  })
+
+  test('an unchanged single-domain save passes while a scan runs', async () => {
+    mockFindUnique.mockResolvedValue(SINGLE_ROW)
+    mockScanWriters.mockResolvedValue('a full recon is running')
+    expect((await put(fullFormBody())).status).toBe(200)
+  })
+
+  test('a single-domain target change while a scan runs is a 409', async () => {
+    mockFindUnique.mockResolvedValue(SINGLE_ROW)
+    mockScanWriters.mockResolvedValue('a full recon is running')
+    const res = await put(fullFormBody({ targetDomain: 'other.example.com' }))
+    expect(res.status).toBe(409)
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('a batch -> single flip while a scan runs is a 409', async () => {
+    mockFindUnique.mockResolvedValue({
+      ...SINGLE_ROW, domainBatchMode: true, targetDomain: '',
+      domainBatchHosts: ['www.example.com'],
+      domainBatchGroups: [{ rootDomain: 'example.com', prefixes: ['www.'], hosts: ['www.example.com'], wildcard: false }],
+    })
+    mockScanWriters.mockResolvedValue('a full recon is running')
+    const res = await put(fullFormBody({ domainBatchMode: false, targetDomain: 'example.com' }))
+    expect(res.status).toBe(409)
+  })
+
+  test('entering IP mode while a scan runs is a 409', async () => {
+    mockFindUnique.mockResolvedValue(SINGLE_ROW)
+    mockScanWriters.mockResolvedValue('a full recon is running')
+    const res = await put(fullFormBody({ ipMode: true, targetDomain: '', targetIps: ['192.0.2.10'] }))
+    expect(res.status).toBe(409)
+  })
+
+  test('a batch -> single flip clears the stored batch scope', async () => {
+    mockFindUnique.mockResolvedValue({
+      ...SINGLE_ROW, domainBatchMode: true, targetDomain: '',
+      domainBatchHosts: ['www.example.com'],
+      domainBatchGroups: [{ rootDomain: 'example.com', prefixes: ['www.'], hosts: ['www.example.com'], wildcard: false }],
+    })
+    const res = await put(fullFormBody({ domainBatchMode: false, targetDomain: 'example.com' }))
+    expect(res.status).toBe(200)
+    const data = mockUpdate.mock.calls[0][0].data
+    expect(data.domainBatchGroups).toBe(Prisma.DbNull)
+    expect(data.domainBatchHosts).toEqual([])
+  })
+
+  test('a partial save of a single-domain row with a stale batch scope clears it', async () => {
+    mockFindUnique.mockResolvedValue({
+      ...SINGLE_ROW, domainBatchHosts: ['www.example.com'],
+      domainBatchGroups: [{ rootDomain: 'example.com', prefixes: ['www.'], hosts: ['www.example.com'], wildcard: false }],
+    })
+    expect((await put({ katanaEnabled: false })).status).toBe(200)
+    expect(mockUpdate.mock.calls[0][0].data.domainBatchGroups).toBe(Prisma.DbNull)
+  })
+
+  test('a batch host listed under a multi-label government name is refused, naming the host', async () => {
+    mockFindUnique.mockResolvedValue({ ...SINGLE_ROW, domainBatchMode: true, targetDomain: '' })
+    const res = await put(fullFormBody({
+      domainBatchMode: true, targetDomain: '', domainBatchHosts: ['ok.example.com', 'www.isa.org.jm'],
+    }))
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toContain('www.isa.org.jm')
   })
 })

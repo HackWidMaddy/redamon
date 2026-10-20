@@ -32,6 +32,7 @@ const GITHUB_HUNT_OUTPUT_PATH = process.env.GITHUB_HUNT_OUTPUT_PATH || '/home/sa
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
+const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
 
 // Recon orchestrator URL for file deletion
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
@@ -273,7 +274,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const existing = await prisma.project.findUnique({
       where: { id },
       select: {
-        domainBatchMode: true, domainBatchGroups: true,
+        domainBatchMode: true, domainBatchGroups: true, domainBatchHosts: true,
+        targetDomain: true, subdomainList: true, ipMode: true, targetIps: true,
         userId: true, targetGuardrailEnabled: true, attackSkillConfig: true,
         ...JEV_ENGINE_SELECT,
       },
@@ -299,6 +301,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // every field toggle on a batch project 400'd with "needs at least one hostname".
     const touchesBatchScope = 'domainBatchHosts' in updateData || 'domainBatchMode' in updateData
     let batchRootsAdded: string[] = []
+    let batchScopeChanged = false
     if (willBeBatch && touchesBatchScope) {
       const { validateDomainBatch } = await import('@/lib/domainBatch')
       const raw = updateData.domainBatchHosts
@@ -309,7 +312,6 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       if (!batch.ok) {
         return NextResponse.json({ error: batch.errors.join(' ') }, { status: 400 })
       }
-      const nextRoots = batch.groups.map(g => g.rootDomain)
       // Compare the whole derived shape, not just the roots. Turning
       // `api.example.com` into `*.example.com` leaves the root set identical
       // while changing that group from "one host" to "every host under this
@@ -318,74 +320,112 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       const signature = (gs: Array<{ rootDomain?: string; prefixes?: string[] }>) =>
         gs.map(g => `${String(g?.rootDomain || '')}|${[...(g?.prefixes || [])].sort().join(',')}`)
           .sort().join(';')
-      const scopeChanged = signature(batch.groups) !== signature(
+      batchScopeChanged = signature(batch.groups) !== signature(
         Array.isArray(existing?.domainBatchGroups)
           ? existing.domainBatchGroups as Array<{ rootDomain?: string; prefixes?: string[] }>
           : []
       )
-
-      if (scopeChanged) {
-        // The container reads its settings ONCE at spawn, so this edit cannot
-        // re-point a running scan - but it DOES re-point everything that reads
-        // scope live from the row (the agent, the next guardrail, the report)
-        // while the graph still holds the running scan's results. Refuse rather
-        // than leave the two describing different engagements.
-        const { describeScanWriters } = await import('@/lib/graphWriters')
-        const busy = await describeScanWriters(id)
-        if (busy) {
-          return NextResponse.json(
-            { error: `Cannot change the hostname list while ${busy}. Stop the scan, or wait for it to finish, and try again.` },
-            { status: 409 },
-          )
-        }
-
-        // Every root this project would scan gets the non-disableable check.
-        // POST does this at creation; without it here, the one path that can add
-        // a root after creation is the one path that never guardrails it.
-        const { isHardBlockedDomain } = await import('@/lib/hard-guardrail')
-        for (const domain of nextRoots) {
-          const hardCheck = isHardBlockedDomain(domain)
-          if (hardCheck.blocked) {
-            return NextResponse.json(
-              { error: `Target permanently blocked: ${domain}: ${hardCheck.reason}` },
-              { status: 403 },
-            )
-          }
-        }
-
-        // Soft (LLM) guardrail, mirroring POST. Fails OPEN like POST does: an
-        // unreachable agent must not block an edit, because the hard guardrail
-        // above is the control that may not be bypassed.
-        if (existing?.targetGuardrailEnabled !== false) {
-          try {
-            // The agent answers only a caller holding the internal key, and its
-            // verdict is `allowed`; without both this check could never block.
-            const guardrailResponse = await fetch(`${AGENT_API_URL}/guardrail/check-target`, {
-              method: 'POST',
-              headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
-              body: JSON.stringify({
-                target_domain: '', target_domains: nextRoots,
-                target_ips: [], user_id: existing?.userId ?? eff.userId,
-              }),
-            })
-            if (guardrailResponse.ok) {
-              const verdict = await guardrailResponse.json()
-              if (verdict?.allowed === false) {
-                return NextResponse.json(
-                  { error: verdict.reason || 'Target blocked by the guardrail.' },
-                  { status: 403 },
-                )
-              }
-            }
-          } catch (e) {
-            console.warn('[projects PUT] soft guardrail unreachable, allowing:', e)
-          }
-        }
-      }
-
       updateData.domainBatchHosts = batch.groups.flatMap(g => g.hosts)
       updateData.domainBatchGroups = batch.groups
-      batchRootsAdded = nextRoots
+      batchRootsAdded = batch.groups.map(g => g.rootDomain)
+    }
+
+    // A project that is not a batch keeps no batch scope. Recon's auth scope and
+    // the agent's replay read these columns whatever the mode, so a list left
+    // over from a batch -> single flip would keep authorizing its hosts.
+    if (!willBeBatch && (existing?.domainBatchGroups != null
+        || (existing?.domainBatchHosts?.length ?? 0) > 0 || 'domainBatchHosts' in updateData)) {
+      updateData.domainBatchGroups = Prisma.DbNull
+      updateData.domainBatchHosts = []
+    }
+
+    // The scope gates apply to EVERY mode and to a mode flip, not only to a batch
+    // host-list edit: a single-domain target change, a batch -> single flip and
+    // entering or leaving IP mode re-point the engagement just as much.
+    const nextScope = {
+      ipMode: 'ipMode' in updateData ? updateData.ipMode === true : existing?.ipMode === true,
+      domainBatchMode: willBeBatch,
+      domainBatchHosts: Array.isArray(updateData.domainBatchHosts)
+        ? updateData.domainBatchHosts as string[] : existing?.domainBatchHosts ?? [],
+      targetDomain: typeof updateData.targetDomain === 'string'
+        ? updateData.targetDomain : existing?.targetDomain ?? '',
+      subdomainList: Array.isArray(updateData.subdomainList)
+        ? updateData.subdomainList as string[] : existing?.subdomainList ?? [],
+      targetIps: Array.isArray(updateData.targetIps)
+        ? updateData.targetIps as string[] : existing?.targetIps ?? [],
+    }
+    const sameSet = (a: readonly string[], b: readonly string[]) =>
+      JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
+    const scopeChanged = existing != null && (
+      nextScope.ipMode !== (existing.ipMode === true)
+      || nextScope.domainBatchMode !== (existing.domainBatchMode === true)
+      || (nextScope.ipMode
+        ? !sameSet(nextScope.targetIps, existing.targetIps ?? [])
+        : nextScope.domainBatchMode
+          ? batchScopeChanged
+          : nextScope.targetDomain !== (existing.targetDomain ?? '')
+            || !sameSet(nextScope.subdomainList, existing.subdomainList ?? []))
+    )
+
+    if (scopeChanged) {
+      // The container reads its settings ONCE at spawn, so this edit cannot
+      // re-point a running scan - but it DOES re-point everything that reads
+      // scope live from the row (the agent, the next guardrail, the report)
+      // while the graph still holds the running scan's results. Refuse rather
+      // than leave the two describing different engagements.
+      const { describeScanWriters } = await import('@/lib/graphWriters')
+      const busy = await describeScanWriters(id)
+      if (busy) {
+        return NextResponse.json(
+          { error: `Cannot change the project's target while ${busy}. Stop the scan, or wait for it to finish, and try again.` },
+          { status: 409 },
+        )
+      }
+
+      // Every host and root this project would scan gets the non-disableable
+      // check. POST does this at creation; without it here, the paths that can
+      // re-point a project after creation are the paths that never guardrail it.
+      const { scopeGuardrailNames } = await import('@/lib/domainBatch')
+      const { firstHardBlocked } = await import('@/lib/hard-guardrail')
+      const blocked = firstHardBlocked(scopeGuardrailNames(nextScope))
+      if (blocked) {
+        return NextResponse.json(
+          { error: `Target permanently blocked: ${blocked.name}: ${blocked.reason}` },
+          { status: 403 },
+        )
+      }
+
+      // Soft (LLM) guardrail, mirroring POST. Fails OPEN like POST does: an
+      // unreachable agent must not block an edit, because the hard guardrail
+      // above is the control that may not be bypassed.
+      if (existing?.targetGuardrailEnabled !== false) {
+        try {
+          // The agent answers only a caller holding the internal key, and its
+          // verdict is `allowed`; without both this check could never block.
+          const guardrailResponse = await fetch(`${AGENT_API_URL}/guardrail/check-target`, {
+            method: 'POST',
+            headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
+            signal: AbortSignal.timeout(SOFT_GUARDRAIL_TIMEOUT_MS),
+            body: JSON.stringify({
+              target_domain: !nextScope.ipMode && !nextScope.domainBatchMode ? nextScope.targetDomain : '',
+              target_domains: nextScope.domainBatchMode ? batchRootsAdded : [],
+              target_ips: nextScope.ipMode ? nextScope.targetIps : [],
+              user_id: existing?.userId ?? eff.userId,
+            }),
+          })
+          if (guardrailResponse.ok) {
+            const verdict = await guardrailResponse.json()
+            if (verdict?.allowed === false) {
+              return NextResponse.json(
+                { error: verdict.reason || 'Target blocked by the guardrail.' },
+                { status: 403 },
+              )
+            }
+          }
+        } catch (e) {
+          console.warn('[projects PUT] soft guardrail unreachable, allowing:', e)
+        }
+      }
     }
 
     // Mutually exclusive modes, enforced on update as well as create: recon checks
