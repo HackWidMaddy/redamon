@@ -3,14 +3,16 @@
  * own skills with the count "N of 1000", search over name and description, the version
  * badge, the "N proposals" chip that opens the review without a project, the duplicate-name
  * flag, the quarantine banner (Read / Release / Delete), the delete confirmation that counts
- * the proposals deleted with it, upload and rename with the name check, the community import
- * summary by reason, and a refetch when another window saves a version.
+ * the proposals deleted with it, upload (the review dialog, single and batch) and rename with
+ * the name check, the upload buttons held while the list loads or after it failed, the
+ * community import summary by reason, and a refetch when another window saves a version.
  */
 import { describe, test, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor, within, act } from '@testing-library/react'
 import { AlertProvider, ToastProvider } from '@/components/ui'
 import { AgentSkillsTab, importSummary, type UserSkillRow } from './AgentSkillsTab'
 import { postUserSkillsChanged } from '@/lib/userSkillsChannel'
+import { USER_SKILL_LIMIT_TEXT } from '@/lib/userSkills'
 
 const h = vi.hoisted(() => ({
   requests: [] as { url: string; method: string; body: unknown }[],
@@ -38,7 +40,15 @@ beforeEach(() => {
         if (r) return r
       }
     }
+    if (url.endsWith('/name-check') && method === 'POST') {
+      const names = (req.body as { names: string[] }).names
+      return json(200, { results: names.map((n) => ({ normalized: n.trim(), suggestion: null, ...h.nameCheck(n) })) })
+    }
     if (url.includes('/name-check')) return json(200, h.nameCheck(new URLSearchParams(url.split('?')[1]).get('name') ?? ''))
+    if (url.endsWith('/attack-skills/batch') && method === 'POST') {
+      const items = (req.body as { items: { name: string }[] }).items
+      return json(201, { created: items.map((i, n) => ({ id: `sk_new${n}`, name: i.name })), enabled: [], leftOff: [] })
+    }
     if (url.includes('/change-sets/')) return json(404, { error: 'Not found' })
     if (/\/attack-skills$/.test(url) && method === 'GET') return json(200, h.skills)
     if (/\/attack-skills$/.test(url) && method === 'POST') return json(201, { id: 'sk_new', name: (req.body as { name: string }).name })
@@ -72,14 +82,17 @@ function draw(skills: UserSkillRow[] = [skill()]) {
 
 const listGets = () => h.requests.filter((r) => r.method === 'GET' && r.url === '/api/users/alice/attack-skills')
 const card = (id: string) => screen.getByTestId(`user-skill-${id}`)
-const fileInput = () => document.querySelector('input[type="file"]') as HTMLInputElement
+const fileInput = () => screen.getByTestId('skill-upload-single-input') as HTMLInputElement
+const batchInput = () => screen.getByTestId('skill-upload-batch-input') as HTMLInputElement
+const uploadSkillButton = () => screen.getByRole('button', { name: 'Upload Skill' })
+const uploadBatchButton = () => screen.getByRole('button', { name: 'Upload Batch' })
 
 async function chooseFile(name: string, content: string) {
   const file = new File([content], name, { type: 'text/markdown' })
   await act(async () => {
     fireEvent.change(fileInput(), { target: { files: [file] } })
   })
-  await screen.findByRole('heading', { name: 'Upload Attack Skill' })
+  await screen.findByRole('heading', { name: 'Upload agent skill' })
 }
 
 describe('the list', () => {
@@ -286,82 +299,146 @@ describe('delete', () => {
 })
 
 describe('upload', () => {
-  test('a chosen file opens the modal with its name (no .md), a 100-character limit and the name check', async () => {
+  test('a chosen file opens the review dialog: the name from its H1, a 100-character limit and the batch name check', async () => {
     draw([])
     await screen.findByText(/No custom skills uploaded yet/)
     await chooseFile('Recon checklist.md', '# Recon\nStep 1.')
-    const name = screen.getByLabelText('Skill Name') as HTMLInputElement
-    expect(name.value).toBe('Recon checklist')
+    const name = screen.getByLabelText('Name for Recon checklist.md') as HTMLInputElement
+    expect(name.value).toBe('Recon')
     expect(name.maxLength).toBe(100)
-    expect((screen.getByLabelText('Description') as HTMLTextAreaElement).maxLength).toBe(500)
-    await waitFor(() => expect(h.requests.some((r) => r.url.includes('/name-check'))).toBe(true))
-    const qs = new URLSearchParams(h.requests.find((r) => r.url.includes('/name-check'))!.url.split('?')[1])
-    expect(qs.get('name')).toBe('Recon checklist')
-    expect(qs.has('sourceId')).toBe(false)
+    expect((screen.getByLabelText('Description for Recon checklist.md') as HTMLTextAreaElement).maxLength).toBe(500)
+    await waitFor(() => expect(h.requests.some((r) => r.url.endsWith('/name-check') && r.method === 'POST')).toBe(true))
+    expect(h.requests.find((r) => r.url.endsWith('/name-check'))!.body).toEqual({ names: ['Recon'] })
   })
 
-  test('a very long file name is cut to 100 characters', async () => {
+  test('a file with no frontmatter and no H1 has an empty name; Use file name gives the stem, cut to 100', async () => {
     draw([])
     await screen.findByText(/No custom skills uploaded yet/)
     await chooseFile(`${'x'.repeat(150)}.md`, 'text')
-    expect((screen.getByLabelText('Skill Name') as HTMLInputElement).value).toHaveLength(100)
+    const name = () => screen.getByLabelText(`Name for ${'x'.repeat(150)}.md`) as HTMLInputElement
+    expect(name().value).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: 'Use file name' }))
+    expect(name().value).toHaveLength(100)
   })
 
   test('a taken name is refused inline with the suggestion and Upload is disabled', async () => {
-    h.nameCheck = (n) => (n === 'Recon checklist' ? { available: false, reason: 'name_taken', suggestion: 'Recon checklist 2' } : { available: true, suggestion: null })
-    draw([])
-    await screen.findByText(/No custom skills uploaded yet/)
-    await chooseFile('Recon checklist.md', 'text')
-    expect(await screen.findByText('You already have a skill with this name. Try "Recon checklist 2".')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Upload' })).toBeDisabled()
-  })
-
-  test('Upload POSTs the name, description and content, then closes and refetches', async () => {
+    h.nameCheck = (n) => (n === 'Recon' ? { available: false, reason: 'name_taken', suggestion: 'Recon v2' } : { available: true, suggestion: null })
     draw([])
     await screen.findByText(/No custom skills uploaded yet/)
     await chooseFile('Recon checklist.md', '# Recon\nStep 1.')
-    fireEvent.change(screen.getByLabelText('Description'), { target: { value: '  Recon steps  ' } })
-    await waitFor(() => expect(h.requests.some((r) => r.url.includes('/name-check'))).toBe(true))
-    const before = listGets().length
-    fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
-    await waitFor(() => expect(h.requests.some((r) => r.method === 'POST' && /\/attack-skills$/.test(r.url))).toBe(true))
-    const post = h.requests.find((r) => r.method === 'POST' && /\/attack-skills$/.test(r.url))!
-    expect(post.body).toEqual({ name: 'Recon checklist', description: 'Recon steps', content: '# Recon\nStep 1.' })
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Upload Attack Skill' })).toBeNull())
-    await waitFor(() => expect(listGets().length).toBe(before + 1))
+    expect(await screen.findByText('You already have a skill with this name.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Use "Recon v2"' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Upload' })).toBeDisabled()
   })
 
-  test('a 409 name_taken at upload shows the message and pre-fills the suggestion', async () => {
-    h.responders['/attack-skills'] = (req) => (req.method === 'POST' && /\/attack-skills$/.test(req.url)
-      ? json(409, { code: 'name_taken', error: 'You already have a skill named "Recon checklist".', suggestion: 'Recon checklist 2' })
+  test('Upload POSTs /batch with the item, then closes and refetches', async () => {
+    draw([])
+    await screen.findByText(/No custom skills uploaded yet/)
+    await chooseFile('Recon checklist.md', '# Recon\nStep 1.')
+    fireEvent.change(screen.getByLabelText('Description for Recon checklist.md'), { target: { value: '  Recon steps  ' } })
+    const before = listGets().length
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Upload' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+    await waitFor(() => expect(h.requests.some((r) => r.method === 'POST' && r.url.endsWith('/attack-skills/batch'))).toBe(true))
+    const post = h.requests.find((r) => r.method === 'POST' && r.url.endsWith('/attack-skills/batch'))!
+    expect(post.body).toEqual({
+      items: [{ name: 'Recon', description: 'Recon steps', content: '# Recon\nStep 1.', nameSource: 'heading', descriptionSource: 'typed', aiModel: null }],
+    })
+    expect(h.requests.some((r) => r.method === 'POST' && /\/attack-skills$/.test(r.url))).toBe(false)
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Upload agent skill' })).toBeNull())
+    await waitFor(() => expect(listGets().length).toBe(before + 1))
+    expect(await screen.findByText('Skill uploaded')).toBeInTheDocument()
+  })
+
+  test('a 409 batch_refused at upload shows the reason on the row and keeps the dialog open', async () => {
+    h.responders['/attack-skills/batch'] = (req) => (req.method === 'POST'
+      ? json(409, {
+        code: 'batch_refused', error: '1 of 1 skills cannot be saved; nothing was saved.',
+        items: [{ index: 0, code: 'name_taken', error: 'You already have a skill named "Recon".', suggestion: 'Recon v2' }],
+      })
       : undefined)
     draw([])
     await screen.findByText(/No custom skills uploaded yet/)
-    await chooseFile('Recon checklist.md', 'text')
-    await waitFor(() => expect(h.requests.some((r) => r.url.includes('/name-check'))).toBe(true))
+    await chooseFile('Recon checklist.md', '# Recon\nStep 1.')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Upload' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
-    expect(await screen.findByText('You already have a skill named "Recon checklist".')).toBeInTheDocument()
-    await waitFor(() => expect((screen.getByLabelText('Skill Name') as HTMLInputElement).value).toBe('Recon checklist 2'))
-    expect(screen.getByRole('heading', { name: 'Upload Attack Skill' })).toBeInTheDocument()
+    expect(await screen.findByText('You already have a skill named "Recon".')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Use "Recon v2"' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Upload agent skill' })).toBeInTheDocument()
+  })
+
+  test('the Upload Batch button picks several files', async () => {
+    draw([])
+    await screen.findByText(/No custom skills uploaded yet/)
+    expect(uploadBatchButton()).toBeEnabled()
+    expect(batchInput().multiple).toBe(true)
+    expect(fileInput().multiple).toBe(false)
+    expect(batchInput().accept).toBe('.md,.markdown,text/markdown')
+    const files = ['# One\n', '# Two\n'].map((t, i) => new File([t], `b${i}.md`, { type: 'text/markdown' }))
+    await act(async () => { fireEvent.change(batchInput(), { target: { files } }) })
+    expect(await screen.findByRole('heading', { name: 'Upload 2 agent skills' })).toBeInTheDocument()
   })
 
   // 1000 cards make role queries slow in jsdom, so these read the DOM directly.
   const importButton = () => Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('Import from Community'))!
+  const buttonNamed = (text: string) => Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.trim() === text)!
 
-  test('at 1000 skills Upload and Import are disabled', async () => {
+  test('at 1000 skills Upload Skill, Upload Batch and Import are disabled, with the limit text', async () => {
     draw(Array.from({ length: 1000 }, (_, i) => skill({ id: `s${i}`, name: `Skill ${i}` })))
     await waitFor(() => expect(screen.getByTestId('skill-count').textContent).toBe('1000 of 1000'))
-    expect(fileInput()).toBeDisabled()
+    for (const b of [buttonNamed('Upload Skill'), buttonNamed('Upload Batch')]) {
+      expect(b).toBeDisabled()
+      expect(b.getAttribute('title')).toBe(USER_SKILL_LIMIT_TEXT)
+    }
     expect(importButton()).toBeDisabled()
-    expect(fileInput().closest('label')!.getAttribute('title')).toMatch(/You have 1000 skills, the maximum/)
   }, 30_000)
 
   test('at 999 skills Upload is still enabled', async () => {
     draw(Array.from({ length: 999 }, (_, i) => skill({ id: `s${i}`, name: `Skill ${i}` })))
     await waitFor(() => expect(screen.getByTestId('skill-count').textContent).toBe('999 of 1000'))
-    expect(fileInput()).toBeEnabled()
+    expect(buttonNamed('Upload Skill')).toBeEnabled()
+    expect(buttonNamed('Upload Batch')).toBeEnabled()
     expect(importButton()).toBeEnabled()
   }, 30_000)
+})
+
+describe('while the list loads, or after it failed', () => {
+  test('the upload buttons wait for the list', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const fetchStub = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    const real = fetchStub.getMockImplementation() as (url: string, init?: RequestInit) => Promise<Response>
+    fetchStub.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/users/alice/attack-skills' && (init?.method ?? 'GET') === 'GET') await gate
+      return real(url, init)
+    })
+    draw([])
+    expect(uploadSkillButton()).toBeDisabled()
+    expect(uploadBatchButton()).toBeDisabled()
+    expect(uploadSkillButton()).toHaveAttribute('title', 'Loading your skills…')
+    await act(async () => { release() })
+    await waitFor(() => expect(uploadSkillButton()).toBeEnabled())
+    expect(uploadBatchButton()).toBeEnabled()
+  })
+
+  test('a failed list keeps them disabled with the reason, and says so in place of the empty state', async () => {
+    h.responders['/attack-skills'] = (req) => (req.method === 'GET' && /\/attack-skills$/.test(req.url) ? json(500, { error: 'x' }) : undefined)
+    draw([])
+    expect(await screen.findByText('Your skills could not be loaded. Reload the page.')).toBeInTheDocument()
+    expect(screen.queryByText(/No custom skills uploaded yet/)).toBeNull()
+    expect(uploadSkillButton()).toBeDisabled()
+    expect(uploadBatchButton()).toHaveAttribute('title', 'Your skills could not be loaded. Reload the page to upload.')
+  })
+
+  test('a failed refetch keeps the old list and disables upload', async () => {
+    draw([skill()])
+    await screen.findByTestId('user-skill-sk1')
+    await waitFor(() => expect(uploadSkillButton()).toBeEnabled())
+    h.responders['/attack-skills'] = (req) => (req.method === 'GET' && /\/attack-skills$/.test(req.url) ? json(503, {}) : undefined)
+    act(() => postUserSkillsChanged({}))
+    await waitFor(() => expect(uploadSkillButton()).toBeDisabled())
+    expect(screen.getByTestId('user-skill-sk1')).toBeInTheDocument()
+  })
 })
 
 describe('edit (rename)', () => {

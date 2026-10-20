@@ -1,11 +1,16 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Download, GitBranch, Inbox, Loader2, Pencil, Search, ShieldOff, Swords, Trash2, Upload } from 'lucide-react'
+import { AlertTriangle, Download, Files, GitBranch, Inbox, Loader2, Pencil, Search, ShieldOff, Sparkles, Swords, Trash2, Upload } from 'lucide-react'
 import { Modal } from '@/components/ui/Modal/Modal'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import { OverrideReviewModal } from '@/components/plugins/review/OverrideReviewModal'
-import { DESCRIPTION_MAX_CHARS, MAX_SKILLS_PER_USER, NAME_MAX_CHARS } from '@/lib/userSkills'
+import { FeatureModelLine, useFeatureModelGate } from '@/components/shared/FeatureModelGate'
+import { AI_FAILED_TEXT, CREDENTIALS_TEXT } from '@/components/userSkills/SkillUploadReviewModal'
+import { useSkillUpload } from '@/components/userSkills/useSkillUpload'
+import { featureModelMessage, readFeatureModelCode } from '@/lib/llmFeatures'
+import { CREDENTIALS_ERROR } from '@/lib/skillUploadDraft'
+import { DESCRIPTION_MAX_CHARS, MAX_SKILLS_PER_USER, NAME_MAX_CHARS, USER_SKILL_LIMIT_TEXT } from '@/lib/userSkills'
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
 import { nameCheckMessage, useSkillNameCheck } from './useSkillNameCheck'
 import styles from './Settings.module.css'
@@ -53,25 +58,33 @@ function downloadText(name: string, content: string) {
 export function AgentSkillsTab({ userId }: { userId: string | null | undefined }) {
   const { alertError, alert: showAlert, confirm: showConfirm, dangerConfirm } = useAlertModal()
   const toast = useToast()
+  const { ensureFeatureModel, fetchWithFeatureModel } = useFeatureModelGate()
   const [skills, setSkills] = useState<UserSkillRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   const [query, setQuery] = useState('')
   const [importing, setImporting] = useState(false)
-  const [upload, setUpload] = useState<{ content: string; name: string; description: string } | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
   const [edit, setEdit] = useState<{ id: string; name: string; description: string } | null>(null)
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
+  const [editGenerating, setEditGenerating] = useState(false)
+  const [editAiError, setEditAiError] = useState<string | null>(null)
   const [reviewChangeSetId, setReviewChangeSetId] = useState<string | null>(null)
 
+  // A failed read keeps the list it had, and says so: the cap is counted from this list.
   const fetchSkills = useCallback(async () => {
     if (!userId) return
     try {
       const resp = await fetch(`/api/users/${userId}/attack-skills`)
-      if (resp.ok) setSkills(await resp.json())
+      if (resp.ok) {
+        setSkills(await resp.json())
+        setLoadError(false)
+      } else {
+        setLoadError(true)
+      }
     } catch (err) {
       console.error('Failed to fetch attack skills:', err)
+      setLoadError(true)
     } finally {
       setLoading(false)
     }
@@ -86,49 +99,7 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
     return skills.filter((s) => s.name.toLowerCase().includes(q) || (s.description ?? '').toLowerCase().includes(q))
   }, [skills, query])
 
-  const uploadCheck = useSkillNameCheck(userId, upload?.name ?? '', { enabled: !!upload && !!upload.name.trim() })
   const editCheck = useSkillNameCheck(userId, edit?.name ?? '', { exceptId: edit?.id, enabled: !!edit && !!edit.name.trim() })
-
-  const onFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file || !userId) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      setUploadError(null)
-      setUpload({ content: reader.result as string, name: file.name.replace(/\.md$/i, '').slice(0, NAME_MAX_CHARS), description: '' })
-    }
-    reader.readAsText(file)
-    e.target.value = ''
-  }, [userId])
-
-  const confirmUpload = useCallback(async () => {
-    if (!userId || !upload || !upload.name.trim()) return
-    setUploading(true)
-    try {
-      const resp = await fetch(`/api/users/${userId}/attack-skills`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: upload.name, description: upload.description.trim() || null, content: upload.content }),
-      })
-      const body = await resp.json().catch(() => ({}))
-      if (resp.ok) {
-        setUpload(null)
-        // This tab's own listener reads the list again, and so does every other open window.
-        postUserSkillsChanged({})
-        toast.success('Attack skill uploaded')
-      } else if (body.code === 'name_taken') {
-        setUploadError(body.error)
-        if (typeof body.suggestion === 'string') setUpload((u) => (u ? { ...u, name: body.suggestion } : u))
-      } else {
-        alertError(body.error || 'Failed to upload skill')
-      }
-    } catch (err) {
-      console.error('Failed to upload skill:', err)
-      toast.error('Failed to upload skill')
-    } finally {
-      setUploading(false)
-    }
-  }, [userId, upload, fetchSkills, toast, alertError])
 
   const download = useCallback(async (skill: UserSkillRow) => {
     if (!userId) return
@@ -186,8 +157,54 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
 
   const openEdit = useCallback((skill: UserSkillRow) => {
     setEditError(null)
+    setEditAiError(null)
     setEdit({ id: skill.id, name: skill.name, description: skill.description ?? '' })
   }, [])
+
+  /** Fills only an empty name or description of the skill being edited; Save is still the only write. */
+  const generateEdit = useCallback(async () => {
+    if (!userId || !edit) return
+    const fields = [...(edit.name.trim() ? [] : ['name']), ...(edit.description.trim() ? [] : ['description'])]
+    if (!fields.length) return
+    const model = await ensureFeatureModel('skill_metadata')
+    if (!model) return
+    const skillId = edit.id
+    setEditGenerating(true)
+    setEditAiError(null)
+    try {
+      const text = await fetch(`/api/users/${userId}/attack-skills/${skillId}`)
+      if (!text.ok) {
+        setEditAiError('The skill text could not be read.')
+        return
+      }
+      const { content } = await text.json()
+      const res = await fetchWithFeatureModel('skill_metadata', () => fetch(`/api/users/${userId}/attack-skills/generate-metadata`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{ key: skillId, fileName: '', content, name: edit.name, fields }] }),
+      }))
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const code = readFeatureModelCode(body)
+        setEditAiError(code ? featureModelMessage(code, model) : (typeof body.error === 'string' && body.error) || AI_FAILED_TEXT)
+        return
+      }
+      const item = Array.isArray(body.items) ? body.items[0] : null
+      if (item?.error === CREDENTIALS_ERROR) setEditAiError(CREDENTIALS_TEXT)
+      else if (!item?.name && !item?.description) setEditAiError(AI_FAILED_TEXT)
+      // Read at the moment of filling: a field typed while the model ran is kept.
+      setEdit((x) => (x && x.id === skillId ? {
+        ...x,
+        name: !x.name.trim() && typeof item?.name === 'string' ? item.name : x.name,
+        description: !x.description.trim() && typeof item?.description === 'string' ? item.description : x.description,
+      } : x))
+    } catch (err) {
+      console.error('Failed to generate the skill metadata:', err)
+      setEditAiError(AI_FAILED_TEXT)
+    } finally {
+      setEditGenerating(false)
+    }
+  }, [userId, edit, ensureFeatureModel, fetchWithFeatureModel])
 
   const saveEdit = useCallback(async () => {
     if (!userId || !edit) return
@@ -236,6 +253,12 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
   }, [userId, fetchSkills, showAlert, alertError])
 
   const atLimit = skills.length >= MAX_SKILLS_PER_USER
+  const upload = useSkillUpload({ userId, existingCount: skills.length })
+  const uploadTitle = loading
+    ? 'Loading your skills…'
+    : loadError ? 'Your skills could not be loaded. Reload the page to upload.' : atLimit ? USER_SKILL_LIMIT_TEXT : undefined
+  const uploadDisabled = !userId || loading || loadError || atLimit
+  const editEmptyField = !!edit && (!edit.name.trim() || !edit.description.trim())
 
   return (
     <div className={styles.section}>
@@ -249,18 +272,18 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
             {importing ? <Loader2 size={14} className={styles.spin} /> : <Download size={14} />}
             Import from Community
           </button>
-          <label
-            className="primaryButton"
-            style={{ cursor: atLimit ? 'not-allowed' : 'pointer', opacity: atLimit ? 0.6 : 1 }}
-            title={atLimit ? `You have ${MAX_SKILLS_PER_USER} skills, the maximum. Delete one first.` : undefined}
-          >
+          <button type="button" className="secondaryButton" onClick={upload.openBatch} disabled={uploadDisabled} title={uploadTitle}>
+            <Files size={14} /> Upload Batch
+          </button>
+          <button type="button" className="primaryButton" onClick={upload.openSingle} disabled={uploadDisabled} title={uploadTitle}>
             <Upload size={14} /> Upload Skill
-            <input type="file" accept=".md" style={{ display: 'none' }} onChange={onFile} disabled={atLimit} />
-          </label>
+          </button>
         </div>
       </div>
       <p className={styles.sectionHint}>
-        Upload .md files defining custom attack skill workflows. Skills become available as toggles in all project settings.
+        Upload .md files defining custom attack skill workflows, one at a time or in a batch. A file can declare
+        its name and description in a frontmatter block; the upload dialog fills in what it finds and can write
+        the rest with AI. Skills become available as toggles in all project settings.
         {' '}Browse <a href="https://github.com/samugit83/redamon/wiki/Agent-Skills#community-skills" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>community skills</a> for ready-to-use templates.
       </p>
 
@@ -281,8 +304,10 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
 
       {loading ? (
         <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
+      ) : skills.length === 0 && loadError ? (
+        <div className={styles.emptyState} role="alert">Your skills could not be loaded. Reload the page.</div>
       ) : skills.length === 0 ? (
-        <div className={styles.emptyState}>No custom skills uploaded yet. Upload a .md file to get started.</div>
+        <div className={styles.emptyState}>No custom skills uploaded yet. Upload a .md file, or a batch of them, to get started.</div>
       ) : visible.length === 0 ? (
         <div className={styles.emptyState}>No skill matches “{query}”.</div>
       ) : (
@@ -349,62 +374,10 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
       )}
 
       <Modal
-        isOpen={!!upload}
-        onClose={() => setUpload(null)}
-        title="Upload Attack Skill"
-        size="small"
-        footer={
-          <>
-            <button className="secondaryButton" onClick={() => setUpload(null)}>Cancel</button>
-            <button
-              className="primaryButton"
-              disabled={!upload?.name.trim() || uploading || uploadCheck.state === 'taken' || uploadCheck.state === 'invalid'}
-              onClick={confirmUpload}
-            >
-              {uploading ? <Loader2 size={14} className={styles.spin} /> : <Upload size={14} />}
-              Upload
-            </button>
-          </>
-        }
-      >
-        <div className="formGroup">
-          <label className="formLabel" htmlFor="skill-upload-name">Skill Name</label>
-          <input
-            id="skill-upload-name"
-            className="textInput"
-            type="text"
-            value={upload?.name ?? ''}
-            onChange={(e) => { setUploadError(null); setUpload((u) => (u ? { ...u, name: e.target.value } : u)) }}
-            placeholder="e.g. SQL Injection Workflow"
-            maxLength={NAME_MAX_CHARS}
-            autoFocus
-          />
-          <span className="formHint" role={uploadError || nameCheckMessage(uploadCheck) ? 'alert' : undefined}>
-            {uploadError || nameCheckMessage(uploadCheck) || 'This name appears in project settings and classification badges.'}
-          </span>
-        </div>
-        <div className="formGroup" style={{ marginTop: '12px' }}>
-          <label className="formLabel" htmlFor="skill-upload-description">Description</label>
-          <textarea
-            id="skill-upload-description"
-            className="textInput"
-            rows={3}
-            value={upload?.description ?? ''}
-            onChange={(e) => setUpload((u) => (u ? { ...u, description: e.target.value } : u))}
-            placeholder="e.g. SQL injection testing against web app parameters using sqlmap"
-            maxLength={DESCRIPTION_MAX_CHARS}
-          />
-          <span className="formHint">
-            Helps the agent understand when to use this skill. Without a description, the first 500 characters of the markdown are used instead - a good description improves classification accuracy.
-          </span>
-        </div>
-      </Modal>
-
-      <Modal
         isOpen={!!edit}
         onClose={() => setEdit(null)}
         title="Edit Skill"
-        size="small"
+        size="default"
         footer={
           <>
             <button className="secondaryButton" onClick={() => setEdit(null)}>Cancel</button>
@@ -449,7 +422,23 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
             Helps the agent understand when to use this skill. Without a description, the first 500 characters of the markdown are used instead - a good description improves classification accuracy.
           </span>
         </div>
+        <div className={own.generate}>
+          <button
+            type="button"
+            className="secondaryButton"
+            onClick={() => void generateEdit()}
+            disabled={!editEmptyField || editSaving || editGenerating}
+            title={editEmptyField ? 'Write the empty name or description with AI' : 'The name and description are both filled'}
+          >
+            {editGenerating ? <Loader2 size={14} className={styles.spin} /> : <Sparkles size={14} />}
+            Generate with AI
+          </button>
+          <FeatureModelLine featureId="skill_metadata" />
+        </div>
+        {editAiError && <span className="formHint" role="alert">{editAiError}</span>}
       </Modal>
+
+      {upload.dialogs}
 
       {reviewChangeSetId && userId && (
         <OverrideReviewModal
