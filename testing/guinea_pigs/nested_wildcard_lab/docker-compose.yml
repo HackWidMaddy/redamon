@@ -1,0 +1,86 @@
+# RedAmon nested-wildcard / public-suffix lab
+#
+# Bring up:    ./setup.sh            (creates the shared network if needed, the certs, then `up -d`)
+# Bring down:  ./teardown.sh
+#
+# Two fictional organisations on reserved names (RFC 2606 `.test`), served by an
+# authoritative-only CoreDNS and two nginx hosts:
+#
+#   labdns  192.88.99.53   nwlab.test + nwlab-two.test zones; answers nothing else
+#   web1    192.88.99.60   every nwlab.test vhost, HTTP + HTTPS
+#   web2    192.88.99.61   every nwlab-two.test vhost, HTTP + HTTPS
+#
+# WHY 192.88.99.0/24: recon's Python SSRF guard (is_url_safe_to_probe,
+# recon/main_recon_modules/ip_filter.py) rejects loopback, RFC1918 and every
+# documentation range, and js_recon would fetch nothing. See
+# ../supply_chain_target/README.md. The prefix is PUBLIC (RFC 7526 6to4 anycast):
+# when this bridge is down the host routes it to the internet, so every scan is
+# preceded by the routing gate in README.md.
+#
+# The network belongs to the supply-chain compose project (it declares and owns
+# redamon_sc_lab; two projects cannot both create one subnet), so this file joins
+# it as external. setup.sh creates it through that project when it is missing.
+
+name: nested_wildcard_lab
+
+x-caps: &caps
+  # A separate compose project: redamon.sh's resource caps and memory governor
+  # never see it, so each service carries its own small limits.
+  mem_limit: 64m
+  pids_limit: 128
+  cpus: 0.5
+  restart: unless-stopped
+
+services:
+
+  labdns:
+    <<: *caps
+    image: coredns/coredns:1.11.3@sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e
+    container_name: redamon-nwlab-dns
+    command: ["-conf", "/etc/coredns/Corefile"]
+    # A directory bind, not a file bind: a file is bound by inode, so an edited
+    # zone would be invisible until the container is recreated.
+    volumes:
+      - ./dns:/etc/coredns:ro
+    networks:
+      sc_lab:
+        ipv4_address: 192.88.99.53
+
+  web1:
+    <<: *caps
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: redamon-nwlab-web1
+    volumes:
+      - ./nginx/web1:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./www:/usr/share/nginx/www:ro
+      - ./static:/usr/share/nginx/static:ro
+    networks:
+      sc_lab:
+        ipv4_address: 192.88.99.60
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header 'Host: www.nwlab.test' http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  web2:
+    <<: *caps
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: redamon-nwlab-web2
+    volumes:
+      - ./nginx/web2:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      sc_lab:
+        ipv4_address: 192.88.99.61
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header 'Host: www.nwlab-two.test' http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+networks:
+  sc_lab:
+    name: redamon_sc_lab
+    external: true
