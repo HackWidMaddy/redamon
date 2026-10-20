@@ -10,6 +10,7 @@
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { Prisma } from '@prisma/client'
 import JSZip from 'jszip'
 
 const mockProjectCreate = vi.fn()
@@ -85,7 +86,12 @@ describe('importing node filters', () => {
       targetDomain: 'example.com',
     }))
     const data = mockProjectCreate.mock.calls[0][0].data
-    expect(data).toEqual({ name: 'Imported', targetDomain: 'example.com', userId: 'new-owner' })
+    // The two batch columns are the import's own scope normalisation: a
+    // non-batch project keeps no batch scope. No relation key gets through.
+    expect(data).toEqual({
+      name: 'Imported', targetDomain: 'example.com', userId: 'new-owner',
+      domainBatchGroups: Prisma.DbNull, domainBatchHosts: [],
+    })
   })
 
   test('the rules arrive disarmed, under the new owner', async () => {
