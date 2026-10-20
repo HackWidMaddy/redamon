@@ -22,6 +22,7 @@ import {
 } from '@/lib/reconPresets/server'
 import { MUTEABLE_FINDING_LABELS } from '@/lib/mcp/findingLabels'
 import { pickProjectColumns } from '@/lib/projectColumns'
+import { normalizeImportedScope } from '@/lib/importScope'
 import { sanitizeImportedRoeParsedJson } from '@/lib/roe/createRoe'
 import { sanitizeImportedOpenApiSettings } from '@/lib/validation/openapiSettings'
 import { importRevision, MAX_IMPORTED_REVISIONS, REVISIONS_BUNDLE_PATH } from '@/lib/roe/revisionBundle'
@@ -237,6 +238,13 @@ export async function POST(request: NextRequest) {
     // a nested write past that relation's own import checks (node filters
     // arriving armed, a run that never goes stale). Export writes columns only.
     const projectFields = pickProjectColumns(bundleFields)
+
+    // The scope columns get the create routes' rules: groups re-derived from the
+    // hosts, one targeting mode, and the hard guardrail in every mode.
+    const scope = normalizeImportedScope(projectFields)
+    if (scope.error) {
+      return NextResponse.json({ error: scope.error }, { status: scope.status ?? 400 })
+    }
 
     // Restore binary RoE document from base64 encoding
     if (roeDocumentDataBase64 && typeof roeDocumentDataBase64 === 'string') {
@@ -821,6 +829,7 @@ export async function POST(request: NextRequest) {
         ? [`This archive holds plugin files (${pluginFiles.slice(0, 3).join(', ')}${pluginFiles.length > 3 ? ', …' : ''}); plugin skill versions and plugin data are not imported.`]
         : []),
       ...skillToggleNotes,
+      ...scope.warnings,
     ]
 
     return NextResponse.json({
