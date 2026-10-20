@@ -171,13 +171,9 @@ export function SkillUploadReviewModal({ mode, userId, existingCount, files, cut
   const addFiles = useCallback(async (list: File[]) => {
     if (!list.length) return
     const picked = await readPickedFiles(list)
-    let outcome: { skipped: number; cut: boolean } = { skipped: 0, cut: false }
-    dispatch((all) => {
-      const next = appendFiles(all, picked, { existingCount, nextKey })
-      outcome = next
-      return next.rows
-    })
-    if (outcome.cut) setBanner(CUT_TEXT)
+    // Read from the rows as they are now: the reducer itself runs later, during render.
+    if (appendFiles(rowsRef.current, picked, { existingCount, nextKey: () => '' }).cut) setBanner(CUT_TEXT)
+    dispatch((all) => appendFiles(all, picked, { existingCount, nextKey }).rows)
   }, [existingCount, nextKey])
 
   const onDragOver = useCallback((e: DragEvent) => {

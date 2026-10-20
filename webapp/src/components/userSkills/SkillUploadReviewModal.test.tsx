@@ -396,6 +396,15 @@ describe('batch extras', () => {
     expect(screen.getAllByLabelText(/^Name for f02_heading\.md$/)).toHaveLength(1)
   })
 
+  test('Add files past 50 rows adds only up to 50 and shows the banner', async () => {
+    draw(Array.from({ length: 49 }, (_, i) => ({ name: `r${i}.md`, text: `# Row ${i}\n` })))
+    expect(screen.queryByText(/Only the first 50 files were read/)).toBeNull()
+    const files = ['a', 'b', 'c'].map((n) => new File([`# Extra ${n}\n`], `extra-${n}.md`, { type: 'text/markdown' }))
+    await act(async () => { fireEvent.change(screen.getByTestId('skill-upload-add-input'), { target: { files } }) })
+    expect(await screen.findByText('Only the first 50 files were read; upload the rest in another batch.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Upload 50 agent skills' })).toBeInTheDocument()
+  })
+
   test('Remove drops a row', () => {
     draw([HEADING, PLAIN])
     fireEvent.click(screen.getByRole('button', { name: 'Remove f03_plain.md' }))
