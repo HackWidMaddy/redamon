@@ -379,3 +379,67 @@ describe('every mode is guarded on update, not only a batch host list', () => {
     expect((await res.json()).error).toContain('www.isa.org.jm')
   })
 })
+
+describe('an unchanged save is not a scope change, whatever the mode', () => {
+  test('an IP-mode row saved with the same address list passes while a scan runs', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: PROJECT_ID, userId: 'u1', ipMode: true, domainBatchMode: false, targetDomain: '',
+      subdomainList: [], targetIps: ['192.0.2.10', '192.0.2.11'], domainBatchHosts: [], domainBatchGroups: null,
+    })
+    mockScanWriters.mockResolvedValue('a full recon is running')
+    const res = await put(fullFormBody({ ipMode: true, targetDomain: '', subdomainList: [], targetIps: ['192.0.2.10', '192.0.2.11'] }))
+    expect(res.status).toBe(200)
+  })
+
+  test('the same prefixes in another order pass while a scan runs', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: PROJECT_ID, userId: 'u1', ipMode: false, domainBatchMode: false, targetDomain: 'example.com',
+      subdomainList: ['www.', 'api.', '.'], targetIps: [], domainBatchHosts: [], domainBatchGroups: null,
+    })
+    mockScanWriters.mockResolvedValue('a full recon is running')
+    const res = await put(fullFormBody({ subdomainList: ['.', 'api.', 'www.'] }))
+    expect(res.status).toBe(200)
+  })
+})
+
+/**
+ * The exclusivity check read only the body, so a request carrying one mode flag
+ * let the other stand from the stored row: an IP-mode project could be saved as
+ * a batch too. Its hosts were never guardrailed (IP mode has no names), and
+ * recon's auth scope and the replay read the stored groups whatever the mode.
+ */
+describe('mode exclusivity holds against the stored row, not only the body', () => {
+  test('a batch flip sent to an IP-mode row without ipMode:false is refused', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: PROJECT_ID, userId: 'u1', ipMode: true, domainBatchMode: false, targetDomain: '',
+      subdomainList: [], targetIps: ['192.0.2.10'], domainBatchHosts: [], domainBatchGroups: null,
+      targetGuardrailEnabled: false,
+    })
+    const res = await put({ domainBatchMode: true, domainBatchHosts: ['www.agency.gov.uk'] })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('both IP mode and Domain batch')
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('an IP flip sent to a batch row without domainBatchMode:false is refused', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: PROJECT_ID, userId: 'u1', ipMode: false, domainBatchMode: true, targetDomain: '',
+      subdomainList: [], targetIps: [], domainBatchHosts: ['www.example.com'],
+      domainBatchGroups: [{ rootDomain: 'example.com', prefixes: ['www.'], hosts: ['www.example.com'], wildcard: false }],
+    })
+    const res = await put({ ipMode: true, targetIps: ['192.0.2.10'] })
+    expect(res.status).toBe(400)
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('a row already in both modes can still take an unrelated partial save', () => {
+  test('a module toggle on such a row is not refused', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: PROJECT_ID, userId: 'u1', ipMode: true, domainBatchMode: true, targetDomain: '',
+      subdomainList: [], targetIps: ['192.0.2.10'], domainBatchHosts: ['www.example.com'],
+      domainBatchGroups: [{ rootDomain: 'example.com', prefixes: ['www.'], hosts: ['www.example.com'], wildcard: false }],
+    })
+    expect((await put({ katanaEnabled: false })).status).toBe(200)
+  })
+})

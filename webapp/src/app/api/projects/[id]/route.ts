@@ -354,6 +354,19 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       targetIps: Array.isArray(updateData.targetIps)
         ? updateData.targetIps as string[] : existing?.targetIps ?? [],
     }
+    // Mutually exclusive modes, enforced on update as well as create, and on the
+    // EFFECTIVE next state: recon checks IP_MODE first, so a project flagged both
+    // ways silently never runs its batch, and a body carrying only one of the two
+    // flags would otherwise leave the stored other one standing. Only a request
+    // that sets a mode flag is judged, so a row already in that state can still
+    // take an unrelated partial save.
+    const setsMode = 'ipMode' in updateData || 'domainBatchMode' in updateData
+    if (setsMode && nextScope.ipMode && nextScope.domainBatchMode) {
+      return NextResponse.json(
+        { error: 'A project cannot be in both IP mode and Domain batch mode.' },
+        { status: 400 },
+      )
+    }
     const sameSet = (a: readonly string[], b: readonly string[]) =>
       JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
     const scopeChanged = existing != null && (
@@ -426,17 +439,6 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           console.warn('[projects PUT] soft guardrail unreachable, allowing:', e)
         }
       }
-    }
-
-    // Mutually exclusive modes, enforced on update as well as create: recon checks
-    // IP_MODE first, so a project flagged both ways silently never runs its batch.
-    const nextIpMode = 'ipMode' in updateData ? updateData.ipMode === true : undefined
-    const nextBatchMode = 'domainBatchMode' in updateData ? updateData.domainBatchMode === true : undefined
-    if (nextIpMode && nextBatchMode) {
-      return NextResponse.json(
-        { error: 'A project cannot be in both IP mode and Domain batch mode.' },
-        { status: 400 },
-      )
     }
 
     // Supply-chain input becomes a `git clone` argument in the scan container,
