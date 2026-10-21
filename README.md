@@ -12,6 +12,8 @@
 <br/>
 
 <p align="center">
+  <a href="https://www.nviso.eu/" target="_blank" rel="sponsored noopener noreferrer"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/nviso-logo-dark.svg"/><img src="docs/assets/nviso-logo.svg" alt="Sponsored by NVISO" height="55"/></picture></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
   <a href="https://trendshift.io/repositories/21794?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-21794" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/21794/daily?language=Python" alt="samugit83%2Fredamon | Trendshift" width="250" height="55"/></a>
 </p>
 
