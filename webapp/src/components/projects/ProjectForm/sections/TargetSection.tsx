@@ -9,7 +9,7 @@ import aiStyles from '../AiPipelinePanel.module.css'
 import { useHasJevProvider } from '@/hooks/useHasJevProvider'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
-import { isHardBlockedDomain, firstHardBlocked } from '@/lib/hard-guardrail'
+import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { classifyIpTargets } from '@/lib/ip-target-utils'
 import { validateDomainBatch, scopeGuardrailNames, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS, ROOT_DOMAIN_PREFIX } from '@/lib/domainBatch'
 import { deriveRoeEnabled } from '@/lib/engagement'
@@ -175,10 +175,14 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
   )
   const hasLocalIps = ipTargetClass === 'private' || ipTargetClass === 'mixed'
 
-  // Hard guardrail: deterministic check for government/public domains (non-disableable)
+  // Hard guardrail: deterministic check for government/public domains (non-disableable),
+  // on the target AND every prefix host it makes: `isa.` under `org.jm` is blocked
+  // although the target is not, and the submit check already refuses it.
   const hardBlockResult = useMemo(
-    () => (!ipMode && data.targetDomain ? isHardBlockedDomain(data.targetDomain) : { blocked: false, reason: '' }),
-    [ipMode, data.targetDomain]
+    () => (ipMode ? null : firstHardBlocked(scopeGuardrailNames({
+      targetDomain: data.targetDomain, subdomainList: data.subdomainList,
+    }))),
+    [ipMode, data.targetDomain, data.subdomainList]
   )
 
   const handlePrefixesChange = (value: string) => {
@@ -404,11 +408,11 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
           </div>
 
           {/* Hard guardrail warning for government/public domains */}
-          {hardBlockResult.blocked && (
+          {hardBlockResult && (
             <div className={`${styles.callout} ${styles.calloutDanger}`}>
               <ShieldAlert size={16} />
               <span>
-                <strong>Target permanently blocked:</strong> Government, military, educational, and international
+                <strong>Target permanently blocked: {hardBlockResult.name}.</strong> Government, military, educational, and international
                 organization websites (.gov, .mil, .edu, .int, etc.) are always blocked and cannot be used as targets,
                 regardless of guardrail settings. This restriction cannot be disabled.
               </span>

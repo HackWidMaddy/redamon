@@ -108,6 +108,27 @@ describe('the preview matches the grouping that will be persisted', () => {
     expect(screen.getByText(/permanently blocked/i)).toBeTruthy()
   })
 
+  test('single-domain banner flags a blocked prefix host, not only the target', () => {
+    // org.jm is not blocked, isa.org.jm is: the live banner checked the target
+    // alone, so the block only surfaced at submit.
+    // A plain render: on mount, single-domain mode syncs Include Root through
+    // updateField, before renderSection's live re-render can exist.
+    const data = { ...BASE, domainBatchMode: false, targetDomain: 'org.jm', subdomainList: ['isa.'] }
+    render(<TargetSection data={data as never} updateField={vi.fn() as never} mode="create" />)
+    const banner = screen.getByText(/Target permanently blocked:/)
+    expect(banner.textContent).toContain('isa.org.jm')
+  })
+
+  test('the banner names the listed host, not the group root it falls under', () => {
+    // www.isa.org.jm groups under org.jm, which no rule names: only the host is
+    // blocked, so a root-only check showed nothing and a root-named banner lied.
+    const s = renderSection()
+    fireEvent.change(s.textarea(), { target: { value: 'ok.example.com\nwww.isa.org.jm' } })
+    const banner = screen.getByText(/Target permanently blocked:/)
+    expect(banner.textContent).toContain('www.isa.org.jm')
+    expect(banner.textContent).not.toMatch(/blocked: org\.jm/)
+  })
+
   test('the counts shown are the real host and group counts', () => {
     const s = renderSection()
     fireEvent.change(s.textarea(), { target: { value: HOSTS } })
