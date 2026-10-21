@@ -291,6 +291,15 @@ class TestEndpoint:
         assert "www.isa.org.jm" in ei.value.detail
         assert spy.calls == []
 
+    def test_a_single_domain_prefix_that_makes_a_blocked_host_refuses_the_run(self, monkeypatch, spy):
+        # The root org.jm is not blocked; the prefix host isa.org.jm is.
+        _project(monkeypatch, {"targetDomain": "org.jm", "subdomainList": ["isa."]})
+        with pytest.raises(HTTPException) as ei:
+            _start(_request())
+        assert ei.value.status_code == 403
+        assert "isa.org.jm" in ei.value.detail
+        assert spy.calls == []
+
     def test_ip_mode_uses_the_synthetic_root_and_skips_the_guardrail(self, monkeypatch, spy):
         _project(monkeypatch, IP_MODE)
         monkeypatch.setattr("hard_guardrail.is_hard_blocked",

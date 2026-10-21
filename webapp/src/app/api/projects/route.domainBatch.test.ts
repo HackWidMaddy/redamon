@@ -204,3 +204,26 @@ describe('a non-batch project stores no batch scope', () => {
     expect(data.domainBatchHosts).toEqual([])
   })
 })
+
+describe('a hung agent cannot stall project creation', () => {
+  test('the soft guardrail gives up after its timeout and the create goes ahead', async () => {
+    // A fetch that only ever ends when its signal aborts: an agent that hangs.
+    mockFetch.mockImplementation((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+    }))
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal)
+    const requested: number[] = []
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      requested.push(ms)
+      return realTimeout(20)
+    })
+    try {
+      const res = await POST(postReq({ userId: 'user-1', name: 'S', targetDomain: 'example.com' }))
+      expect(res.status).toBe(201)
+      expect(mockProjectCreate).toHaveBeenCalledTimes(1)
+      expect(requested).toEqual([10_000])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
