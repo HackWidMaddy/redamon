@@ -1457,7 +1457,6 @@ export function ProjectForm({
         projectId={projectId}
         targetDomain={formData.targetDomain || ''}
         projectRoots={partialReconRoots}
-        subdomainPrefixes={formData.subdomainList as string[] || []}
         isStarting={isPartialReconStarting}
         userId={userId ?? undefined}
         openapiSources={formData.openapiSources}
