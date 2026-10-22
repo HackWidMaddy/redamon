@@ -66,3 +66,25 @@ describe('normalizeImportedScope', () => {
     expect(normalizeImportedScope(fields).error).toBeUndefined()
   })
 })
+
+describe('normalizeImportedScope: a single-domain bundle', () => {
+  test('a target that is a public suffix refuses the import', () => {
+    const res = normalizeImportedScope({ targetDomain: 'co.uk', subdomainList: [] })
+    expect(res.status).toBe(400)
+    expect(res.error).toContain('public suffix')
+  })
+
+  test('the target is stored normalised and lower-cased', () => {
+    const fields: Record<string, unknown> = { targetDomain: 'HTTPS://Api.Example.COM/', subdomainList: [] }
+    expect(normalizeImportedScope(fields).error).toBeUndefined()
+    expect(fields.targetDomain).toBe('api.example.com')
+  })
+
+  test('a refused prefix is dropped with a warning; the rest imports', () => {
+    const fields: Record<string, unknown> = { targetDomain: 'example.com', subdomainList: ['www.', '*', 'eu.api.'] }
+    const res = normalizeImportedScope(fields)
+    expect(res.error).toBeUndefined()
+    expect(fields.subdomainList).toEqual(['www.', 'eu.api.'])
+    expect(res.warnings.join(' ')).toContain('*')
+  })
+})

@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client'
-import { describeInvalid, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
-import { scopeGuardrailNames } from '@/lib/scopeGroups'
+import { describeInvalid, normalizeHost, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
+import { resolveScopeGroups, scopeGuardrailNames } from '@/lib/scopeGroups'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 
 export interface ImportScopeResult {
@@ -57,7 +57,20 @@ export function normalizeImportedScope(fields: Record<string, unknown>): ImportS
     fields.domainBatchGroups = Prisma.DbNull
     fields.domainBatchHosts = []
     if (!ipMode && typeof fields.targetDomain === 'string') {
-      fields.targetDomain = splitWildcard(fields.targetDomain.trim()).rest
+      fields.targetDomain = splitWildcard(normalizeHost(fields.targetDomain)).rest
+      const prefixes = Array.isArray(fields.subdomainList)
+        ? fields.subdomainList.filter((x): x is string => typeof x === 'string')
+        : []
+      const { invalid } = resolveScopeGroups({ targetDomain: fields.targetDomain, subdomainList: prefixes })
+      const badPrefixes = invalid.filter(i => i.reason === 'invalid_prefix')
+      if (invalid.length > badPrefixes.length) {
+        return { error: `The bundle's target cannot be imported. ${describeInvalid(invalid)}`, status: 400, warnings }
+      }
+      if (badPrefixes.length > 0) {
+        const refused = new Set(badPrefixes.map(i => i.entry))
+        fields.subdomainList = prefixes.filter(x => !refused.has(x))
+        warnings.push(`Dropped subdomain prefixes the current rules refuse. ${describeInvalid(badPrefixes)}`)
+      }
     }
   }
 
