@@ -296,8 +296,9 @@ class TestNormalizer(unittest.TestCase):
         session.run.return_value.single.return_value = fake_record(linked=False)
         status = norm.write_finding(session, self._finding(), "u", "p")
         self.assertEqual(status, "created")
-        # MERGE + endpoint-link + BaseURL/Endpoint create + hostname anchor = 4 runs.
-        self.assertEqual(session.run.call_count, 4)
+        # MERGE + endpoint-link + BaseURL/Endpoint create + the hostname anchor's
+        # lookup of an existing Domain and its write (never a Domain MERGE) = 5 runs.
+        self.assertEqual(session.run.call_count, 5)
 
     def test_make_dummy_finding(self):
         target = tl.Target(baseurl="http://h:8000", path="/c",
