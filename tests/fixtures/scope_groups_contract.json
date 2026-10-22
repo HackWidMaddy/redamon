@@ -1,0 +1,55 @@
+{
+  "_comment": "One project, four normalisers. scopeGroups is what the webapp derives (resolveScopeGroups, checked by webapp/src/lib/scopeGroups.contract.test.ts); expected is what recon (REC-01), the orchestrator (ORC-01) and the agent (AGT-01) must each read from it. Synthetic names only.",
+  "cases": [
+    {
+      "name": "batch across suffixes",
+      "project": {
+        "ipMode": false, "domainBatchMode": true, "targetDomain": "", "subdomainList": [],
+        "domainBatchHosts": ["*.acme.co.uk", "acme.co.uk", "www.example.com", "api.example.com", "*.alice.github.io"]
+      },
+      "scopeGroups": [
+        {"scanRoot": "acme.co.uk", "orgDomain": "acme.co.uk", "mode": "enumerate", "includeRoot": true,
+         "exactHosts": [], "entries": ["*.acme.co.uk", "acme.co.uk"]},
+        {"scanRoot": "example.com", "orgDomain": "example.com", "mode": "exact", "includeRoot": false,
+         "exactHosts": ["www.example.com", "api.example.com"], "entries": ["www.example.com", "api.example.com"]},
+        {"scanRoot": "alice.github.io", "orgDomain": "alice.github.io", "mode": "enumerate", "includeRoot": false,
+         "exactHosts": [], "entries": ["*.alice.github.io"]}
+      ],
+      "expected": [
+        {"scanRoot": "acme.co.uk", "orgDomain": "acme.co.uk", "mode": "enumerate", "includeRoot": true, "exactHosts": []},
+        {"scanRoot": "example.com", "orgDomain": "example.com", "mode": "exact", "includeRoot": false,
+         "exactHosts": ["www.example.com", "api.example.com"]},
+        {"scanRoot": "alice.github.io", "orgDomain": "alice.github.io", "mode": "enumerate", "includeRoot": false, "exactHosts": []}
+      ]
+    },
+    {
+      "name": "single domain below its org, listed",
+      "project": {
+        "ipMode": false, "domainBatchMode": false, "targetDomain": "api.example.com", "subdomainList": [".", "eu."],
+        "domainBatchHosts": []
+      },
+      "scopeGroups": [
+        {"scanRoot": "api.example.com", "orgDomain": "example.com", "mode": "exact", "includeRoot": true,
+         "exactHosts": ["eu.api.example.com"], "entries": ["api.example.com", "eu.api.example.com"]}
+      ],
+      "expected": [
+        {"scanRoot": "api.example.com", "orgDomain": "example.com", "mode": "exact", "includeRoot": true,
+         "exactHosts": ["eu.api.example.com"]}
+      ]
+    },
+    {
+      "name": "single domain, enumerated",
+      "project": {
+        "ipMode": false, "domainBatchMode": false, "targetDomain": "example.com", "subdomainList": [],
+        "domainBatchHosts": []
+      },
+      "scopeGroups": [
+        {"scanRoot": "example.com", "orgDomain": "example.com", "mode": "enumerate", "includeRoot": false,
+         "exactHosts": [], "entries": ["*.example.com"]}
+      ],
+      "expected": [
+        {"scanRoot": "example.com", "orgDomain": "example.com", "mode": "enumerate", "includeRoot": false, "exactHosts": []}
+      ]
+    }
+  ]
+}
