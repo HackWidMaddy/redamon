@@ -8,6 +8,7 @@ import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 import { RegistryFields } from '../RegistryFields'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -30,9 +31,17 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
   // toggle decides whether a `*` group may enumerate, so it needs its own branch
   // or it would promise single-domain behaviour a batch never performs.
   const batchMode = data.domainBatchMode === true
-  const batchWildcardCount = batchMode
-    ? (data.domainBatchHosts ?? []).filter(h => String(h).trim().startsWith('*')).length
-    : 0
+  // Counted as scope groups, not as `*` lines: a wildcard covered by a broader
+  // one collapses into it, and an invalid line enumerates nothing.
+  const batchEnumerated = batchMode
+    ? resolveScopeGroups({ domainBatchMode: true, domainBatchHosts: data.domainBatchHosts ?? [] }).groups
+      .filter(g => g.mode === 'enumerate').map(g => `*.${g.scanRoot}`)
+    : []
+  const batchWildcardCount = batchEnumerated.length
+  const targetName = batchMode
+    ? ''
+    : resolveScopeGroups({ targetDomain: data.targetDomain, subdomainList: data.subdomainList }).groups[0]?.scanRoot
+      || 'the target'
 
   const hasExplicitPrefixes = !batchMode && (data.subdomainList ?? []).some(
     (s) => s !== '.' && s.replace(/\.$/, '').length > 0
@@ -55,10 +64,10 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
       // rather than silently reporting an empty group as a success.
       if (batchWildcardCount > 0) {
         const ok = await confirm(
-          `You are turning off Subdomain Discovery while ${batchWildcardCount} wildcard ` +
-          `entr${batchWildcardCount === 1 ? 'y is' : 'ies are'} in the hostname list. ` +
-          'Those groups exist to be enumerated, so the scan will refuse to run them. ' +
-          'Remove the wildcards, or leave discovery on. Continue?',
+          `You are turning off Subdomain Discovery while ${batchWildcardCount} scope ` +
+          `group${batchWildcardCount === 1 ? ' is' : 's are'} set to be fully enumerated ` +
+          `(${batchEnumerated.join(', ')}). Those groups exist to be enumerated, so the ` +
+          'scan will refuse to run them. Remove the wildcards, or leave discovery on. Continue?',
           'Disable Subdomain Discovery?'
         )
         if (!ok) return
@@ -70,7 +79,7 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
       const ok = await confirm(
         'You are turning off Subdomain Discovery while no Subdomain Prefixes are set. ' +
         'To keep the pipeline runnable, "Include Root Domain" will be automatically ' +
-        'enabled and locked ON - the root domain becomes the only scan target. Continue?',
+        `enabled and locked ON - ${targetName} itself becomes the only scan target. Continue?`,
         'Disable Subdomain Discovery?'
       )
       if (!ok) return

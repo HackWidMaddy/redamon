@@ -18,6 +18,7 @@ import { WorkflowNodeModal } from './WorkflowNodeModal'
 import { NodeListOverlay } from './NodeListOverlay'
 import { useDataNodeCounts } from './useToolNodeCounts'
 import { PARTIAL_RECON_SUPPORTED_TOOLS } from '@/lib/recon-types'
+import { resolveScopeGroups, type ScopeFields } from '@/lib/scopeGroups'
 import { useAlertModal } from '@/components/ui'
 import styles from './WorkflowView.module.css'
 
@@ -73,14 +74,17 @@ export function WorkflowView({ formData, updateField, projectId, mode, onSave, o
       // targetMode === 'domain'. Its own consequence is different: the wildcard
       // groups lose the discovery they exist for.
       const batch = (formData as { domainBatchMode?: boolean }).domainBatchMode === true
+      const scope = resolveScopeGroups(formData as ScopeFields)
       if (batch) {
-        const wildcards = ((formData as { domainBatchHosts?: string[] }).domainBatchHosts ?? [])
-          .filter((h) => String(h).trim().startsWith('*')).length
+        // Scope groups, not `*` lines: a covered wildcard collapses into its cover.
+        const enumerated = scope.groups.filter((g) => g.mode === 'enumerate').map((g) => `*.${g.scanRoot}`)
+        const wildcards = enumerated.length
         if (wildcards > 0) {
           const ok = await confirm(
-            `You are turning off Subdomain Discovery while ${wildcards} wildcard ` +
-            `entr${wildcards === 1 ? 'y is' : 'ies are'} in the hostname list. Those groups ` +
-            'exist to be enumerated, so the scan will refuse to run them. Continue?',
+            `You are turning off Subdomain Discovery while ${wildcards} scope ` +
+            `group${wildcards === 1 ? ' is' : 's are'} set to be fully enumerated ` +
+            `(${enumerated.join(', ')}). Those groups exist to be enumerated, so the scan ` +
+            'will refuse to run them. Continue?',
             'Disable Subdomain Discovery?'
           )
           if (!ok) return
@@ -89,7 +93,8 @@ export function WorkflowView({ formData, updateField, projectId, mode, onSave, o
         const ok = await confirm(
           'You are turning off Subdomain Discovery while no Subdomain Prefixes are set. ' +
           'To keep the pipeline runnable, "Include Root Domain" will be automatically ' +
-          'enabled and locked ON - the root domain becomes the only scan target. Continue?',
+          `enabled and locked ON - ${scope.groups[0]?.scanRoot || 'the target'} itself becomes ` +
+          'the only scan target. Continue?',
           'Disable Subdomain Discovery?'
         )
         if (!ok) return
