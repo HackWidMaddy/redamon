@@ -931,7 +931,12 @@ Whoever cuts a release, at least once per minor release:
    the two snapshots disagree. A non-empty report means the older side needs a
    bump.
 5. If the new snapshot changes how an existing project's hosts group, say so
-   in the CHANGELOG `Upgrade` bullet.
+   in the CHANGELOG `Upgrade` bullet, and tell operators to run
+   `tooling/scripts/dns_finding_rekey.py`. A Domain batch keys its SPF, DMARC,
+   DNSSEC and zone-transfer findings on the group's root, so a regroup gives
+   them new ids. The script moves the mute, the Priority Board layers, the
+   un-mute exemptions and the fix items to the new ids. It is a dry run by
+   default; use `--apply` with the services stopped, before the first scan.
 
 ---
 
