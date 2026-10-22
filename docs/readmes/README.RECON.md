@@ -733,8 +733,16 @@ by `GET /api/projects/[id]`); they are never stored. Each group is
 `{scanRoot, orgDomain, mode: exact|enumerate, includeRoot, exactHosts}`: an EXACT
 group scans exactly its listed hosts (and its scan root only when listed), an
 ENUMERATE group runs subdomain discovery under its scan root. A single-domain
-project is one such group. While nested wildcards are off (this release) a batch
-scan root is always its registrable domain.
+project is one such group, whose scan root is the typed target at any depth.
+
+**Scan root vs registrable domain.** A wildcard may sit below its registrable
+domain: `*.api.example.com` is an ENUMERATE group with scan root
+`api.example.com` and org `example.com`. A wildcard under another wildcard
+collapses into the broader one (`*.v1.api.example.com` beside
+`*.api.example.com`; the preview notes "covered by"), and a plain line under a
+wildcard is seeded into its group. Plain lines of one org that no wildcard
+covers form that org's EXACT group, so one org can have several groups
+(`*.api.example.com` and `www.example.com` are two groups of `example.com`).
 
 **A `*` entry enumerates that domain.** `*.example.com` (or `*example.com`) is
 the one way to run subdomain discovery inside a batch: that group takes the same
@@ -744,8 +752,8 @@ wildcard is seeded into its group. The settings toggle can only say whether
 enumeration is permitted at all; the per-group decision is the group's `mode`.
 
 **What is refused**, with a reason per line: a public suffix (`co.uk`), a wildcard
-on one (`*.co.uk`, `*.github.io`), an IP literal (use IP mode) and, while nested
-wildcards are off, a wildcard below its registrable domain (`*.api.example.com`).
+on one (`*.co.uk`, `*.github.io`), an IP literal (use IP mode), a malformed
+wildcard (`a*.example.com`) and a name that is not a hostname.
 
 **Recon re-validates, and fails closed.** `fetch_project_settings` reads
 `scopeGroups` into `SCOPE_GROUPS` (`recon/project_settings.py`,
@@ -791,26 +799,75 @@ the same way it does in the other two modes.
 
 **Only the hostnames you list are scanned**, except in a wildcard group.
 Subdomain discovery is forced off when no group enumerates, including for a
-group that is just a bare root domain.
+group that is just a bare root domain. An EXACT group stays exact all the way
+through: names a certificate, JS bundle or uncover reveals under its scan root
+are never injected as targets (`merge_discovered_hostnames` takes the group's
+scope from the recon metadata), uncover adds no IPs for it, and VHost/SNI
+fabricates no `{word}.<root>` candidates.
+
+**Root is honoured everywhere.** Without Include Root (a `*.example.com` line
+with Root unticked) the scan root itself is no target: it is removed from the
+merged host list, `dns.domain` is blanked (it is still resolved, only as the
+resolver canary), and port scan, masscan, HTTP probe, TLS/header checks, VHost
+and takeover never add it or its addresses.
+
+**Ownership** (when Verify Domain Ownership is on) accepts the token at
+`<prefix>.<scan root>` **or** `<prefix>.<registrable domain>`; RoE is checked
+first, each name is asked once per run, and a resolver failure fails the group
+closed with the resolver's message instead of reading as "no record". The
+preview lists both accepted record names per group.
+
+**Org-level work runs once per registrable domain per run** (`recon/helpers/org_work.py`):
+WHOIS, Shodan domain DNS, OTX/VirusTotal/Criminal IP domain reports and FOFA
+`domain=` are asked for the org by the org's first group that passed RoE and
+ownership, and its other groups get a copy (`[*][...] <org>: answered earlier
+this run, reused`). SPF/DMARC/DNSSEC run on the org once, inside vuln_scan, for
+the first group of that org that reaches it; when no group of an org reached
+them, `security_check` is marked degraded so the prune keeps the old findings.
+Origin discovery keys its candidate sources on the org only when the org is in
+scope (some group's scan root is the org, or ownership was proven at the org),
+else on the scan root (`[*][Origin] candidate key: <root> (org not in scope)`).
+crt.name asks the org once and keeps names under the scan root; uncover's
+`ssl:"<registrant>"` query runs only for a group whose scan root is its org.
 
 **A failing group does not stop the batch.** One unresolvable domain should not
 cost you the other nineteen: failures are reported at the end, and the run only
 fails outright if every group failed.
 
-**Output.** Each group writes `recon_<project_id>__<domain>.json`, and the
+**Output.** Each group writes `recon_<project_id>__<scan root>.json`, and the
 canonical `recon_<project_id>.json` is rebuilt as the union of them after every
 group. Everything downstream (GVM, the project export, the report) reads the
 canonical file and sees the whole batch, and a batch stopped part way still
-leaves a file that parses.
+leaves a file that parses. Every recon file (single-domain and IP mode too)
+states its scope: `metadata.org_domain`, `metadata.scope_mode` (`exact` |
+`enumerate`), `metadata.include_root_domain` (always stamped; a file without
+`scope_mode` is an older one and keeps the old default, root included), plus
+top-level `scope_groups` (every group of the project, snake-case keys) and
+`all_project_roots`. The merged canonical file drops the per-group scalars
+(`scope_mode`, `org_domain`, `include_root_domain`, `filtered_mode`,
+`wildcard_mode`, `subdomain_filter`) and carries `metadata.org_domains` and
+`metadata.scope_groups` instead. A run that skips discovery reads each group's
+previous file as its input, so only the files of removed roots are cleared.
+
+**Graph.** One `Domain` per registrable domain: every in-scope host is a
+`Subdomain` of its org, a deeper scan root that is a target is
+`Subdomain {is_scan_root: true}`, and a host under no scan root is an
+`ExternalDomain` even when it shares the org. Each group stamps the coverage
+record on its org Domain, merged across the run's groups of that org
+(`recon_coverage_roots`). A graph built before this model (a `Domain` named
+after an old scan root) refuses partial recon, GVM and AI-attack starts until a
+full recon rebuilds it.
 
 **Limits.** 500 hostnames and 50 domain groups per project. A batch holds the
 project's single scan slot for as long as it runs, so a very long list is a very
 long scan.
 
-Implementation: `_batch_groups()` / `run_domain_batch()` / `run_domain_group()` in
+Implementation: `_batch_groups()` / `run_domain_batch()` / `run_domain_group(group)` in
 `recon/main.py` (a batch group runs on `target_info_from_group`,
-`recon/helpers/batch_groups.py`), grouping in `webapp/src/lib/domainBatch.ts`,
-output handling in `recon/helpers/output_paths.py`.
+`recon/helpers/batch_groups.py`; ownership in `_group_ownership`), grouping in
+`webapp/src/lib/domainBatch.ts`, output handling in `recon/helpers/output_paths.py`,
+graph scope in `graph_db/mixins/recon/scope.py` (`scan_root_for_host`,
+`org_for_scan_root`).
 
 ### Authenticated scans: where the session goes
 

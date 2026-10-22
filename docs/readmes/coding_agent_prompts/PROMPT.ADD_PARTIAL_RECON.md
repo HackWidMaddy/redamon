@@ -52,7 +52,7 @@ How to manage input fields from modal:
 - **Typed input is scope-checked centrally -- never in your module.** The orchestrator filters `user_inputs` / `user_targets` before it spawns the container, and `_prepare_scope` runs `filter_partial_user_input(config, settings)` again inside it, against the container's own settings: a typed host or URL host must pass the partial rule of the run's scope groups (strictly under an ENUMERATE scan root, or one of an EXACT group's listed hosts; the scan root itself only with Root on), an IP or CIDR may be no wider than /24 (IPv4) or /120 (IPv6), `ip_attach_to` must be an in-scope host and `url_attach_to` is judged by its URL's host. Refused entries are dropped with a log line, and a run that typed targets, kept none and reads no graph targets is refused. Your module reads the surviving `config["user_targets"]`; it must not add a typed URL's host to the writer's scope itself (`_scope_partial_urls` adds it only when the scope admits it).
 - **An old-model graph refuses the run.** Before `_run_tool`, `_legacy_graph_refusal` asks the graph whether a Domain from an older scope model still holds data (`legacy_domain_nodes`) and refuses the run, failing closed when Neo4j is unreachable; the webapp refuses the same start with a 409 first. A full recon clears it. New tools inherit this; do not bypass it.
 - **User input graph strategy -- choose by type:**
-  - **Subdomain** -> attaches to the Domain of the root it sits under (`root_for_host(sub, roots)`; a Domain-batch project has several roots). Create real Subdomain + IP + RESOLVES_TO nodes directly. No UserInput. The typed subdomain already passed the scope check (see above).
+  - **Subdomain** -> attaches to the **org** Domain of the scan root it sits under (`root_for_host(sub, roots)` gives the scan root, `attach_org(root)` its registrable domain; the graph has one Domain per org). Create real Subdomain + IP + RESOLVES_TO nodes directly. No UserInput. The typed subdomain already passed the scope check (see above); `typed_host_ok(host, roots, groups)` is the module-side backstop if you re-check.
   - **Any other node type** (IP, URL, etc.) -> user must choose which existing node to attach to via a dropdown, OR select "Generic (UserInput)" for orphan provenance.
   - If attachment target doesn't exist at scan time, fall back to UserInput automatically.
 - **Mutual exclusion.** Only one partial recon OR full recon can run at a time per project. The orchestrator enforces this (409 Conflict).
@@ -103,7 +103,9 @@ User clicks Play on tool node (ProjectForm)
 **Each input type the tool accepts gets its own section in the modal.** This is the core UI pattern:
 
 ### Rule: Subdomains auto-attach to their root's Domain
-A subdomain belongs to the root it sits under, so no dropdown is needed. A Domain-batch project has several roots: the container has already dropped any typed subdomain the scope groups do not admit (`filter_partial_user_input`), so attach each survivor with `root_for_host(entry, roots)`. Read the roots with `roots = scope_roots(config)`, never `config["domain"]` -- `recon/tests/test_partial_scope_guard.py` fails the gate on a direct read.
+A subdomain belongs to the scan root it sits under, so no dropdown is needed. A Domain-batch project has several scan roots: the container has already dropped any typed subdomain the scope groups do not admit (`filter_partial_user_input`), so attach each survivor to `attach_org(root_for_host(entry, roots))`, the org Domain. Read the roots with `roots = scope_roots(config)`, never `config["domain"]` -- `recon/tests/test_partial_scope_guard.py` fails the gate on a direct read. A UserInput node takes `root_orgs=root_orgs(roots)` so it lands on the org of its first host's scan root.
+
+**Scope versus attach, in the writers.** `graph_db/mixins/recon/scope.py` splits the two decisions: `scan_root_for_host(host, recon_data)` is the scope (the longest scan root the host is under; a scan root itself only when its group has Root on, and the match stops there), `org_for_scan_root(root, recon_data)` is the attach key, and `attach_for_host` returns both for a writer (`IN_SCOPE` with the org, `SKIPPED` for a scan root that is no target, `OUT_OF_SCOPE` for an ExternalDomain). The groups come from `recon_data["scope_groups"]`; a partial run's dicts usually carry none, so `_prepare_scope` calls `set_project_scope(groups)`, which sets the run's default through `set_run_scope_groups`. A recon dict's own `scope_groups` always wins.
 
 ### Rule: All other input types need a "Associate to" dropdown
 IPs, URLs, or any other user values need explicit association. The dropdown offers:
@@ -154,7 +156,7 @@ const nmapNoPorts = isNmap && !includeGraphTargets && !customPorts.trim()
 
 The project's "Include Root Domain" setting (TargetSection UI) maps to whether `"."` is in `subdomainList`. Partial recon must honor this scope rule **exactly the same way the full pipeline does** (`recon/main.py:parse_target`). Without this, partial-recon writes apex BaseURL/Endpoint nodes that violate the user's stated scope.
 
-**Scope groups decide it per root.** `_prepare_scope` writes `config["domain_groups"]`, built by `partial_domain_groups(settings, roots)` from the container's `SCOPE_GROUPS` (`settings_scope_groups(settings)`), never from anything in the config payload. With `domain_groups` passed to a graph builder, each root follows its own group: `include_root_for(root, groups)` is that group's `includeRoot`, and `allowed_hosts_for(root, groups)` narrows an EXACT group -- a single-domain project with a subdomain prefix list included -- to its listed hosts (None for an ENUMERATE group: any host under the scan root). `org_for_root(root, groups)` gives the root's registrable domain. `_should_include_root_domain(settings)` below is only the fallback for a call that passes no groups.
+**Scope groups decide it per root.** `_prepare_scope` writes `config["domain_groups"]`, built by `partial_domain_groups(settings, roots)` from the container's `SCOPE_GROUPS` (`settings_scope_groups(settings)`), never from anything in the config payload. With `domain_groups` passed to a graph builder, each root follows its own group: `include_root_for(root, groups)` is that group's `includeRoot`, and `allowed_hosts_for(root, groups)` narrows an EXACT group -- a single-domain project with a subdomain prefix list included -- to its listed hosts (None for an ENUMERATE group: any host under the scan root). `org_for_root(root, groups)` gives the root's registrable domain. The graph builders read hosts with `toLower(d.name) IN <orgs>` and keep a host only when its longest project scan root is one of the run's and the §4.6 rule admits it (`_GraphScope`, `graph_scope_subdomains`), so a removed scan root's hosts are never offered. `_should_include_root_domain(settings)` below is only the fallback for a call that passes no groups.
 
 **The contract (single source of truth: `metadata.include_root_domain`):**
 - `_should_include_root_domain(settings)` returns True iff `SUBDOMAIN_LIST` contains `"."` (or any prefix that strips to empty). Mirrors `parse_target`.
@@ -231,11 +233,9 @@ elif tool_id == "<ToolName>":
 
 ### 2. Backend: Graph Mixin
 
-File: `graph_db/mixins/recon_mixin.py`
+Reuse the existing `update_graph_from_<stage>()` methods; a writer attaches every host through `attach_for_host` (scope then org, above), never `MATCH (d:Domain {name: <scan root>})`.
 
-Reuse existing `update_graph_from_<stage>()` methods. Add a case to `get_graph_inputs_for_tool()` that returns counts AND node name lists (for the dropdown).
-
-The Cypher query should return counts of the tool's input node types, plus name lists for dropdown options. See existing cases in `get_graph_inputs_for_tool()` for Naabu/Masscan (port scanners) and Nmap patterns.
+The graph-input counts and dropdown name lists live in the webapp only: add the tool's case to `webapp/src/app/api/recon/[projectId]/graph-inputs/[toolId]/route.ts`, using its positive scope test (`graphHostInScopeCypher`). The old orchestrator endpoint and `get_graph_inputs_for_tool()` are gone.
 
 ### 3. Frontend: Types (`recon-types.ts`)
 
@@ -366,7 +366,6 @@ Each tool's settings section has a header with a Toggle switch. Add a "Run parti
 
 | File | When |
 |------|------|
-| `graph_db/mixins/recon_mixin.py` | Add `get_graph_inputs_for_tool()` case with node name lists |
 | `webapp/src/app/api/recon/[projectId]/graph-inputs/[toolId]/route.ts` | Add tool-specific Neo4j query for counts + names |
 | `webapp/src/lib/recon-types.ts` | Extend `GraphInputs` / `UserTargets` if tool has new input types |
 | `recon/tests/test_partial_recon.py` | Add test class for new tool |

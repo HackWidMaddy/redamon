@@ -52,7 +52,9 @@ graph-sourced inputs, the modal, and the single-phase re-run.
   fails the gate on a direct read. Pass `domain_groups=config.get("domain_groups")`
   (built from the container's `SCOPE_GROUPS`) to the graph builders so each root
   keeps its group's scope: an EXACT group, a single-domain prefix list included,
-  scans only its listed hosts. Attach each typed host to `root_for_host(host, roots)`.
+  scans only its listed hosts. Attach each typed host to the org Domain of its
+  scan root, `attach_org(root_for_host(host, roots))`: the graph has one Domain
+  per registrable domain, never one per scan root.
 - **NEVER re-implement the typed-input scope check in a module.** The orchestrator
   and `_prepare_scope` (`filter_partial_user_input`) already dropped every typed
   host, URL host, over-wide CIDR and out-of-scope attach target, and a typed URL's
@@ -63,10 +65,14 @@ graph-sourced inputs, the modal, and the single-phase re-run.
   never a bare `for`. It fails only the root that raised or called `sys.exit`,
   retries a rate-limited root once, and returns the `{root: status}` the run report
   and exit code read. Mirror Urlscan (a 429 returns `STATUS_RATE_LIMITED`) or Shodan.
-- **A writer attaches a host through `attach_roots(recon_data)`**, not
-  `scope_roots`: the full pipeline scans one batch group at a time but carries
-  every root in `all_project_roots`, so a host found under another root joins
-  that root instead of becoming an `ExternalDomain`.
+- **A writer attaches a host through `attach_for_host(host, recon_data)`**
+  (`graph_db/mixins/recon/scope.py`): the scope is the longest scan root among
+  `attach_roots(recon_data)` (every project root, from `all_project_roots`, so a
+  host found under another group's root joins it instead of becoming an
+  `ExternalDomain`), and the Domain is that root's org (`org_for_scan_root`). A
+  partial run's recon dicts carry no `scope_groups`; `_prepare_scope` sets the
+  run's default (`set_project_scope` -> `set_run_scope_groups`), and a dict's own
+  `scope_groups` always wins.
 
 ---
 
