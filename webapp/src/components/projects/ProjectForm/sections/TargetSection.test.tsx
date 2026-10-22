@@ -199,9 +199,9 @@ describe('single domain: the target may be a hostname', () => {
     expect(screen.getByPlaceholderText('example.com or api.example.com')).toBeInTheDocument()
   })
 
-  test('the hint names the registrable domain and the scan root', () => {
+  test('the hint names the graph (registrable) domain and the scan root', () => {
     renderSingle('api.example.com')
-    expect(screen.getByText(/Registrable domain: example\.com · scan root: api\.example\.com/)).toBeInTheDocument()
+    expect(screen.getByText(/Graph domain: example\.com · scan root: api\.example\.com/)).toBeInTheDocument()
   })
 
   test('Include Root names the actual target', () => {

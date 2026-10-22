@@ -50,6 +50,12 @@ const VECTORS: { name: string; rows: DomainRow[]; groups: ReturnType<typeof batc
     legacy: [],
   },
   {
+    name: "a deep single-domain target's own Domain is legacy once the graph names the org",
+    rows: [{ name: 'api.example.com', hasData: true }],
+    groups: single('api.example.com'),
+    legacy: ['api.example.com'],
+  },
+  {
     name: 'a deeper Domain under a current scan root is legacy',
     rows: [{ name: 'api.example.com', hasData: true }, { name: 'example.com', hasData: true }],
     groups: batch('*.example.com'),
@@ -64,7 +70,7 @@ describe('legacyDomainNames (the query predicate)', () => {
 })
 
 describe('legacyGraphParams', () => {
-  test('expected are the scan roots; related are orgs and scan roots, lower-cased', () => {
+  test('expected are the orgs; related are orgs and scan roots, lower-cased', () => {
     expect(legacyGraphParams(batch('WWW.Acme.CO.UK', '*.beta.test'))).toEqual({
       expected: ['acme.co.uk', 'beta.test'],
       related: ['acme.co.uk', 'beta.test'],
@@ -119,5 +125,13 @@ describe.skipIf(!existsSync(SHARED))('legacy graph: the vectors graph_db shares'
   test.each(cases.map(c => [c.name, c] as const))('%s', (_name, c) => {
     const rows = c.domains.map(d => ({ name: d.name, ipMode: !!d.ip_mode, hasData: !!(d.has_subdomain || d.coverage) }))
     expect(legacyDomainNamesFor(rows, c.expected, c.related).sort()).toEqual([...c.legacy].sort())
+  })
+})
+
+describe('legacyGraphParams: a deep scan root', () => {
+  test('expects the org, relates both names', () => {
+    expect(legacyGraphParams(single('api.example.com'))).toEqual({
+      expected: ['example.com'], related: ['example.com', 'api.example.com'],
+    })
   })
 })

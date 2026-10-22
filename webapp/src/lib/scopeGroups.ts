@@ -16,10 +16,10 @@ import { icannRegistrable, isIpLiteral, orgDomain } from '@/lib/publicSuffix'
 export type { ScopeGroup } from '@/lib/domainBatch'
 
 /**
- * Which name the graph's Domain node carries. Until the org model ships the
- * graph names a Domain after the scan root; from then on after the org.
+ * Which name the graph's Domain node carries: the org (registrable domain).
+ * A deeper scan root is a Subdomain of it (`is_scan_root`) when it is a target.
  */
-export const GRAPH_DOMAIN_IS_ORG = false
+export const GRAPH_DOMAIN_IS_ORG = true
 
 /** The scope fields of a project row or a create/update body. */
 export interface ScopeFields {

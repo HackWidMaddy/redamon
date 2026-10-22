@@ -125,10 +125,12 @@ describe('isScopeWidening (containment, D-21)', () => {
 })
 
 describe('expected Domain names and labels', () => {
-  test('before the org model the graph Domain is the scan root', () => {
-    expect(GRAPH_DOMAIN_IS_ORG).toBe(false)
+  test('the graph Domain is the org, once per org', () => {
+    expect(GRAPH_DOMAIN_IS_ORG).toBe(true)
     const { groups } = resolveScopeGroups({ targetDomain: 'Api.Example.com' })
-    expect(expectedDomainNames(groups)).toEqual(['api.example.com'])
+    expect(expectedDomainNames(groups)).toEqual(['example.com'])
+    expect(expectedDomainNames(batch(['www.acme.co.uk', 'shop.acme.co.uk', '*.example.org']))).toEqual(
+      ['acme.co.uk', 'example.org'])
   })
 
   test('labels and the summary read as one line', () => {
