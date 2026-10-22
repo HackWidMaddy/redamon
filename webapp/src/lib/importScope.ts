@@ -57,11 +57,12 @@ export function normalizeImportedScope(fields: Record<string, unknown>): ImportS
     fields.domainBatchGroups = Prisma.DbNull
     fields.domainBatchHosts = []
     if (!ipMode && typeof fields.targetDomain === 'string') {
-      fields.targetDomain = splitWildcard(normalizeHost(fields.targetDomain)).rest
+      const targetDomain = splitWildcard(normalizeHost(fields.targetDomain)).rest
+      fields.targetDomain = targetDomain
       const prefixes = Array.isArray(fields.subdomainList)
         ? fields.subdomainList.filter((x): x is string => typeof x === 'string')
         : []
-      const { invalid } = resolveScopeGroups({ targetDomain: fields.targetDomain, subdomainList: prefixes })
+      const { invalid } = resolveScopeGroups({ targetDomain, subdomainList: prefixes })
       const badPrefixes = invalid.filter(i => i.reason === 'invalid_prefix')
       if (invalid.length > badPrefixes.length) {
         return { error: `The bundle's target cannot be imported. ${describeInvalid(invalid)}`, status: 400, warnings }
