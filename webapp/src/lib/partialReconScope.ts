@@ -7,7 +7,7 @@
  * and refuses anything else. This is a mirror of it, used only to decide what
  * the modal shows and sends.
  */
-import { type ScopeGroup, admitsHost, resolveScopeGroups } from '@/lib/scopeGroups'
+import { GRAPH_DOMAIN_IS_ORG, type ScopeGroup, admitsHost, resolveScopeGroups } from '@/lib/scopeGroups'
 
 const ROOT_CHARSET = /^[a-z0-9.-]+$/
 
@@ -102,19 +102,30 @@ export interface PartialScopeFields {
 
 const byName = (a: string, b: string) => a.localeCompare(b)
 
+/** The Domain node a scan root's hosts hang off: its org, once the graph
+ *  names Domains after the org; the root itself in IP mode or without groups. */
+export function graphDomainOf(scope: ProjectRoots, root: string): string {
+  const low = root.toLowerCase()
+  if (!GRAPH_DOMAIN_IS_ORG) return low
+  const group = scope.groups.find(g => g.scanRoot.toLowerCase() === low)
+  return (group?.orgDomain ?? low).toLowerCase()
+}
+
 /**
  * The scope part of a graph-inputs response.
  *
  * `graph` is the project's Domain nodes, or null when Neo4j could not be read;
  * the roots are then offered as they are, and the orchestrator still decides.
  * A tool not yet able to cover several roots is offered only the first.
+ * Domain nodes are orgs: a scan root is "in the graph" when its org Domain is,
+ * and a Domain no current scan root hangs off is stale.
  */
 export function partialScopeFields(
   scope: ProjectRoots,
   graph: GraphDomainRow[] | null,
 ): PartialScopeFields {
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-  const inGraph = (root: string) => (graph ?? []).some(row => same(row.name, root))
+  const inGraph = (root: string) => (graph ?? []).some(row => same(row.name, graphDomainOf(scope, root)))
 
   let current = [...scope.roots]
   // IP mode's root exists only once a full recon has minted it. A domain root
@@ -123,12 +134,13 @@ export function partialScopeFields(
   current.sort(byName)
 
   const domains = current
+  const graphNames = new Set(scope.roots.map(root => graphDomainOf(scope, root)))
   const stale = (graph ?? [])
     .map(row => row.name)
-    .filter(name => !scope.roots.some(root => same(root, name)))
+    .filter(name => !graphNames.has(name.toLowerCase()))
     .sort(byName)
   const withData = new Set((graph ?? []).filter(row => row.hasData).map(row => row.name.toLowerCase()))
-  const empty = graph ? domains.filter(root => !withData.has(root.toLowerCase())) : []
+  const empty = graph ? domains.filter(root => !withData.has(graphDomainOf(scope, root))) : []
 
   return { domain: domains[0] ?? null, domains, stale_domains: stale, empty_domains: empty }
 }
@@ -161,4 +173,56 @@ export function underAnyRoot(host: string, roots: readonly string[]): boolean {
     const root = r.toLowerCase()
     return h === root || h.endsWith('.' + root)
   })
+}
+
+/**
+ * The parameters of the graph's positive scope test for a partial run over
+ * `selected` scan roots (§4.6 partial-recon graph targets): a host is in scope
+ * when its LONGEST scan root is one of them and that group admits it, i.e. an
+ * EXACT group's listed host, a scan root with Root on, or a strict subdomain of
+ * an ENUMERATE root. Lower-cased; the Cypher form is `graphHostInScopeCypher`.
+ */
+export interface GraphScopeParams {
+  /** Listed hosts of the selected groups (EXACT hosts, roots with Root on). */
+  listed: string[]
+  /** Selected ENUMERATE scan roots. */
+  enumRoots: string[]
+  /** Every current scan root: a longer one claims its hosts from a shorter one. */
+  allRoots: string[]
+}
+
+function longestRoot(host: string, roots: readonly string[]): string | undefined {
+  return roots.filter(r => host === r || host.endsWith(`.${r}`)).sort((a, b) => b.length - a.length)[0]
+}
+
+export function graphScopeParams(scope: ProjectRoots, selected: readonly string[]): GraphScopeParams {
+  const wanted = new Set(selected.map(r => r.toLowerCase()))
+  const allRoots = [...new Set(scope.groups.map(g => g.scanRoot.toLowerCase()))]
+  const listed: string[] = []
+  const enumRoots: string[] = []
+  for (const g of scope.groups) {
+    const root = g.scanRoot.toLowerCase()
+    if (!wanted.has(root)) continue
+    if (g.mode === 'enumerate') enumRoots.push(root)
+    for (const h of [...g.exactHosts, ...(g.includeRoot ? [g.scanRoot] : [])]) {
+      const host = h.toLowerCase()
+      if (longestRoot(host, allRoots) === root && !listed.includes(host)) listed.push(host)
+    }
+  }
+  return { listed, enumRoots, allRoots }
+}
+
+/** `graphScopeParams`' test in TypeScript, the predicate the Cypher runs. */
+export function graphHostInScope(params: GraphScopeParams, host: string): boolean {
+  const h = host.toLowerCase()
+  if (params.listed.includes(h)) return true
+  return params.enumRoots.some(r => h.endsWith(`.${r}`)
+    && !params.allRoots.some(x => x.length > r.length && (h === x || h.endsWith(`.${x}`))))
+}
+
+/** The same test on a lower-cased Cypher host expression, over $listed,
+ *  $enumRoots and $allRoots. */
+export function graphHostInScopeCypher(host: string): string {
+  return `(${host} IN $listed OR ANY(r IN $enumRoots WHERE ${host} ENDS WITH '.' + r
+    AND NOT ANY(x IN $allRoots WHERE size(x) > size(r) AND (${host} = x OR ${host} ENDS WITH '.' + x))))`
 }

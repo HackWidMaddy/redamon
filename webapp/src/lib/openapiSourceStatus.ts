@@ -1,8 +1,9 @@
 /**
  * Per-source status of the OpenAPI documents a project configures.
  *
- * Recon writes one string per configured document on the Domain it ran for:
- * "<source id>|<sha256(public url)[:12]>|<code>|<ISO time>". It holds no URL,
+ * Recon writes one string per configured document on the org Domain of the
+ * scan root it ran for: "<scan root>|<source id>|<sha256(public url)[:12]>|<code>|<ISO time>"
+ * (older runs wrote the same without the scan root). It holds no URL,
  * since a document URL can carry a token. The form shows a status only while
  * the row's current URL hashes to the stored one; an edited URL reads
  * "Not fetched yet" until the next run.
@@ -29,8 +30,13 @@ export function parseOpenApiSourceStatus(entries: unknown): Map<string, OpenApiS
   if (!Array.isArray(entries)) return out
   for (const entry of entries) {
     if (typeof entry !== 'string') continue
-    const [id, hash, code, at] = entry.split('|')
-    if (id && hash && code) out.set(id, { hash, code, at: at ?? '' })
+    const parts = entry.split('|')
+    // Five segments lead with the scan root; a document fetched for several
+    // roots shows its newest status.
+    const [id, hash, code, at = ''] = parts.length >= 5 ? parts.slice(1) : parts
+    if (!id || !hash || !code) continue
+    const seen = out.get(id)
+    if (!seen || at > seen.at) out.set(id, { hash, code, at })
   }
   return out
 }

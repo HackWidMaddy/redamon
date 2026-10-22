@@ -25,6 +25,16 @@ describe('the status recon writes', () => {
     expect(parseOpenApiSourceStatus(null).size).toBe(0)
   })
 
+  test('the five-segment form leads with the scan root; the newest status per source wins', () => {
+    const parsed = parseOpenApiSourceStatus([
+      'api.example.com|s1|aaaaaaaaaaaa|ok|2026-10-20T00:00:00Z',
+      'example.com|s1|aaaaaaaaaaaa|http_404|2026-10-21T00:00:00Z',
+      's2|bbbbbbbbbbbb|ok|2026-10-19T00:00:00Z',
+    ])
+    expect(parsed.get('s1')).toEqual({ hash: 'aaaaaaaaaaaa', code: 'http_404', at: '2026-10-21T00:00:00Z' })
+    expect(parsed.get('s2')?.code).toBe('ok')
+  })
+
   test.each([
     ['ok', 'Imported'], ['out_of_scope', 'Outside scope'], ['blocked_address', 'Internal address blocked'],
     ['http_401', 'HTTP 401'], ['invalid_document', 'Invalid document'], ['host_down', 'Host down'],

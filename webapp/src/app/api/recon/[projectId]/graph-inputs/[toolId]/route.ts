@@ -4,6 +4,8 @@ import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import {
   discoveryDomains,
+  graphHostInScopeCypher,
+  graphScopeParams,
   partialScopeFields,
   resolveProjectRoots,
   type GraphDomainRow,
@@ -29,41 +31,34 @@ function strings(record: Neo4jRecord | undefined, key: string): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
 }
 
-// Every Domain-anchored count starts here: the roots this run covers, never
-// "whichever Domain node Neo4j returned first".
-const DOMAINS = `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE d.name IN $domains`
+/**
+ * The scope part of every count, in one of two forms:
+ *
+ * - by graph scope (domain projects with scope groups): Domain nodes are orgs,
+ *   so a host is counted when the positive §4.6 test admits it for the run's
+ *   scan roots (graphHostInScopeCypher: an EXACT group's listed hosts, a root
+ *   with Root on, strict subdomains of an ENUMERATE root, the longest root
+ *   deciding). A removed scan root's hosts fail it, though they still hang off
+ *   a current org Domain until the next full recon (§4.11.7).
+ * - by Domain name (IP mode, or a row whose groups cannot be derived): the
+ *   run's roots are Domain names, as before the org model.
+ *
+ * `domains` binds `d` (the Domains whose own IPs count: only a root that is
+ * itself in scope); `subPath(tail)` binds `s` (plus `tail`'s variables);
+ * `hostOk(expr)` tests a lower-cased host expression.
+ */
+interface ScopeCypher {
+  domains: string
+  subPath: (tail: string) => string
+  hostOk: (host: string) => string
+}
 
-const SUBDOMAIN_COUNT = `${DOMAINS}
-  OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
-  RETURN count(DISTINCT s) AS subdomainCount`
-
-const SUBDOMAINS_AND_IPS = `${DOMAINS}
-  OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)-[:RESOLVES_TO]->(i:IP)
-  OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)
-  WITH collect(DISTINCT s.name) AS subdomains,
-       count(DISTINCT i) + count(DISTINCT di) AS ipCount
-  RETURN subdomains, size(subdomains) AS subCount, ipCount`
-
-// Same IP + Port shape as Nmap: tlsx grabs certs on already-open ports.
-const PORTS = `${DOMAINS}
-  OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)-[:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)
-  OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)-[:HAS_PORT]->(dp:Port)
-  WITH collect(DISTINCT s.name) AS subdomains,
-       count(DISTINCT i) + count(DISTINCT di) AS ipCount,
-       count(DISTINCT p) + count(DISTINCT dp) AS portCount
-  RETURN subdomains, size(subdomains) AS subCount, ipCount, portCount`
-
-const SUBDOMAIN_LIST = `${DOMAINS}
-  OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
-  WITH collect(DISTINCT s.name) AS subdomains
-  RETURN subdomains, size(subdomains) AS subCount`
-
-// BaseURLs and Endpoints are project-wide: a BaseURL is not tied to a Domain
-// node. The tools that read them skip a host under a Domain the run does not
-// cover (a root dropped from the batch keeps its node until the next full
-// recon, or one left unticked), so the counts skip it too.
-const hostOfUrl = (url: string) => `split(split(split(${url}, '://')[1], '/')[0], ':')[0]`
-const BASEURL_HOST = `toLower(coalesce(b.host, ${hostOfUrl('b.url')}))`
+const BY_GRAPH_SCOPE: ScopeCypher = {
+  domains: `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE ${graphHostInScopeCypher('toLower(d.name)')}`,
+  subPath: tail => `OPTIONAL MATCH (s:Subdomain {user_id: $uid, project_id: $pid})${tail}
+    WHERE ${graphHostInScopeCypher('toLower(s.name)')}`,
+  hostOk: host => graphHostInScopeCypher(host),
+}
 
 function notUnderOtherDomain(host: string): string {
   return `NOT EXISTS {
@@ -73,18 +68,55 @@ function notUnderOtherDomain(host: string): string {
   }`
 }
 
-const SCOPED_BASEURLS = `OPTIONAL MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
-  WHERE ${notUnderOtherDomain(BASEURL_HOST)}`
+const BY_DOMAIN_NAME: ScopeCypher = {
+  domains: `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE d.name IN $domains`,
+  subPath: tail => `OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)${tail}`,
+  hostOk: notUnderOtherDomain,
+}
 
-const SCOPED_ENDPOINTS = `OPTIONAL MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
-  WHERE ${notUnderOtherDomain(`toLower(${hostOfUrl('e.baseurl')})`)}`
+const SUBDOMAIN_COUNT = (q: ScopeCypher) => `${q.domains}
+  ${q.subPath('')}
+  RETURN count(DISTINCT s) AS subdomainCount`
 
-const BASEURLS = `${SCOPED_BASEURLS}
+const SUBDOMAINS_AND_IPS = (q: ScopeCypher) => `${q.domains}
+  ${q.subPath('-[:RESOLVES_TO]->(i:IP)')}
+  OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)
+  WITH collect(DISTINCT s.name) AS subdomains,
+       count(DISTINCT i) + count(DISTINCT di) AS ipCount
+  RETURN subdomains, size(subdomains) AS subCount, ipCount`
+
+// Same IP + Port shape as Nmap: tlsx grabs certs on already-open ports.
+const PORTS = (q: ScopeCypher) => `${q.domains}
+  ${q.subPath('-[:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)')}
+  OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)-[:HAS_PORT]->(dp:Port)
+  WITH collect(DISTINCT s.name) AS subdomains,
+       count(DISTINCT i) + count(DISTINCT di) AS ipCount,
+       count(DISTINCT p) + count(DISTINCT dp) AS portCount
+  RETURN subdomains, size(subdomains) AS subCount, ipCount, portCount`
+
+const SUBDOMAIN_LIST = (q: ScopeCypher) => `${q.domains}
+  ${q.subPath('')}
+  WITH collect(DISTINCT s.name) AS subdomains
+  RETURN subdomains, size(subdomains) AS subCount`
+
+// BaseURLs and Endpoints are project-wide: a BaseURL is not tied to a Domain
+// node. The tools that read them skip a host outside the run's scope, so the
+// counts skip it too.
+const hostOfUrl = (url: string) => `split(split(split(${url}, '://')[1], '/')[0], ':')[0]`
+const BASEURL_HOST = `toLower(coalesce(b.host, ${hostOfUrl('b.url')}))`
+
+const SCOPED_BASEURLS = (q: ScopeCypher) => `OPTIONAL MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
+  WHERE ${q.hostOk(BASEURL_HOST)}`
+
+const SCOPED_ENDPOINTS = (q: ScopeCypher) => `OPTIONAL MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
+  WHERE ${q.hostOk(`toLower(${hostOfUrl('e.baseurl')})`)}`
+
+const BASEURLS = (q: ScopeCypher) => `${SCOPED_BASEURLS(q)}
   RETURN collect(DISTINCT b.url) AS baseurls`
 
-const BASEURLS_AND_ENDPOINTS = `${SCOPED_BASEURLS}
+const BASEURLS_AND_ENDPOINTS = (q: ScopeCypher) => `${SCOPED_BASEURLS(q)}
   WITH collect(DISTINCT b.url) AS baseurls
-  ${SCOPED_ENDPOINTS}
+  ${SCOPED_ENDPOINTS(q)}
   RETURN baseurls, count(DISTINCT e) AS endpointCount`
 
 const baseurlFields = (r: Neo4jRecord | undefined) => {
@@ -97,7 +129,7 @@ const subdomainFields = (r: Neo4jRecord | undefined) => ({
 })
 
 interface ToolQuery {
-  cypher: string
+  cypher: (q: ScopeCypher) => string
   respond: (record: Neo4jRecord | undefined) => Record<string, unknown>
 }
 
@@ -132,9 +164,10 @@ const JS_TOOL: ToolQuery = {
   }),
 }
 
-// Per-source OpenAPI status, one string per configured document
-// ("<id>|<url hash>|<code>|<time>"), written on the Domain of the run that
-// fetched it; a Domain batch spreads them over its roots.
+// Per-source OpenAPI status, one string per configured document, written on
+// the org Domain of the scan root that fetched it
+// ("<scan root>|<id>|<url hash>|<code>|<time>"; older runs: no scan root).
+// The parser (openapiSourceStatus.ts) accepts both.
 const OPENAPI_SOURCE_STATUS = `MATCH (d:Domain {user_id: $uid, project_id: $pid})
   WHERE d.openapi_source_status IS NOT NULL
   UNWIND d.openapi_source_status AS s
@@ -174,10 +207,10 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   Gau: { cypher: SUBDOMAIN_LIST, respond: subdomainFields },
   ParamSpider: { cypher: SUBDOMAIN_LIST, respond: subdomainFields },
   ZapAjaxSpider: {
-    cypher: `${SCOPED_BASEURLS}
+    cypher: q => `${SCOPED_BASEURLS(q)}
       WITH collect(DISTINCT b.url) AS baseurls
       OPTIONAL MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
-      WHERE ${notUnderOtherDomain(BASEURL_HOST)}
+      WHERE ${q.hostOk(BASEURL_HOST)}
       RETURN baseurls, count(DISTINCT e) AS endpointCount`,
     respond: r => ({
       ...baseurlFields(r),
@@ -186,7 +219,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     }),
   },
   Arjun: {
-    cypher: `${SCOPED_BASEURLS}
+    cypher: q => `${SCOPED_BASEURLS(q)}
       OPTIONAL MATCH (b)-[:HAS_ENDPOINT]->(e:Endpoint {user_id: $uid, project_id: $pid})
       WITH collect(DISTINCT b.url) AS baseurls, count(DISTINCT e) AS endpointCount
       RETURN baseurls, endpointCount`,
@@ -197,7 +230,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     }),
   },
   EndpointAiClassifier: {
-    cypher: `OPTIONAL MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
+    cypher: () => `OPTIONAL MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
       WITH count(DISTINCT e) AS endpointCount
       OPTIONAL MATCH (p:Parameter {user_id: $uid, project_id: $pid})
       WITH endpointCount, count(DISTINCT p) AS parameterCount
@@ -211,12 +244,12 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     }),
   },
   SecurityChecks: {
-    cypher: `${DOMAINS}
-      OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)-[:RESOLVES_TO]->(i:IP)
+    cypher: q => `${q.domains}
+      ${q.subPath('-[:RESOLVES_TO]->(i:IP)')}
       OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)
       WITH collect(DISTINCT s.name) AS subdomains,
            count(DISTINCT i) + count(DISTINCT di) AS ipCount
-      ${SCOPED_BASEURLS}
+      ${SCOPED_BASEURLS(q)}
       WITH subdomains, ipCount, collect(DISTINCT b.url) AS baseurls
       RETURN subdomains, size(subdomains) AS subCount, ipCount, baseurls`,
     respond: r => ({
@@ -226,11 +259,11 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     }),
   },
   Httpx: {
-    cypher: `${DOMAINS}
-      OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
+    cypher: q => `${q.domains}
+      ${q.subPath('')}
       WITH collect(DISTINCT s.name) AS subdomains
-      OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE d.name IN $domains
-      OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(:Subdomain)-[:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)
+      ${q.domains}
+      ${q.subPath('-[:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)')}
       OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)-[:HAS_PORT]->(dp:Port)
       OPTIONAL MATCH (p)-[:HAS_SERVICE]->(:Service)-[:SERVES_URL]->(bu:BaseURL)
       OPTIONAL MATCH (dp)-[:HAS_SERVICE]->(:Service)-[:SERVES_URL]->(dbu:BaseURL)
@@ -247,12 +280,12 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     }),
   },
   Nuclei: {
-    cypher: `${DOMAINS}
-      OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
+    cypher: q => `${q.domains}
+      ${q.subPath('')}
       WITH count(DISTINCT s) AS subCount
-      ${SCOPED_BASEURLS}
+      ${SCOPED_BASEURLS(q)}
       WITH subCount, collect(DISTINCT b.url) AS baseurls
-      ${SCOPED_ENDPOINTS}
+      ${SCOPED_ENDPOINTS(q)}
       RETURN subCount, baseurls, count(DISTINCT e) AS endpointCount`,
     respond: r => ({
       existing_subdomains_count: num(r, 'subCount'),
@@ -261,9 +294,9 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     }),
   },
   GraphqlScan: {
-    cypher: `${SCOPED_BASEURLS}
+    cypher: q => `${SCOPED_BASEURLS(q)}
       WITH collect(DISTINCT b.url) AS baseurls
-      ${SCOPED_ENDPOINTS}
+      ${SCOPED_ENDPOINTS(q)}
       RETURN baseurls, count(DISTINCT e) AS endpointCount,
              count(DISTINCT CASE WHEN e.is_graphql = true THEN e END) AS graphqlEndpointCount`,
     respond: r => ({
@@ -275,8 +308,8 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   },
   WebCachePoison: JS_TOOL,
   VhostSni: {
-    cypher: `${DOMAINS}
-      OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
+    cypher: q => `${q.domains}
+      ${q.subPath('')}
       OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP)
       OPTIONAL MATCH (i)-[:HAS_PORT]->(p:Port)
       OPTIONAL MATCH (s)-[:HAS_BASE_URL|HAS_BASEURL]->(bu:BaseURL)
@@ -296,17 +329,17 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     }),
   },
   SubdomainTakeover: {
-    cypher: `${DOMAINS}
-      OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
+    cypher: q => `${q.domains}
+      ${q.subPath('')}
       OPTIONAL MATCH (s)-[:HAS_BASE_URL|HAS_BASEURL]->(bu:BaseURL)
       WITH collect(DISTINCT s.name) AS subdomains, count(DISTINCT bu) AS baseurlCount
       RETURN subdomains, size(subdomains) AS subCount, baseurlCount`,
     respond: r => ({ ...subdomainFields(r), existing_baseurls_count: num(r, 'baseurlCount') }),
   },
   AiSurfaceRecon: {
-    cypher: `${SCOPED_BASEURLS}
+    cypher: q => `${SCOPED_BASEURLS(q)}
       WITH collect(DISTINCT b.url) AS baseurls
-      ${SCOPED_ENDPOINTS}
+      ${SCOPED_ENDPOINTS(q)}
       WITH baseurls,
            count(DISTINCT CASE WHEN (e.ai_interface_type IS NOT NULL AND e.ai_interface_type <> 'non-llm') OR e.is_ai_framework_detected = true THEN e END) AS aiEndpoints,
            count(DISTINCT CASE WHEN e.ai_interface_type = 'mcp' THEN e END) AS mcpEndpoints
@@ -325,15 +358,12 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   // unmask (G7). Fronted = resolves to a CDN IP, or its BaseURL is CDN-flagged /
   // carries a favicon hash.
   OriginDiscovery: {
-    cypher: `${DOMAINS}
-      OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
-      WITH collect(DISTINCT s.name) AS subdomains
-      OPTIONAL MATCH (fd:Domain {user_id: $uid, project_id: $pid})-[:HAS_SUBDOMAIN]->(fs:Subdomain)
-      WHERE fd.name IN $domains
-        AND (EXISTS { (fs)-[:RESOLVES_TO]->(ci:IP) WHERE ci.is_cdn = true }
-         OR EXISTS { (fs)-[:HAS_BASE_URL|HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(ep:Endpoint)
-                     WHERE ep.is_cdn = true OR ep.favicon_hash IS NOT NULL })
-      RETURN subdomains, size(subdomains) AS subCount, count(DISTINCT fs) AS frontedCount`,
+    cypher: q => `${q.domains}
+      ${q.subPath('')}
+      RETURN collect(DISTINCT s.name) AS subdomains, count(DISTINCT s) AS subCount,
+             count(DISTINCT CASE WHEN EXISTS { (s)-[:RESOLVES_TO]->(ci:IP) WHERE ci.is_cdn = true }
+               OR EXISTS { (s)-[:HAS_BASE_URL|HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(ep:Endpoint)
+                           WHERE ep.is_cdn = true OR ep.favicon_hash IS NOT NULL } THEN s END) AS frontedCount`,
     respond: r => ({ ...subdomainFields(r), fronted_count: num(r, 'frontedCount') }),
   },
 }
@@ -386,7 +416,13 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             .filter((row: GraphDomainRow) => row.name)
           const fields = partialScopeFields(scope, graph)
 
-          const result = await session.run(tool.cypher, { uid, pid: projectId, domains: fields.domains })
+          // Domain projects test hosts against the scope groups; IP mode (and a
+          // row whose groups cannot be derived) matches the Domain by name.
+          const byScope = scope.groups.length > 0
+          const result = await session.run(tool.cypher(byScope ? BY_GRAPH_SCOPE : BY_DOMAIN_NAME), {
+            uid, pid: projectId, domains: fields.domains,
+            ...(byScope ? graphScopeParams(scope, fields.domains) : {}),
+          })
           // Old-model Domain nodes (§4.11.6): the modal shows a banner and
           // disables Run, as the partial route refuses the start.
           const legacy = await findLegacyDomains(session, uid, projectId, scope.groups)

@@ -1,5 +1,8 @@
 import { describe, test, expect } from 'vitest'
-import { admitsPartialHost, discoveryDomains, partialScopeFields, resolveProjectRoots } from './partialReconScope'
+import {
+  admitsPartialHost, discoveryDomains, graphDomainOf, graphHostInScope, graphScopeParams, partialScopeFields,
+  resolveProjectRoots,
+} from './partialReconScope'
 
 const PID = 'p1'
 
@@ -76,5 +79,45 @@ describe('partialScopeFields', () => {
     expect(fields.domains).toEqual(['acme.co.uk'])
     expect(fields.stale_domains).toEqual(['co.uk'])
     expect(fields.empty_domains).toEqual(['acme.co.uk'])
+  })
+})
+
+describe('the graph scope test (§4.6 partial-recon graph targets)', () => {
+  const single = resolveProjectRoots({ targetDomain: 'api.example.com', subdomainList: [] }, PID)
+
+  test('a deep single-domain root hangs off its org Domain', () => {
+    expect(graphDomainOf(single, 'api.example.com')).toBe('example.com')
+    const fields = partialScopeFields(single, [{ name: 'example.com', hasData: true }])
+    expect(fields.domains).toEqual(['api.example.com'])
+    expect(fields.stale_domains).toEqual([])
+    expect(fields.empty_domains).toEqual([])
+  })
+
+  test('an enumerated root admits its strict subdomains, the root only with Root on', () => {
+    const params = graphScopeParams(single, ['api.example.com'])
+    expect(graphHostInScope(params, 'v1.api.example.com')).toBe(true)
+    expect(graphHostInScope(params, 'api.example.com')).toBe(false)
+    expect(graphHostInScope(params, 'www.example.com')).toBe(false)
+  })
+
+  test('the longest scan root decides, and only selected roots count', () => {
+    const scope = resolveProjectRoots({
+      domainBatchMode: true, domainBatchHosts: ['*.example.com', 'shop.example.org', 'example.org'],
+    }, PID)
+    const params = graphScopeParams(scope, ['example.org'])
+    expect(graphHostInScope(params, 'shop.example.org')).toBe(true)
+    expect(graphHostInScope(params, 'example.org')).toBe(true)
+    expect(graphHostInScope(params, 'mail.example.org')).toBe(false)  // EXACT: listed only
+    expect(graphHostInScope(params, 'www.example.com')).toBe(false)   // not a selected root
+  })
+
+  test("a removed scan root's hosts are not in scope (§4.11.7)", () => {
+    // Before: *.example.com and the org; after the edit only www.example.com
+    // is listed, so the old enumerated hosts still hang off Domain(example.com).
+    const scope = resolveProjectRoots({ domainBatchMode: true, domainBatchHosts: ['www.example.com'] }, PID)
+    const params = graphScopeParams(scope, ['example.com'])
+    expect(graphHostInScope(params, 'www.example.com')).toBe(true)
+    expect(graphHostInScope(params, 'old.example.com')).toBe(false)
+    expect(discoveryDomains(scope, ['example.com'])).toEqual([])
   })
 })
