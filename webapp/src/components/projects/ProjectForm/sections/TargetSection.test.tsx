@@ -1,8 +1,8 @@
 /**
  * Strategy row 6: the Domain batch group preview must agree with what is saved.
  *
- * The preview is the ONLY place the grouping rule (last two labels) is visible to
- * an operator, and it is what they approve before the scan runs. If it disagrees
+ * The preview is the ONLY place the grouping rule (scope groups by registrable
+ * domain) is visible to an operator, and it is what they approve before the scan runs. If it disagrees
  * with the persisted grouping, or if the input cannot be typed into, the feature's
  * central promise ("you see exactly what will run, in order") is broken.
  *
@@ -16,7 +16,23 @@ import { groupHostsByScanRoot } from '@/lib/domainBatch'
 vi.mock('@/components/shared/ModelPicker', () => ({ ModelPicker: () => null }))
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1' }) }))
 
-afterEach(cleanup)
+// Nested wildcards ship disabled, and the preview's covered-by notes and shared-org
+// rows only exist with them on: a test turns them on for the preview's grouping.
+const flags = vi.hoisted(() => ({ nested: false }))
+vi.mock('@/lib/domainBatch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/domainBatch')>()
+  return {
+    ...actual,
+    validateDomainBatch: (hosts: readonly string[]) => {
+      const v = actual.validateDomainBatch(hosts)
+      if (!flags.nested) return v
+      const { groups, invalid } = actual.groupHostsByScanRoot(hosts, { nestedWildcards: true })
+      return { ...v, groups, invalid }
+    },
+  }
+})
+
+afterEach(() => { cleanup(); flags.nested = false })
 
 type Data = Record<string, unknown>
 
@@ -82,7 +98,7 @@ describe('the preview matches the grouping that will be persisted', () => {
     const rows = screen.getAllByRole('row').slice(1)
     expect(rows.map(r => within(r).getAllByRole('cell')[1].textContent))
       .toEqual(expected.map(g => g.scanRoot))
-    expect(rows.map(r => within(r).getAllByRole('cell')[2].textContent))
+    expect(rows.map(r => within(r).getAllByRole('cell')[4].textContent))
       .toEqual(expected.map(g => g.entries.join(', ')))
   })
 
@@ -96,10 +112,9 @@ describe('the preview matches the grouping that will be persisted', () => {
   test('an invalid entry is flagged and not silently grouped', () => {
     const s = renderSection()
     fireEvent.change(s.textarea(), { target: { value: 'good.example.com\nlocalhost' } })
-    // The warning text is split across nodes, so match on the container's text.
-    // getByText matches the <strong> label; the offending entry is its sibling text.
-    const label = screen.getByText(/Not valid hostnames/)
-    expect(label.parentElement?.textContent).toContain('localhost')
+    // getByText matches the <strong> label; the offending entry is a sibling list item.
+    const label = screen.getByText(/Not accepted/)
+    expect(label.parentElement?.textContent).toContain('localhost: not a valid hostname')
   })
 
   test('a permanently blocked root is called out before submit', () => {
@@ -134,7 +149,80 @@ describe('the preview matches the grouping that will be persisted', () => {
     fireEvent.change(s.textarea(), { target: { value: HOSTS } })
     const hint = screen.getAllByText((_t, el) => /\d+ hostnames?/.test(el?.textContent ?? '')).at(-1)!
     expect(hint.textContent).toMatch(/4 hostnames/)
-    expect(hint.textContent).toMatch(/3 domains/)
+    expect(hint.textContent).toMatch(/3 scope groups across 3 domains/)
+  })
+})
+
+describe('the preview columns (scan root, org, mode, hosts)', () => {
+  const cells = (row: number) => within(screen.getAllByRole('row')[row]).getAllByRole('cell').map(c => c.textContent)
+
+  test('a wildcard row shows *.root, FULL ENUMERATION and its seeds', () => {
+    renderSection({ domainBatchHosts: ['*.example.com', 'v1.example.com', 'www.acme.co.uk'] })
+    expect(cells(1).slice(1, 4)).toEqual(['*.example.com', 'example.com', 'FULL ENUMERATION'])
+    expect(cells(1)[4]).toContain('v1.example.com seeded')
+    expect(cells(2).slice(1, 5)).toEqual(['acme.co.uk', 'acme.co.uk', 'EXACT', 'www.acme.co.uk'])
+  })
+
+  test('a collapsed wildcard is noted on the group that covers it', () => {
+    flags.nested = true
+    renderSection({ domainBatchHosts: ['*.example.com', '*.api.example.com'] })
+    expect(screen.getAllByRole('row').slice(1)).toHaveLength(1)
+    expect(cells(1)[4]).toContain('*.api.example.com covered by *.example.com')
+  })
+
+  test('a second group under the same org is greyed and points at the first', () => {
+    flags.nested = true
+    renderSection({ domainBatchHosts: ['*.api.example.com', 'www.example.com'] })
+    expect(cells(1)[2]).toBe('example.com')
+    expect(cells(2)[2]).toBe('example.com (shared with #1)')
+    expect(cells(1)[1]).toBe('*.api.example.com')
+    // Root on a nested wildcard toggles the scan root's own line, not the org's.
+    expect(screen.getByLabelText('Also scan api.example.com itself')).toBeInTheDocument()
+  })
+
+  test('each refused entry carries its own reason', () => {
+    renderSection({ domainBatchHosts: ['*.co.uk', 'www.example.com'] })
+    expect(screen.getByText(/Not accepted/).parentElement?.textContent)
+      .toContain('*.co.uk: a wildcard on a public suffix')
+  })
+})
+
+describe('single domain: the target may be a hostname', () => {
+  function renderSingle(targetDomain: string, subdomainList: string[] = []) {
+    const data = { ...BASE, domainBatchMode: false, targetDomain, subdomainList }
+    render(<TargetSection data={data as never} updateField={vi.fn() as never} mode="create" />)
+  }
+
+  test('the field says a hostname is fine', () => {
+    renderSingle('')
+    expect(screen.getByText('Target domain or hostname')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('example.com or api.example.com')).toBeInTheDocument()
+  })
+
+  test('the hint names the registrable domain and the scan root', () => {
+    renderSingle('api.example.com')
+    expect(screen.getByText(/Registrable domain: example\.com · scan root: api\.example\.com/)).toBeInTheDocument()
+  })
+
+  test('Include Root names the actual target', () => {
+    renderSingle('api.example.com')
+    expect(screen.getByText(/Also scan api\.example\.com itself/)).toBeInTheDocument()
+  })
+
+  test('a public-suffix target is refused with its reason; a half-typed one is not', () => {
+    renderSingle('co.uk')
+    expect(screen.getByText(/co\.uk: a public suffix/)).toBeInTheDocument()
+    cleanup()
+    renderSingle('exam')
+    expect(screen.queryByText(/public suffix/)).toBeNull()
+  })
+
+  test('a dotted prefix is accepted; an empty label is refused by name', () => {
+    renderSingle('example.com', ['eu.api.'])
+    expect(screen.queryByText(/Not accepted/)).toBeNull()
+    cleanup()
+    renderSingle('example.com', ['a..b.'])
+    expect(screen.getByText(/Not accepted/).parentElement?.textContent).toContain('a..b (not a valid subdomain prefix)')
   })
 })
 
@@ -186,6 +274,14 @@ describe('the wildcard Root control', () => {
     expect(h.data.domainBatchHosts).toContain('*.domain.com')
   })
 
+  test('unticking Root also removes a pasted spelling of the same name', () => {
+    const h = renderSection({
+      domainBatchMode: true, domainBatchHosts: ['*.domain.com', 'https://Domain.com/'],
+    })
+    fireEvent.click(screen.getByLabelText(/Also scan domain\.com itself/i))
+    expect(h.data.domainBatchHosts).toEqual(['*.domain.com'])
+  })
+
   test('it is offered only on wildcard rows', () => {
     renderSection({ domainBatchMode: true, domainBatchHosts: ['api.literal.com'] })
     expect(screen.queryByLabelText(/Also scan/i)).toBeNull()
@@ -212,7 +308,7 @@ describe('the wildcard Root control', () => {
     // Nothing caps wildcard count, so this warning and the badge are the only
     // thing standing between a pasted list and a multi-hour scan.
     renderSection({ domainBatchMode: true, domainBatchHosts: ['*.a.com', '*.b.com'] })
-    expect(screen.getByText(/2 domains will be\s+fully enumerated/i)).toBeInTheDocument()
+    expect(screen.getByText(/2 scope groups will be\s+fully enumerated/i)).toBeInTheDocument()
   })
 
   test('a literal-only list does not warn', () => {
