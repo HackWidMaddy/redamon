@@ -9,6 +9,7 @@ import { FeatureModelLine, useFeatureModelGate } from '@/components/shared/Featu
 import { AI_FAILED_TEXT, CREDENTIALS_TEXT } from '@/components/userSkills/SkillUploadReviewModal'
 import { useSkillUpload } from '@/components/userSkills/useSkillUpload'
 import { featureModelMessage, readFeatureModelCode } from '@/lib/llmFeatures'
+import { tidySkillName } from '@/lib/skillMetadata'
 import { CREDENTIALS_ERROR } from '@/lib/skillUploadDraft'
 import { DESCRIPTION_MAX_CHARS, MAX_SKILLS_PER_USER, NAME_MAX_CHARS, USER_SKILL_LIMIT_TEXT } from '@/lib/userSkills'
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
@@ -178,10 +179,13 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
         return
       }
       const { content } = await text.json()
+      // The name is only context here; one stored before the 100-character limit is cut, or
+      // the route refuses the whole request.
+      const contextName = tidySkillName(edit.name).value
       const res = await fetchWithFeatureModel('skill_metadata', () => fetch(`/api/users/${userId}/attack-skills/generate-metadata`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: [{ key: skillId, fileName: '', content, name: edit.name, fields }] }),
+        body: JSON.stringify({ items: [{ key: skillId, fileName: '', content, name: contextName, fields }] }),
       }))
       const body = await res.json().catch(() => ({}))
       if (!res.ok) {

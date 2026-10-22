@@ -108,6 +108,28 @@ describe('Generate with AI in the Edit dialog', () => {
     expect(await screen.findByText('This file holds a key or token, so it was not sent to the model. Type the name and description.')).toBeInTheDocument()
   })
 
+  test('a stored name over 100 characters (from before the limit) still lets Generate write the description', async () => {
+    const longName = 'Legacy skill name '.repeat(7).trim()
+    const stub = stubGateFetch({ skill_metadata: 'claude-haiku-4-5' }, (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (url === LIST_URL && method === 'GET') return jsonResponse(200, [{ ...SKILL, name: longName }])
+      if (url === `${LIST_URL}/sk1` && method === 'GET') return jsonResponse(200, { ...SKILL, name: longName, content: '# Pickle\n\nThe stored text.' })
+      if (url.startsWith(`${LIST_URL}/name-check`)) return jsonResponse(200, { available: true, normalized: 'x', suggestion: null })
+      if (url === GENERATE_URL && method === 'POST') {
+        const body = JSON.parse(init!.body as string)
+        // The route's own rule: a name over 100 characters is 400 items_invalid.
+        if (body.items.some((i: { name: string }) => i.name.length > 100)) return jsonResponse(400, { error: 'x', code: 'items_invalid' })
+        return answer(body)
+      }
+      return jsonResponse(404, {})
+    })
+    await openEdit()
+    expect(longName.length).toBeGreaterThan(100)
+    fireEvent.click(generateButton())
+    await waitFor(() => expect(description().value).toBe('Tests Python pickle deserialization.'))
+    expect(stub.calls(GENERATE_URL, 'POST')).toHaveLength(1)
+  })
+
   test('the button is disabled when both fields are filled', async () => {
     stubGateFetch({ skill_metadata: 'claude-haiku-4-5' }, route(answer))
     await openEdit()
