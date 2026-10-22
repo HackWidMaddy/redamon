@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   queueFindMany: vi.fn(),
   envelope: vi.fn(),
   audit: vi.fn(),
+  projectFind: vi.fn(),
 }))
 
 vi.mock('@/lib/access', () => ({
@@ -33,6 +34,7 @@ vi.mock('@/lib/prisma', () => ({
       findMany: (...a: unknown[]) => h.findMany(...a),
     },
     scanJob: { findMany: (...a: unknown[]) => h.jobFindMany(...a) },
+    project: { findUnique: (...a: unknown[]) => h.projectFind(...a) },
     jobQueue: { findMany: (...a: unknown[]) => h.queueFindMany(...a) },
   },
 }))
@@ -60,6 +62,7 @@ beforeEach(() => {
   h.envelope.mockResolvedValue({ envelopeBytes: 2000 * MB, scanPoolBytes: 8000 * MB })
   h.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
     ({ id: 'sched1', ...data }))
+  h.projectFind.mockResolvedValue({ ipMode: false, domainBatchMode: false, targetDomain: 'example.com', subdomainList: [] })
 })
 
 describe('GET — BOLA', () => {
@@ -194,6 +197,28 @@ describe('POST — validation', () => {
     expect(data.nextRunAt).toBeInstanceOf(Date)
     expect(data.estimatedEnvelopeBytes).toBe(BigInt(2000 * MB))
     expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'scan-schedule.create' }))
+  })
+})
+
+describe('POST — a scope the current rules refuse (WEB-31)', () => {
+  test('an enabled schedule is refused with 422 scope_invalid, naming the entry', async () => {
+    h.projectFind.mockResolvedValue({
+      ipMode: false, domainBatchMode: true, targetDomain: '', subdomainList: [],
+      domainBatchHosts: ['www.example.com', '*.co.uk'],
+    })
+    const res = await POST(post({ mode: 'interval', intervalMinutes: 60 }), params('p1'))
+    expect(res.status).toBe(422)
+    const body = await res.json()
+    expect(body.code).toBe('scope_invalid')
+    expect(body.error).toContain('*.co.uk')
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  test('a disabled one may be created, to enable once the target is fixed', async () => {
+    h.projectFind.mockResolvedValue({ ipMode: false, domainBatchMode: false, targetDomain: 'co.uk', subdomainList: [] })
+    const res = await POST(post({ mode: 'interval', intervalMinutes: 60, enabled: false }), params('p1'))
+    expect(res.status).toBe(200)
+    expect(h.create.mock.calls[0][0].data.enabled).toBe(false)
   })
 })
 
