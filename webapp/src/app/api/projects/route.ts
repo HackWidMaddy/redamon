@@ -38,6 +38,13 @@ export async function GET() {
         name: true,
         description: true,
         targetDomain: true,
+        // The scope fields, so a card names a batch by its scope groups (a
+        // batch row's targetDomain is empty).
+        subdomainList: true,
+        ipMode: true,
+        targetIps: true,
+        domainBatchMode: true,
+        domainBatchHosts: true,
         captureProxyEnabled: true,
         createdAt: true,
         updatedAt: true,

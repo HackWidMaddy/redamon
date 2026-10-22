@@ -1989,8 +1989,7 @@ export default function GraphPage() {
         targetDomain={currentProject?.targetDomain || 'Unknown'}
         ipMode={currentProject?.ipMode}
         targetIps={currentProject?.targetIps}
-        batchDomains={currentProject?.domainBatchDomains}
-        batchWildcardDomains={currentProject?.domainBatchWildcardDomains}
+        batchGroups={currentProject?.domainBatchMode ? currentProject.scopeGroups : undefined}
         stats={graphStats}
         isLoading={isReconLoading}
         currentVersionLabel={activeVersion?.label ?? null}

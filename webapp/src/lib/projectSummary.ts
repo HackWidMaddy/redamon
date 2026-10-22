@@ -15,10 +15,6 @@ export interface ProjectSummary {
   ipMode?: boolean
   targetIps?: string[]
   domainBatchMode?: boolean
-  /** Domain batch: the scope-group scan roots in run order. */
-  domainBatchDomains?: string[]
-  /** The subset of domainBatchDomains whose group is fully enumerated. */
-  domainBatchWildcardDomains?: string[]
   /** Empty in IP mode, and when the read carried no scope fields. */
   scopeGroups?: ScopeGroup[]
   /** One line naming the target, for cards and headers. */
@@ -100,7 +96,6 @@ function isoString(value: string | Date | null | undefined): string {
 
 export function toProjectSummary(project: ProjectRead): ProjectSummary {
   const groups = summaryScopeGroups(project)
-  const batch = project.domainBatchMode === true
   return {
     id: project.id,
     name: project.name,
@@ -108,8 +103,6 @@ export function toProjectSummary(project: ProjectRead): ProjectSummary {
     ipMode: project.ipMode ?? undefined,
     targetIps: project.targetIps ? [...project.targetIps] : undefined,
     domainBatchMode: project.domainBatchMode ?? undefined,
-    domainBatchDomains: batch ? groups.map(g => g.scanRoot) : [],
-    domainBatchWildcardDomains: batch ? groups.filter(g => g.mode === 'enumerate').map(g => g.scanRoot) : [],
     scopeGroups: groups,
     targetLabel: projectTargetLabel(project),
     subdomainList: project.subdomainList ? [...project.subdomainList] : undefined,

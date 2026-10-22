@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { AlertTriangle, ShieldAlert, Play, Loader2, History, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui'
 import type { ScanMode } from '@/hooks/useReconStatus'
+import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
 import styles from './ReconConfirmModal.module.css'
 
 interface GraphStats {
@@ -19,9 +20,8 @@ interface ReconConfirmModalProps {
   targetDomain: string
   ipMode?: boolean
   targetIps?: string[]
-  /** Domain batch: the derived group roots, in run order. */
-  batchDomains?: string[]
-  batchWildcardDomains?: string[]
+  /** Domain batch: the derived scope groups, in run order. */
+  batchGroups?: ScopeGroup[]
   stats: GraphStats | null
   isLoading: boolean
   /** Label of the version the current graph would be saved as (Scan Timeline). */
@@ -36,27 +36,25 @@ export function ReconConfirmModal({
   targetDomain,
   ipMode,
   targetIps,
-  batchDomains,
-  batchWildcardDomains,
+  batchGroups,
   stats,
   isLoading,
   currentVersionLabel,
 }: ReconConfirmModalProps) {
   // This dialog guards a destructive action, so it must never show a blank
   // target. A Domain-batch project has no targetDomain: name its groups instead.
+  // An enumerated group discovers hosts this list never names, so the group
+  // count alone understates the run by orders of magnitude; this is the last
+  // screen before it starts.
+  const enumerated = (batchGroups ?? []).filter(g => g.mode === 'enumerate').length
   const targetDisplay = ipMode && targetIps?.length
     ? targetIps.slice(0, 5).join(', ') + (targetIps.length > 5 ? ` (+${targetIps.length - 5} more)` : '')
-    : batchDomains?.length
-      ? `${batchDomains.length} domain${batchDomains.length === 1 ? '' : 's'}: `
-        // A wildcard group discovers hosts this list never names, so the domain
-        // count alone understates the run by orders of magnitude. This is the
-        // last screen before it starts.
-        + batchDomains.slice(0, 5)
-            .map(d => (batchWildcardDomains || []).includes(d) ? `*.${d}` : d)
-            .join(', ')
-        + (batchDomains.length > 5 ? ` (+${batchDomains.length - 5} more)` : '')
-        + ((batchWildcardDomains || []).length > 0
-            ? ` — ${(batchWildcardDomains || []).length} fully enumerated (may take hours)`
+    : batchGroups?.length
+      ? `${batchGroups.length} scope group${batchGroups.length === 1 ? '' : 's'}: `
+        + batchGroups.slice(0, 5).map(groupLabel).join('; ')
+        + (batchGroups.length > 5 ? ` (+${batchGroups.length - 5} more)` : '')
+        + (enumerated > 0
+            ? ` — ${enumerated} enumerated group${enumerated === 1 ? '' : 's'} (may take hours)`
             : '')
       : targetDomain
   const hasExistingData = stats && stats.totalNodes > 0

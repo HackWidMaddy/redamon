@@ -28,8 +28,7 @@ describe('toProjectSummary', () => {
       domainBatchHosts: ['www.acme.co.uk', '*.example.com'],
       ...({ domainBatchGroups: [{ rootDomain: 'co.uk', prefixes: ['*'] }] } as object),
     })
-    expect(s.domainBatchDomains).toEqual(['acme.co.uk', 'example.com'])
-    expect(s.domainBatchWildcardDomains).toEqual(['example.com'])
+    expect(s.scopeGroups?.map(g => [g.scanRoot, g.mode])).toEqual([['acme.co.uk', 'exact'], ['example.com', 'enumerate']])
     expect(s.targetLabel).toBe('2 scope groups across 2 domains (1 enumerated)')
   })
 
@@ -51,6 +50,6 @@ describe('toProjectSummary', () => {
     expect([s.roeGlobalMaxRps, s.roeExcludedHosts, s.roeTimeWindowEnabled]).toEqual([5, ['a.example.com'], true])
     expect(s.agentToolPhaseMap).toEqual({ query_graph: ['informational'] })
     expect(s.createdAt).toBe('2026-10-01T00:00:00.000Z')
-    expect(s.domainBatchDomains).toEqual([])
+    expect(s.scopeGroups?.map(g => g.scanRoot)).toEqual(['example.com'])
   })
 })

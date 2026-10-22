@@ -7,6 +7,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { ReconConfirmModal } from './ReconConfirmModal'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 
 const baseProps = {
   isOpen: true,
@@ -70,5 +71,28 @@ describe('ReconConfirmModal — scan mode choice', () => {
     for (const r of screen.getAllByRole('radio') as HTMLInputElement[]) {
       expect(r.disabled).toBe(true)
     }
+  })
+})
+
+describe('ReconConfirmModal — a Domain batch names its scope groups', () => {
+  const groups = resolveScopeGroups({
+    domainBatchMode: true, domainBatchHosts: ['*.acme.co.uk', 'www.beta.test', 'api.beta.test'],
+  }).groups
+
+  test('one label per group and the enumerated count, never a blank target', () => {
+    render(<ReconConfirmModal {...baseProps} targetDomain="" batchGroups={groups} stats={null} />)
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('2 scope groups: ')
+    expect(text).toContain('*.acme.co.uk (enumerated)')
+    expect(text).toContain('beta.test: www, api (listed)')
+    expect(text).toContain('1 enumerated group (may take hours)')
+    expect(text).not.toContain('fully enumerated')
+  })
+
+  test('a listed-only batch carries no enumeration warning', () => {
+    const listed = groups.filter(g => g.mode === 'exact')
+    render(<ReconConfirmModal {...baseProps} targetDomain="" batchGroups={listed} stats={null} />)
+    expect(document.body.textContent).toContain('1 scope group: beta.test')
+    expect(document.body.textContent).not.toContain('may take hours')
   })
 })

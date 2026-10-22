@@ -38,6 +38,11 @@ export interface ReportMeta {
     id: string
     name: string
     targetDomain?: string
+    subdomainList?: string[]
+    ipMode?: boolean
+    targetIps?: string[]
+    domainBatchMode?: boolean
+    domainBatchHosts?: string[]
   }
 }
 
