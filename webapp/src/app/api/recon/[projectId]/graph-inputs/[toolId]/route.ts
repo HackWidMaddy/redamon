@@ -360,7 +360,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       where: { id: projectId },
       select: {
         userId: true, targetDomain: true, ipMode: true, subdomainList: true,
-        domainBatchMode: true, domainBatchHosts: true, domainBatchGroups: true,
+        domainBatchMode: true, domainBatchHosts: true,
       },
     })
 
