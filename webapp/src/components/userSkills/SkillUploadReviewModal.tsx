@@ -128,6 +128,8 @@ export function SkillUploadReviewModal({ mode, userId, existingCount, files, cut
   const [enableInProject, setEnableInProject] = useState(!!project && project.freeSlots > 0)
   const [previewOpen, setPreviewOpen] = useState<Record<string, boolean>>({})
   const stopRef = useRef<AbortController | null>(null)
+  // Set before Generate's first await (the model lookup), which `generating` is not.
+  const generateBusy = useRef(false)
   const addInput = useRef<HTMLInputElement>(null)
 
   // The drop zone covers only the rows: a file dropped on the header, the footer or the overlay
@@ -203,9 +205,13 @@ export function SkillUploadReviewModal({ mode, userId, existingCount, files, cut
   }, [single, uploading, addFiles])
 
   const generate = useCallback(async () => {
-    if (!targets.length || generating || uploading) return
+    if (!targets.length || generating || uploading || generateBusy.current) return
+    generateBusy.current = true
     const model = await ensureFeatureModel('skill_metadata')
-    if (!model) return
+    if (!model) {
+      generateBusy.current = false
+      return
+    }
     const stop = new AbortController()
     stopRef.current = stop
     const work = generationTargets(rowsRef.current)
@@ -246,6 +252,7 @@ export function SkillUploadReviewModal({ mode, userId, existingCount, files, cut
       if (!stop.signal.aborted) setBanner('The AI could not be reached. Try again in a moment.')
     } finally {
       stopRef.current = null
+      generateBusy.current = false
       setGenerating(null)
       void checkNow()
     }

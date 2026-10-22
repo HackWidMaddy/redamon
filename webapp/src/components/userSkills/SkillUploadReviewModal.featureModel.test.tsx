@@ -156,6 +156,16 @@ describe('Generate with AI in the upload dialog', () => {
     expect(descriptionOf('f12_secret.md').value).toBe('')
   })
 
+  test('a double click on Generate starts one run, not two billed in parallel', async () => {
+    const stub = stubGateFetch({ skill_metadata: 'claude-haiku-4-5' }, route(filled))
+    draw([plain(1)])
+    fireEvent.click(generateButton())
+    fireEvent.click(generateButton())
+    await waitFor(() => expect(nameOf('s1.md').value).toBe('AI s1.md'))
+    await waitFor(() => expect(screen.queryByText(/Writing \d+ of/)).toBeNull())
+    expect(stub.calls(GENERATE_URL, 'POST')).toHaveLength(1)
+  })
+
   test('single mode reads "Generate with AI"; disabled with its title when every field is filled', async () => {
     stubGateFetch({ skill_metadata: 'claude-haiku-4-5' }, route(filled))
     draw([{ name: 'full.md', text: '---\nname: Full\ndescription: Done.\n---\n# Full' }], 'single')
