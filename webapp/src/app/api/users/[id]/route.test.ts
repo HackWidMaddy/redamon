@@ -102,6 +102,21 @@ describe('GET /api/users/[id]', () => {
     expect(body.defaultAiPipelineModel).toBe('deepseek/deepseek-reasoner')
   })
 
+  test('each project names its target from its scope, a batch included', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    mockFindUnique.mockResolvedValue({ id: 'user-1', projects: [
+      { id: 'p1', name: 'Batch', targetDomain: '', ipMode: false, domainBatchMode: true,
+        domainBatchHosts: ['www.acme.co.uk', 'shop.acme.co.uk'], subdomainList: [], targetIps: [] },
+      { id: 'p2', name: 'Single', targetDomain: 'api.example.com', ipMode: false, domainBatchMode: false,
+        domainBatchHosts: [], subdomainList: [], targetIps: [] },
+    ] })
+    const body = await (await GET(getReq(), makeParams('user-1'))).json()
+    expect(body.projects.map((p: { targetLabel: string }) => p.targetLabel)).toEqual(
+      ['acme.co.uk: www, shop (listed)', 'api.example.com'])
+    // The scope columns are read for the label, not passed through.
+    expect(body.projects[0]).not.toHaveProperty('domainBatchHosts')
+  })
+
   test('select clause requests the new default-model fields', async () => {
     mockGetSession.mockResolvedValue(makeSession('user-1'))
     mockFindUnique.mockResolvedValue({ id: 'user-1', projects: [] })
