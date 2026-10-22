@@ -9,7 +9,7 @@ import { validateProjectForm } from '@/lib/validation'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { validateDomainBatch } from '@/lib/domainBatch'
 import { scopeGuardrailNames } from '@/lib/scopeGroups'
-import { ipModeRoot } from '@/lib/partialReconScope'
+import { ipModeRoot, resolveProjectRoots } from '@/lib/partialReconScope'
 import { tabForAnchor } from '@/lib/projectSettingsLinks'
 import { graphScanHref, type ScanModal } from '@/lib/scanModalLink'
 import { useProject } from '@/providers/ProjectProvider'
@@ -992,12 +992,13 @@ export function ProjectForm({
   // only when it cannot fetch graph-inputs; the orchestrator decides the scope.
   const partialReconRoots = useMemo(() => {
     if (formData.ipMode) return projectId ? [ipModeRoot(projectId)] : []
-    if (formData.domainBatchMode) {
-      return validateDomainBatch(formData.domainBatchHosts || []).groups.map(g => g.scanRoot)
-    }
-    const target = (formData.targetDomain || '').trim()
-    return target ? [target] : []
-  }, [formData.ipMode, formData.domainBatchMode, formData.domainBatchHosts, formData.targetDomain, projectId])
+    return resolveProjectRoots({
+      domainBatchMode: formData.domainBatchMode,
+      domainBatchHosts: formData.domainBatchHosts || [],
+      targetDomain: formData.targetDomain,
+      subdomainList: formData.subdomainList || [],
+    }, projectId ?? '').roots
+  }, [formData.ipMode, formData.domainBatchMode, formData.domainBatchHosts, formData.targetDomain, formData.subdomainList, projectId])
 
   // Partial recon confirm handler
   const handlePartialReconConfirm = useCallback(async (params: PartialReconParams) => {

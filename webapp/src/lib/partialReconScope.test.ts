@@ -18,6 +18,10 @@ describe('resolveProjectRoots', () => {
     expect(resolveProjectRoots({ targetDomain: 'Alpha.test', subdomainList: [] }, PID).roots).toEqual(['Alpha.test'])
   })
 
+  test('a single-domain target the scope refuses offers no root', () => {
+    expect(resolveProjectRoots({ targetDomain: 'co.uk', subdomainList: [] }, PID).roots).toEqual([])
+  })
+
   test('without the host list it falls back to the legacy record', () => {
     const scope = resolveProjectRoots({
       domainBatchMode: true, domainBatchGroups: [{ rootDomain: 'example.com', prefixes: ['*'] }],
