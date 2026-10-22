@@ -8,6 +8,8 @@
  *
  * Kept free of Node-only imports so client components can import the types.
  */
+import { firstHardBlocked } from '@/lib/hard-guardrail'
+import { isPublicSuffix } from '@/lib/publicSuffix'
 
 export const AUTH_TYPES = ['none', 'bearer', 'cookie', 'header', 'basic', 'apikey'] as const
 export type AuthType = (typeof AUTH_TYPES)[number]
@@ -114,9 +116,18 @@ export function normalizeScopeHosts(raw: unknown): { hosts: string[]; error: str
     const h = entry.trim().toLowerCase().replace(/\.$/, '')
     if (!h) continue
     if (!SCOPE_ENTRY_RE.test(h)) return { hosts: [], error: `Invalid scope host "${h.slice(0, 60)}"` }
+    // `*.co.uk` would hand the session to every site registered under it.
+    if (h.startsWith('*.') && isPublicSuffix(h.slice(2))) {
+      return { hosts: [], error: `Scope host "${h}" is a wildcard on the public suffix "${h.slice(2)}"` }
+    }
     if (!hosts.includes(h)) hosts.push(h)
   }
   if (hosts.length > MAX_SCOPE_HOSTS) return { hosts: [], error: `At most ${MAX_SCOPE_HOSTS} scope hosts` }
+  const blocked = firstHardBlocked(hosts.map(h => h.replace(/^\*\./, '')))
+  if (blocked) {
+    const entry = hosts.find(h => h.replace(/^\*\./, '') === blocked.name) ?? blocked.name
+    return { hosts: [], error: `Scope host "${entry}" is permanently blocked: ${blocked.reason}` }
+  }
   return { hosts, error: null }
 }
 
