@@ -1172,6 +1172,15 @@ async def start_recon(project_id: str, request: ReconStartRequest):
         # batch a free pass through the one control that cannot be switched off,
         # so check whatever this project actually scans.
         targets = guardrail_targets(project)
+        from batch_scope import scope_groups
+        if 'scopeGroups' in project and not scope_groups(project):
+            # The webapp derived no valid group: the stored scope is refused by
+            # the current rules (a public suffix, a malformed entry).
+            raise HTTPException(
+                status_code=400,
+                detail="This project's saved scope is not valid under the current rules. "
+                       "Edit the target and save it before scanning.",
+            )
         if project.get('domainBatchMode', False) and not targets:
             # Fail CLOSED: batch mode with nothing to check means the
             # groups are missing or malformed, not that there is
@@ -1326,6 +1335,7 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
 
     from batch_scope import (
         PartialScopeError,
+        filter_partial_user_input,
         narrow_partial_roots,
         partial_project_roots,
         validate_partial_overrides,
@@ -1357,6 +1367,18 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
 
     _check_roe_time_window(project)
 
+    # What the operator typed passes the same scope rule and guardrail the modal
+    # applies, because a queued job or a direct API call never saw the modal.
+    user_inputs, user_targets, refused = filter_partial_user_input(
+        project, roots, request.user_inputs, request.user_targets)
+    if refused:
+        logger.warning(f"[{project_id}] partial {request.tool_id}: dropped out-of-scope input: {refused[:20]}")
+    typed = bool(request.user_inputs) or any(
+        (request.user_targets or {}).get(k) for k in ('subdomains', 'urls', 'ips'))
+    kept = bool(user_inputs) or any((user_targets or {}).get(k) for k in ('subdomains', 'urls', 'ips'))
+    if typed and not kept and not request.include_graph_targets:
+        raise HTTPException(status_code=400, detail=f"No typed target is in this project's scope: {refused[:10]}")
+
     # Settings, and with them each root's group scope, are fetched by the recon
     # container itself via get_settings() (PROJECT_ID + WEBAPP_API_URL env vars,
     # same as main.py). It rebuilds the groups from that validated copy rather
@@ -1366,8 +1388,8 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
         "domains": roots,
         # Read by the tools not yet migrated to scope_roots().
         "domain": roots[0],
-        "user_inputs": request.user_inputs,
-        "user_targets": request.user_targets,
+        "user_inputs": user_inputs,
+        "user_targets": user_targets,
         "include_graph_targets": request.include_graph_targets,
         "settings_overrides": overrides,
         "user_id": request.user_id,

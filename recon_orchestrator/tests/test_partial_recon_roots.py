@@ -300,6 +300,20 @@ class TestEndpoint:
         assert "isa.org.jm" in ei.value.detail
         assert spy.calls == []
 
+    def test_out_of_scope_typed_urls_never_reach_the_container(self, monkeypatch, spy):
+        _project(monkeypatch, {**SINGLE, "subdomainList": ["www."]})
+        _start(_request(tool_id="Katana", user_targets={"urls": [
+            "https://www.alpha.test/", "https://cdn.alpha.test/", "https://elsewhere.test/"]}))
+        assert spy.calls[0]["config"]["user_targets"]["urls"] == ["https://www.alpha.test/"]
+
+    def test_only_out_of_scope_typed_targets_and_no_graph_targets_is_a_400(self, monkeypatch, spy):
+        _project(monkeypatch, {**SINGLE, "subdomainList": ["www."]})
+        with pytest.raises(HTTPException) as ei:
+            _start(_request(tool_id="Katana", include_graph_targets=False,
+                            user_targets={"urls": ["https://elsewhere.test/"]}))
+        assert ei.value.status_code == 400
+        assert spy.calls == []
+
     def test_ip_mode_uses_the_synthetic_root_and_skips_the_guardrail(self, monkeypatch, spy):
         _project(monkeypatch, IP_MODE)
         monkeypatch.setattr("hard_guardrail.is_hard_blocked",

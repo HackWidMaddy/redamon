@@ -84,7 +84,8 @@ def partial_project_roots(project: dict, project_id: str) -> list[str]:
         # The name recon/main.py mints for IP mode's synthetic Domain node.
         roots = [f"ip-targets.{project_id}"]
     elif project.get('domainBatchMode', False):
-        roots = batch_guardrail_targets(project)
+        roots = ([g['scanRoot'] for g in scope_groups(project)] if 'scopeGroups' in project
+                 else batch_guardrail_targets(project))
         if not roots:
             raise PartialScopeError(
                 400,
@@ -149,6 +150,94 @@ def validate_partial_overrides(overrides) -> dict:
     return dict(overrides)
 
 
+_GROUP_MODES = ('exact', 'enumerate')
+
+
+def _clean_host(value) -> str:
+    host = str(value or '').strip().lower()
+    return host if host and _BATCH_ROOT_CHARSET.match(host) and '..' not in host else ''
+
+
+def _group_from_webapp(entry) -> dict | None:
+    """One validated `scopeGroups` entry, or None. Dropped, never repaired: the
+    field crosses a trust boundary, and a repaired name is a target nobody approved."""
+    if not isinstance(entry, dict):
+        return None
+    root, org = _clean_host(entry.get('scanRoot')), _clean_host(entry.get('orgDomain'))
+    mode = entry.get('mode')
+    hosts = entry.get('exactHosts')
+    if not root or not org or mode not in _GROUP_MODES or not isinstance(hosts, list):
+        return None
+    if not (root == org or root.endswith('.' + org)):
+        return None
+    exact = [_clean_host(h) for h in hosts]
+    if any(not h or h == root or not h.endswith('.' + root) for h in exact):
+        return None
+    if mode == 'exact' and not exact and entry.get('includeRoot') is not True:
+        return None
+    entries = [str(e).strip().lower() for e in entry.get('entries') or [] if isinstance(e, str)]
+    return {'scanRoot': root, 'orgDomain': org, 'mode': mode,
+            'includeRoot': entry.get('includeRoot') is True, 'exactHosts': exact, 'entries': entries}
+
+
+def _groups_from_legacy(project: dict) -> list[dict]:
+    """The pre-scopeGroups shape, read only when the webapp sends no scopeGroups
+    (an older webapp). The org is unknown here (no PSL in the orchestrator), so
+    the scan root stands in for it, exactly as the old model named its Domain."""
+    groups: list[dict] = []
+    if project.get('domainBatchMode', False):
+        for entry in project.get('domainBatchGroups') or []:
+            if not isinstance(entry, dict):
+                continue
+            root = _clean_host(entry.get('rootDomain'))
+            prefixes = [str(p) for p in entry.get('prefixes') or []]
+            if not root:
+                continue
+            exact = [_clean_host(f"{p.rstrip('.')}.{root}") for p in prefixes if p not in ('*', '.') and '*' not in p]
+            groups.append({'scanRoot': root, 'orgDomain': root,
+                           'mode': 'enumerate' if '*' in prefixes else 'exact',
+                           'includeRoot': '.' in prefixes, 'exactHosts': [h for h in exact if h], 'entries': []})
+        return groups
+    target = _clean_host(project.get('targetDomain'))
+    if not target:
+        return []
+    subs = [str(s).strip().lower() for s in project.get('subdomainList') or []]
+    exact = [_clean_host(f"{s.rstrip('.')}.{target}") for s in subs if s and s != '.' and '*' not in s]
+    return [{'scanRoot': target, 'orgDomain': target, 'mode': 'exact' if exact else 'enumerate',
+             'includeRoot': '.' in subs, 'exactHosts': [h for h in exact if h], 'entries': []}]
+
+
+def scope_groups(project: dict) -> list[dict]:
+    """The project's scope groups, as the webapp derived them (GET `scopeGroups`),
+    each re-validated. IP mode has none. Only when the field is ABSENT (an older
+    webapp) are the legacy fields read. Batch mode with nothing valid returns []:
+    the caller must refuse, never read it as "nothing to check"."""
+    if project.get('ipMode', False):
+        return []
+    if 'scopeGroups' in project:
+        groups = project.get('scopeGroups')
+        return [g for g in (_group_from_webapp(e) for e in (groups if isinstance(groups, list) else [])) if g]
+    return _groups_from_legacy(project)
+
+
+def admits_partial_host(groups: list[dict], host: str) -> bool:
+    """§4.6, partial-recon user-typed hosts: strictly under an ENUMERATE scan root,
+    or one of an EXACT group's hosts; a scan root itself only when it is a target."""
+    host = _clean_host(host)
+    if not host:
+        return False
+    for g in groups:
+        if host == g['scanRoot']:
+            if g['includeRoot']:
+                return True
+            continue
+        if host in g['exactHosts']:
+            return True
+        if g['mode'] == 'enumerate' and host.endswith('.' + g['scanRoot']):
+            return True
+    return False
+
+
 def _batch_hosts(project: dict) -> list[str]:
     """The listed hosts of a Domain-batch project, from its derived groups.
 
@@ -173,23 +262,128 @@ def guardrail_targets(project: dict) -> list[str]:
     """Every name to hard-guardrail before starting a recon, whatever the mode.
 
     IP mode returns [] (IPs are not hard-blocked; see hard_guardrail.is_hard_blocked).
-    Batch mode returns every listed host, then every group root: a host under a
-    multi-label government name (`www.isa.org.jm`) groups under a root no rule
-    names (`org.jm`), so checking the roots alone lets it through. Anything else
-    returns the single target, then its prefix hosts.
+    Otherwise the union of two sources, so neither can hide a name:
+
+      - the webapp's `scopeGroups`: every entry, exact host, scan root and org;
+      - the stored fields: each batch host and group root (a host under a
+        multi-label government name, `www.isa.org.jm`, groups under a root no
+        rule names, `org.jm`), or the single target and its prefix hosts. A
+        target the webapp refused (its scopeGroups is then empty) is still named.
     """
     if project.get('ipMode', False):
         return []
+    names: list[str] = []
+
+    def add(name: str) -> None:
+        if name and '*' not in name and name not in names:
+            names.append(name)
+
+    for g in scope_groups(project) if 'scopeGroups' in project else []:
+        for n in [*(e[2:] if e.startswith('*.') else e for e in g['entries']), *g['exactHosts'],
+                  g['scanRoot'], g['orgDomain']]:
+            add(n)
     if project.get('domainBatchMode', False):
-        hosts = _batch_hosts(project)
-        return hosts + [r for r in batch_guardrail_targets(project) if r not in hosts]
+        for n in _batch_hosts(project) + batch_guardrail_targets(project):
+            add(n)
+        return names
     target = str(project.get('targetDomain') or '').strip()
-    if not target:
-        return []
-    names = [target]
-    subs = project.get('subdomainList')
-    for raw in subs if isinstance(subs, list) else []:
-        prefix = str(raw or '').strip().lower().rstrip('.')
-        if prefix and '*' not in prefix and f'{prefix}.{target}' not in names:
-            names.append(f'{prefix}.{target}')
+    if target:
+        add(target)
+        subs = project.get('subdomainList')
+        for raw in subs if isinstance(subs, list) else []:
+            prefix = str(raw or '').strip().lower().rstrip('.')
+            if prefix:
+                add(f'{prefix}.{target}')
     return names
+
+
+# ---------------------------------------------------------------------------
+# Partial recon: what the operator typed. The modal checks it, but the queue
+# and the HTTP API accept any payload, so the orchestrator checks it again.
+# ---------------------------------------------------------------------------
+
+_IP_PREFIX_LIMITS = {4: (24, 32), 6: (120, 128)}
+
+
+def _valid_user_ip(value: str) -> bool:
+    """An address, or a CIDR no wider than the modal allows (/24 v4, /120 v6)."""
+    import ipaddress
+    try:
+        if '/' in value:
+            net = ipaddress.ip_network(value, strict=False)
+            low, high = _IP_PREFIX_LIMITS[net.version]
+            return low <= net.prefixlen <= high
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _url_host(url: str) -> str:
+    from urllib.parse import urlsplit
+    try:
+        return (urlsplit(url.strip()).hostname or '').lower()
+    except ValueError:
+        return ''
+
+
+def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user_targets):
+    """The operator-typed inputs a partial run may use, and those it may not.
+
+    Hosts (typed subdomains, URL hosts, attach targets) pass the §4.6 partial
+    rule for the groups of the run's roots and the hard guardrail; in IP mode a
+    URL host must be one of the project's own addresses. IPs and CIDRs get the
+    modal's prefix limits. Returns (user_inputs, user_targets, refused).
+    """
+    from hard_guardrail import is_hard_blocked
+    refused: list[str] = []
+    wanted = {r.lower() for r in roots}
+    groups = [g for g in scope_groups(project) if g['scanRoot'] in wanted]
+    target_ips = {str(i).strip() for i in project.get('targetIps') or []}
+
+    def host_ok(host: str) -> bool:
+        if project.get('ipMode', False):
+            return host in target_ips
+        return admits_partial_host(groups, host) and not is_hard_blocked(host)[0]
+
+    def keep_hosts(values, label):
+        kept = []
+        for v in values if isinstance(values, list) else []:
+            if isinstance(v, str) and host_ok(v.strip().lower()):
+                kept.append(v.strip().lower())
+            else:
+                refused.append(f'{label} {v!r}')
+        return kept
+
+    inputs = keep_hosts(user_inputs, 'subdomain')
+    targets = None
+    if isinstance(user_targets, dict):
+        targets = dict(user_targets)
+        if 'subdomains' in targets:
+            targets['subdomains'] = keep_hosts(targets['subdomains'], 'subdomain')
+        if 'urls' in targets:
+            kept = []
+            for u in targets['urls'] if isinstance(targets['urls'], list) else []:
+                if isinstance(u, str) and host_ok(_url_host(u)):
+                    kept.append(u.strip())
+                else:
+                    refused.append(f'url {u!r}')
+            targets['urls'] = kept
+        if 'ips' in targets:
+            kept = []
+            for ip in targets['ips'] if isinstance(targets['ips'], list) else []:
+                if isinstance(ip, str) and _valid_user_ip(ip.strip()):
+                    kept.append(ip.strip())
+                else:
+                    refused.append(f'ip {ip!r}')
+            targets['ips'] = kept
+        for key in ('ip_attach_to', 'url_attach_to'):
+            value = targets.get(key)
+            if value and not (isinstance(value, str) and host_ok(value.strip().lower())):
+                refused.append(f'{key} {value!r}')
+                targets[key] = None
+        if 'ports' in targets:
+            ports = targets['ports'] if isinstance(targets['ports'], list) else []
+            targets['ports'] = [p for p in ports if isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 65535]
+            refused.extend(f'port {p!r}' for p in ports if p not in targets['ports'])
+    return inputs, targets, refused

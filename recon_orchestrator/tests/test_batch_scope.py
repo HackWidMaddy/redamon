@@ -124,3 +124,90 @@ class TestGuardrailNamesIncludeEveryHost:
             {'rootDomain': 'gov.uk', 'prefixes': ['www.agency.'], 'hosts': ['www.agency.gov.uk']},
         ]}
         assert first_hard_blocked(guardrail_targets(project))[0] == 'www.agency.gov.uk'
+
+
+class TestScopeGroupsFromTheWebapp:
+    """The webapp's derived `scopeGroups` is the scope; it is re-validated here
+    because it crosses a trust boundary, and dropped (never repaired) when bad."""
+
+    GOOD = {'scanRoot': 'api.example.com', 'orgDomain': 'example.com', 'mode': 'enumerate',
+            'includeRoot': True, 'exactHosts': ['v1.api.example.com'], 'entries': ['*.api.example.com']}
+
+    def test_a_valid_group_is_kept(self):
+        from batch_scope import scope_groups
+        assert scope_groups({'domainBatchMode': True, 'scopeGroups': [self.GOOD]})[0]['scanRoot'] == 'api.example.com'
+
+    def test_malformed_groups_are_dropped(self):
+        from batch_scope import scope_groups
+        bad = [
+            {**self.GOOD, 'mode': 'everything'},
+            {**self.GOOD, 'scanRoot': 'api.example.com;rm'},
+            {**self.GOOD, 'orgDomain': 'other.com'},                    # root not under its org
+            {**self.GOOD, 'exactHosts': ['v1.elsewhere.com']},          # host outside the root
+            {**self.GOOD, 'exactHosts': ['*.api.example.com']},
+            {**self.GOOD, 'mode': 'exact', 'scanRoot': 'example.com', 'exactHosts': [], 'includeRoot': False},
+            'not a dict',
+        ]
+        assert scope_groups({'domainBatchMode': True, 'scopeGroups': bad}) == []
+
+    def test_an_absent_field_falls_back_to_the_legacy_record(self):
+        from batch_scope import scope_groups
+        groups = scope_groups({'domainBatchMode': True, 'domainBatchGroups': [
+            {'rootDomain': 'example.com', 'prefixes': ['*', '.', 'v1.']}]})
+        assert groups == [{'scanRoot': 'example.com', 'orgDomain': 'example.com', 'mode': 'enumerate',
+                           'includeRoot': True, 'exactHosts': ['v1.example.com'], 'entries': []}]
+
+    def test_guardrail_names_are_the_union_of_both_sources(self):
+        project = {'targetDomain': 'org.jm', 'subdomainList': ['isa.'], 'scopeGroups': []}
+        # The webapp refused org.jm (a public suffix): its prefix host is still named.
+        assert guardrail_targets(project) == ['org.jm', 'isa.org.jm']
+
+
+class TestPartialUserInput:
+    PROJECT = {'domainBatchMode': True, 'scopeGroups': [
+        {'scanRoot': 'api.example.com', 'orgDomain': 'example.com', 'mode': 'enumerate',
+         'includeRoot': False, 'exactHosts': [], 'entries': ['*.api.example.com']},
+        {'scanRoot': 'example.com', 'orgDomain': 'example.com', 'mode': 'exact',
+         'includeRoot': False, 'exactHosts': ['www.example.com'], 'entries': ['www.example.com']},
+    ]}
+
+    def _filter(self, roots, inputs=None, targets=None, project=None):
+        from batch_scope import filter_partial_user_input
+        return filter_partial_user_input(project or self.PROJECT, roots, inputs or [], targets)
+
+    def test_the_partial_rule_per_group(self):
+        from batch_scope import admits_partial_host, scope_groups
+        groups = scope_groups(self.PROJECT)
+        assert admits_partial_host(groups, 'x.v1.api.example.com')
+        assert not admits_partial_host(groups, 'api.example.com')      # root off
+        assert admits_partial_host(groups, 'www.example.com')
+        assert not admits_partial_host(groups, 'mail.example.com')     # not in the exact list
+
+    def test_an_out_of_scope_url_host_is_dropped(self):
+        _, targets, refused = self._filter(['example.com', 'api.example.com'], targets={
+            'urls': ['https://www.example.com/a', 'https://cdn.example.com/x']})
+        assert targets['urls'] == ['https://www.example.com/a']
+        assert refused == ["url 'https://cdn.example.com/x'"]
+
+    def test_a_host_outside_the_runs_roots_is_dropped(self):
+        inputs, _, refused = self._filter(['example.com'], inputs=['v2.api.example.com'])
+        assert inputs == [] and refused
+
+    def test_a_government_host_is_refused_even_inside_a_wildcard_scope(self):
+        project = {'domainBatchMode': True, 'scopeGroups': [
+            {'scanRoot': 'example.gov', 'orgDomain': 'example.gov', 'mode': 'enumerate',
+             'includeRoot': False, 'exactHosts': [], 'entries': []}]}
+        inputs, _, _ = self._filter(['example.gov'], inputs=['www.example.gov'], project=project)
+        assert inputs == []
+
+    def test_cidr_limits_match_the_modal(self):
+        _, targets, refused = self._filter(['example.com'], targets={
+            'ips': ['192.0.2.10', '192.0.2.0/24', '0.0.0.0/0', '10.0.0.0/8', '2001:db8::/120', '2001:db8::/64', 'x']})
+        assert targets['ips'] == ['192.0.2.10', '192.0.2.0/24', '2001:db8::/120']
+        assert len(refused) == 4
+
+    def test_ip_mode_url_hosts_must_be_the_projects_addresses(self):
+        project = {'ipMode': True, 'targetIps': ['192.0.2.10']}
+        _, targets, _ = self._filter(['ip-targets.p1'], project=project, targets={
+            'urls': ['http://192.0.2.10:8080/', 'http://192.0.2.99/']})
+        assert targets['urls'] == ['http://192.0.2.10:8080/']

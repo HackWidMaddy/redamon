@@ -69,3 +69,11 @@ def test_a_clean_project_starts(monkeypatch, spy):
     _, run = _start("", monkeypatch, {"targetDomain": "example.com"})
     run()
     assert len(spy.calls) == 1
+
+
+def test_a_scope_the_webapp_could_not_derive_refuses_the_start(monkeypatch, spy):
+    _, run = _start("", monkeypatch, {"targetDomain": "co.uk", "scopeGroups": []})
+    with pytest.raises(HTTPException) as ei:
+        run()
+    assert ei.value.status_code == 400
+    assert spy.calls == []
