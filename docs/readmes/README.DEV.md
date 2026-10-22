@@ -27,6 +27,7 @@ This guide is the single entry point for developers. It covers the technology st
    - [Important Rules](#55-important-rules)
    - [AI-Assisted Coding](#56-ai-assisted-coding)
    - [Several Agent Sessions in One Checkout](#57-several-agent-sessions-in-one-checkout)
+   - [Release Step: Public Suffix List Data](#58-release-step-public-suffix-list-data)
 6. [Feature Development Checklists](#6-feature-development-checklists)
 7. [Debugging & Testing](#7-debugging--testing)
 8. [Environment Variables](#8-environment-variables)
@@ -905,6 +906,32 @@ git update-ref refs/heads/<branch> "$new" "$old"   # refuses if <branch> moved m
 
 Skip the `git reset` here: the checked-out branch did not move, so the shared
 index is still right for it.
+
+### 5.8 Release Step: Public Suffix List Data
+
+Scope groups use the Public Suffix List twice: the webapp groups and validates
+with `tldts` (pinned in `webapp/package.json`), and recon refuses to enumerate a
+suffix with `publicsuffixlist` (pinned in `recon/requirements.txt`). Each ships a
+frozen copy of the list, so a suffix the registries add after the snapshot reads
+as registrable and `*.<new-suffix>` passes validation. The guarantee "never
+enumerate a public suffix" holds only while both copies are current.
+
+Whoever cuts a release, at least once per minor release:
+
+1. Bump both pins **in the same commit**. A snapshot older than about three
+   months is a release blocker. For `publicsuffixlist`, take the newest release
+   that is at least 7 days old, and put its wheel's sha256 (from
+   `https://pypi.org/pypi/publicsuffixlist/<version>/json`) in a comment on the
+   same line.
+2. Rebuild the `recon` and `webapp` images.
+3. Run the parity vectors (`recon/tests/fixtures/public_suffix_vectors.json`,
+   read by `webapp/src/lib/publicSuffix.test.ts` and
+   `recon/tests/test_public_suffix.py`) through `./redamon.sh test unit`.
+4. Run `python3 tooling/scripts/psl_drift_report.py`: it lists the rules where
+   the two snapshots disagree. A non-empty report means the older side needs a
+   bump.
+5. If the new snapshot changes how an existing project's hosts group, say so
+   in the CHANGELOG `Upgrade` bullet.
 
 ---
 
