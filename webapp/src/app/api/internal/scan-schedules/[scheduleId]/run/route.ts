@@ -20,6 +20,7 @@ import { computeNextRun } from '@/lib/scanSchedule'
 import { parseScanMode, createScanJob } from '@/lib/scanTimeline'
 import { classifyStartFailure } from '@/lib/scanStartOutcome'
 import { enqueueJob } from '@/lib/enqueueJob'
+import { writeAudit } from '@/lib/audit'
 
 export const runtime = 'nodejs'
 
@@ -120,10 +121,30 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
         scanJobId = job?.id ?? null
       }
+      // A schedule fires headless, so a scope the rules now refuse would fail on
+      // every tick. Pause it until a person fixes the list and re-enables it.
+      let paused = false
+      if (result.code === 'scope_invalid') {
+        await prisma.scanSchedule.update({ where: { id: scheduleId }, data: { enabled: false } })
+        paused = true
+        void writeAudit({
+          actorId: schedule.userId,
+          action: 'schedule.paused',
+          targetType: 'scanSchedule',
+          targetId: schedule.id,
+          after: {
+            reason: 'scope_invalid',
+            projectId: schedule.projectId,
+            invalidEntries: result.invalidEntries ?? [],
+          },
+          source: 'system',
+        })
+      }
       return NextResponse.json(
         {
           ok: false,
           error: result.error,
+          ...(paused ? { paused: true, code: 'scope_invalid' } : {}),
           ...(result.snapshotFailed ? { snapshotFailed: true } : {}),
           scanJobId,
           nextRunAt,

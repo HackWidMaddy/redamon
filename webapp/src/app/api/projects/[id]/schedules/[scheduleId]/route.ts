@@ -15,6 +15,7 @@ import {
   ScheduleValidationError,
 } from '@/lib/scanSchedule'
 import { fetchScanEnvelope } from '@/lib/scanEnvelope'
+import { scopeStartProblem } from '@/lib/scopeGroups'
 
 interface RouteParams {
   params: Promise<{ id: string; scheduleId: string }>
@@ -41,6 +42,26 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   if (!existing) return NOT_FOUND()
 
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+
+  // A schedule paused because its saved scope is no longer valid would fail
+  // again on its next tick: the scope is fixed first, then the schedule.
+  if (body.enabled === true) {
+    const project = await prisma.project.findUnique({
+      where: { id },
+      select: { ipMode: true, domainBatchMode: true, domainBatchHosts: true, targetDomain: true, subdomainList: true },
+    })
+    const problem = project ? scopeStartProblem(project) : null
+    if (problem) {
+      return NextResponse.json(
+        {
+          error: `${problem.message} Edit the target list, then enable this schedule.`,
+          code: 'scope_invalid',
+          invalidEntries: problem.invalid,
+        },
+        { status: 422 },
+      )
+    }
+  }
 
   // Only a change that touches the TIMING re-validates it. A spent one-off has a
   // runAt in the past, so re-validating on every edit would make renaming or

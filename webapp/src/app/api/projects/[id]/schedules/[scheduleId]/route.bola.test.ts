@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   findMany: vi.fn(),
   envelope: vi.fn(),
   audit: vi.fn(),
+  findProject: vi.fn(),
 }))
 
 vi.mock('@/lib/access', () => ({
@@ -32,6 +33,7 @@ vi.mock('@/lib/prisma', () => ({
       delete: (...a: unknown[]) => h.del(...a),
       findMany: (...a: unknown[]) => h.findMany(...a),
     },
+    project: { findUnique: (...a: unknown[]) => h.findProject(...a) },
   },
 }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
@@ -62,6 +64,9 @@ beforeEach(() => {
   h.update.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
     ({ ...SCHEDULE, ...data }))
   h.del.mockResolvedValue({})
+  h.findProject.mockResolvedValue({
+    ipMode: false, domainBatchMode: false, domainBatchHosts: [], targetDomain: 'example.com', subdomainList: [],
+  })
 })
 
 describe('PATCH — BOLA', () => {
@@ -162,5 +167,44 @@ describe('DELETE', () => {
     expect(res.status).toBe(200)
     expect(h.del).toHaveBeenCalledWith({ where: { id: 's1' } })
     expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'scan-schedule.delete' }))
+  })
+})
+
+// WEB-31: a schedule paused because its saved scope is no longer valid stays
+// paused until the scope is fixed.
+describe('PATCH — re-enabling against an invalid saved scope', () => {
+  const PAUSED = { ...SCHEDULE, enabled: false }
+
+  test('enabling is refused with 422 while the scope holds a refused entry, naming it', async () => {
+    h.findUnique.mockResolvedValue(PAUSED)
+    h.findProject.mockResolvedValue({
+      ipMode: false, domainBatchMode: true, domainBatchHosts: ['*.com.vn', 'www.example.com'],
+      targetDomain: '', subdomainList: [],
+    })
+    const res = await PATCH(patchReq({ enabled: true }), params('p1', 's1'))
+    expect(res.status).toBe(422)
+    const body = await res.json()
+    expect(body.code).toBe('scope_invalid')
+    expect(body.error).toContain('*.com.vn')
+    expect(h.update).not.toHaveBeenCalled()
+  })
+
+  test('a retime that turns it on is refused too', async () => {
+    h.findUnique.mockResolvedValue(PAUSED)
+    h.findProject.mockResolvedValue({
+      ipMode: false, domainBatchMode: false, domainBatchHosts: [], targetDomain: 'co.uk', subdomainList: [],
+    })
+    expect((await PATCH(patchReq({ enabled: true, intervalMinutes: 60 }), params('p1', 's1'))).status).toBe(422)
+    expect(h.update).not.toHaveBeenCalled()
+  })
+
+  test('disabling, renaming and enabling a valid scope are unaffected', async () => {
+    h.findUnique.mockResolvedValue(PAUSED)
+    expect((await PATCH(patchReq({ enabled: true }), params('p1', 's1'))).status).toBe(200)
+    h.findProject.mockResolvedValue({
+      ipMode: false, domainBatchMode: false, domainBatchHosts: [], targetDomain: 'co.uk', subdomainList: [],
+    })
+    expect((await PATCH(patchReq({ enabled: false }), params('p1', 's1'))).status).toBe(200)
+    expect((await PATCH(patchReq({ label: 'nightly' }), params('p1', 's1'))).status).toBe(200)
   })
 })

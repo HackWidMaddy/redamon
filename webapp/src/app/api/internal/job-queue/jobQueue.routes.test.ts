@@ -268,6 +268,26 @@ describe('dispatch route happy + failure paths', () => {
       data: expect.objectContaining({ status: 'failed' }),
     }))
   })
+  test('a scope_invalid refusal (422) fails the job on its first attempt, naming the entries', async () => {
+    // A 409 would read as "busy" and requeue for ever without spending an
+    // attempt; a saved scope the rules now refuse only a person can fix.
+    h.dispatchStart.mockResolvedValue({
+      ok: false, status: 422,
+      error: 'The saved scope is no longer valid. Not accepted: *.com.vn (a public suffix). Edit the target list before scanning.',
+    })
+    const body = await (await dispatch(post('http://x/api/internal/job-queue/j1/dispatch'), sp('j1'))).json()
+    expect(body.failed).toBe(true)
+    const final = h.jqUpdateMany.mock.calls.at(-1)![0].data
+    expect(final).toMatchObject({ status: 'failed', attempts: 1 })
+    expect(final.error).toContain('*.com.vn')
+  })
+
+  test('a third-party engagement blocker (422) fails the job instead of requeueing it', async () => {
+    h.dispatchStart.mockResolvedValue({ ok: false, status: 422, error: 'no authorization record' })
+    const body = await (await dispatch(post('http://x/api/internal/job-queue/j1/dispatch'), sp('j1'))).json()
+    expect(body.failed).toBe(true)
+    expect(h.jqUpdateMany.mock.calls.at(-1)![0].data.status).toBe('failed')
+  })
 })
 
 describe('candidates route', () => {

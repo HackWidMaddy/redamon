@@ -46,6 +46,7 @@ vi.mock('@/lib/scanTimeline', async orig => ({
 
 import { startFullScan } from './startFullScan'
 import { SnapshotFreezeError } from './scanTimeline'
+import { classifyStartFailure } from './scanStartOutcome'
 
 const orchestratorBody = () => JSON.parse(h.orchestratorFetch.mock.calls[0][1].body)
 
@@ -97,6 +98,17 @@ describe('a third-party engagement cannot start without its ceiling and its auth
     if (res.ok) throw new Error('unreachable')
     expect(res.error).toMatch(/authorization record/i)
     expect(h.orchestratorFetch).not.toHaveBeenCalled()
+  })
+
+  test('the refusal is 422, which the queue and the scheduler treat as permanent', async () => {
+    // A 409 reads as "busy" and is requeued for ever; only a person can add the
+    // ceiling or the record.
+    h.findProject.mockResolvedValue(thirdParty())
+    h.countAuthorizations.mockResolvedValue(0)
+    const res = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'scheduled', scheduleId: 's1' })
+    expect(res).toMatchObject({ ok: false, status: 422 })
+    if (res.ok) throw new Error('unreachable')
+    expect(classifyStartFailure(res.status, res).kind).toBe('permanent')
   })
 
   test('a ceiling of 0 refuses the start, because 0 means NO ceiling', async () => {
@@ -485,19 +497,16 @@ describe('P0-2: the per-project mutex serialises every start path', () => {
 })
 
 // Strategy row 1: a Domain-batch project must be able to start a scan.
-// Its scope lives in domainBatchGroups, not targetDomain (which is empty), so the
-// single-domain precondition would have refused every batch scan outright.
+// Its scope is derived from domainBatchHosts, not targetDomain (which is empty),
+// so the single-domain precondition would have refused every batch scan outright.
 describe('domain batch preconditions', () => {
-  const batchProject = (groups: unknown) => ({
+  const batchProject = (hosts: unknown, over: Record<string, unknown> = {}) => ({
     id: 'p1', userId: 'owner', targetDomain: '', ipMode: false, targetIps: [],
-    domainBatchMode: true, domainBatchGroups: groups,
+    domainBatchMode: true, domainBatchHosts: hosts, ...over,
   })
 
-  test('a batch with groups starts and reaches the orchestrator', async () => {
-    h.findProject.mockResolvedValue(batchProject([
-      { rootDomain: 'domain1.com', prefixes: ['sub1.'] },
-      { rootDomain: 'domain2.it', prefixes: ['sub2.'] },
-    ]))
+  test('a batch with hosts starts and reaches the orchestrator', async () => {
+    h.findProject.mockResolvedValue(batchProject(['sub1.domain1.com', 'sub2.domain2.it']))
     const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
 
     expect(r.ok).toBe(true)
@@ -505,41 +514,86 @@ describe('domain batch preconditions', () => {
     expect(orchestratorBody().project_id).toBe('p1')
   })
 
-  test('an empty group list is refused with 400 and never starts a container', async () => {
-    h.findProject.mockResolvedValue(batchProject([]))
+  test.each([[[]], [null]])('no hosts (%j) is refused as scope_invalid and never starts a container', async hosts => {
+    h.findProject.mockResolvedValue(batchProject(hosts))
     const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
 
-    expect(r.ok).toBe(false)
-    expect((r as { status: number }).status).toBe(400)
+    expect(r).toMatchObject({ ok: false, status: 422, code: 'scope_invalid' })
     expect(h.orchestratorFetch).not.toHaveBeenCalled()
-  })
-
-  test('a null group list (never saved) is refused, not treated as no-op', async () => {
-    h.findProject.mockResolvedValue(batchProject(null))
-    const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
-
-    expect(r.ok).toBe(false)
-    expect((r as { status: number }).status).toBe(400)
-    expect(h.orchestratorFetch).not.toHaveBeenCalled()
+    expect(h.prepare).not.toHaveBeenCalled()
   })
 
   test('a batch is not held to the single-domain targetDomain requirement', async () => {
-    h.findProject.mockResolvedValue(batchProject([{ rootDomain: 'a.com', prefixes: ['.'] }]))
+    h.findProject.mockResolvedValue(batchProject(['*.a.com', 'a.com']))
     const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
 
     expect(r.ok).toBe(true)
-    if (!r.ok) expect(r.error).not.toContain('no target domain')
+  })
+
+  test('the stored group record is never read: hosts decide', async () => {
+    h.findProject.mockResolvedValue(batchProject(['www.example.com'], {
+      domainBatchGroups: [],
+    }))
+    expect((await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })).ok).toBe(true)
   })
 
   test('a non-batch project with no target still fails as before', async () => {
     h.findProject.mockResolvedValue({
       id: 'p1', userId: 'owner', targetDomain: '', ipMode: false, targetIps: [],
-      domainBatchMode: false, domainBatchGroups: null,
+      domainBatchMode: false, domainBatchHosts: [],
     })
     const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
 
     expect(r.ok).toBe(false)
     expect((r as { error: string }).error).toContain('no target domain')
+  })
+})
+
+// WEB-14: a stored scope the current rules refuse (a list saved before a public
+// suffix was added, a legacy wildcard on a suffix) fails closed with a distinct
+// code. 422, never 409: the queue requeues a 409 as "busy" for ever.
+describe('a saved scope the rules now refuse', () => {
+  test('a batch entry on a public suffix is refused, naming the entry', async () => {
+    h.findProject.mockResolvedValue({
+      id: 'p1', userId: 'owner', targetDomain: '', ipMode: false, targetIps: [],
+      domainBatchMode: true, domainBatchHosts: ['*.com.vn', 'www.example.com'],
+    })
+    const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'scheduled', scheduleId: 's1' })
+
+    expect(r).toMatchObject({
+      ok: false, status: 422, code: 'scope_invalid',
+      invalidEntries: [{ entry: '*.com.vn', reason: 'wildcard_on_suffix' }],
+    })
+    if (r.ok) throw new Error('unreachable')
+    expect(r.error).toContain('*.com.vn')
+    expect(h.prepare).not.toHaveBeenCalled()
+    expect(h.orchestratorFetch).not.toHaveBeenCalled()
+  })
+
+  test('a single-domain target that is a public suffix is refused', async () => {
+    h.findProject.mockResolvedValue({
+      id: 'p1', userId: 'owner', targetDomain: 'co.uk', ipMode: false, targetIps: [],
+      domainBatchMode: false, subdomainList: [],
+    })
+    expect(await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' }))
+      .toMatchObject({ ok: false, status: 422, code: 'scope_invalid' })
+  })
+
+  test('a single-domain prefix the rules refuse is refused', async () => {
+    h.findProject.mockResolvedValue({
+      id: 'p1', userId: 'owner', targetDomain: 'example.com', ipMode: false, targetIps: [],
+      domainBatchMode: false, subdomainList: ['www.', '*'],
+    })
+    expect(await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' }))
+      .toMatchObject({ ok: false, status: 422, code: 'scope_invalid', invalidEntries: [{ entry: '*', reason: 'invalid_prefix' }] })
+  })
+
+  test('an IP-mode project is not judged on its leftover domain fields', async () => {
+    h.findProject.mockResolvedValue({
+      id: 'p1', userId: 'owner', targetDomain: 'co.uk', ipMode: true, targetIps: ['192.0.2.10'],
+      domainBatchMode: false, subdomainList: [],
+    })
+    expect((await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })).ok).toBe(true)
   })
 })
 

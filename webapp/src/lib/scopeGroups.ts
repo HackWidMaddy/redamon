@@ -8,7 +8,8 @@
  * result as `scopeGroups`, so every service reads one derivation.
  */
 import {
-  type InvalidEntry, type ScopeGroup, groupHostsByScanRoot, isAtOrUnder, normalizeHost, splitWildcard,
+  type InvalidEntry, type ScopeGroup, describeInvalid, groupHostsByScanRoot, isAtOrUnder, normalizeHost,
+  splitWildcard,
 } from '@/lib/domainBatch'
 import { icannRegistrable, isIpLiteral, orgDomain } from '@/lib/publicSuffix'
 
@@ -238,4 +239,22 @@ export function scopeSummary(groups: readonly ScopeGroup[]): string {
   const enumerated = groups.filter(g => g.mode === 'enumerate').length
   return `${groups.length} scope groups across ${orgs} domain${orgs === 1 ? '' : 's'}`
     + (enumerated ? ` (${enumerated} enumerated)` : '')
+}
+
+/**
+ * Why a scan of this saved scope cannot start, or null. A row saved under older
+ * rules can hold entries the current ones refuse. A headless start (a schedule,
+ * the queue), re-enabling a schedule and the schedule badge all ask this one
+ * question, so they agree on when a schedule is paused for its scope.
+ */
+export function scopeStartProblem(project: ScopeFields): { invalid: InvalidEntry[]; message: string } | null {
+  if (project.ipMode) return null
+  const { groups, invalid } = resolveScopeGroups(project)
+  if (invalid.length > 0) {
+    return { invalid, message: `The saved scope is no longer valid. ${describeInvalid(invalid)}.` }
+  }
+  if (project.domainBatchMode && groups.length === 0) {
+    return { invalid, message: 'Project has no valid domain groups. Re-save its hostname list before scanning.' }
+  }
+  return null
 }

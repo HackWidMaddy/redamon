@@ -5,6 +5,7 @@ import { Loader2, Plus, Play, Pause, Trash2, CalendarClock } from 'lucide-react'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import { ScanQueuePanel, kindLabel } from './ScanQueuePanel'
 import { usePaged, Pager } from './pagination'
+import { scopeStartProblem } from '@/lib/scopeGroups'
 import styles from './ScanScheduleTable.module.css'
 
 interface Schedule {
@@ -82,6 +83,7 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
   // Run-history multi-select (checkboxes on the left of the history table).
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [clearing, setClearing] = useState(false)
+  const [scopeProblem, setScopeProblem] = useState<ReturnType<typeof scopeStartProblem>>(null)
 
   // create form
   const [mode, setMode] = useState<Schedule['mode']>('interval')
@@ -99,6 +101,13 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
     if (!projectId) return
     setLoading(true)
     setLoadError(null)
+    // Checked live, not read from run history: an MCP rescope or an RoE apply
+    // pauses schedules too, for other reasons, and fixing the list must clear
+    // the badge at once. Best-effort: the schedules load does not wait on it.
+    fetch(`/api/projects/${projectId}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(p => setScopeProblem(p ? scopeStartProblem(p) : null))
+      .catch(() => setScopeProblem(null))
     try {
       const res = await fetch(`/api/projects/${projectId}/schedules`)
       const body = await res.json().catch(() => ({}))
@@ -327,13 +336,20 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                   <span className={s.enabled ? styles.badgeOn : styles.badgeOff}>
                     {s.enabled ? 'Enabled' : 'Disabled'}
                   </span>
+                  {scopeProblem && (
+                    <span className={styles.scopeBadge} title={scopeProblem.message}>
+                      {s.enabled ? 'next run will be refused' : 'paused'}: the saved scope is no longer valid
+                      {scopeProblem.invalid.length > 0 && ` (${scopeProblem.invalid.map(i => i.entry).join(', ')})`}
+                      ; edit the target list{s.enabled ? '' : ' and re-enable'}
+                    </span>
+                  )}
                 </td>
                 <td className={styles.actions}>
                   <button
                     className={styles.iconBtn}
-                    disabled={busyId === s.id}
+                    disabled={busyId === s.id || (!s.enabled && !!scopeProblem)}
                     onClick={() => patch(s, { enabled: !s.enabled })}
-                    title={s.enabled ? 'Disable' : 'Enable'}
+                    title={s.enabled ? 'Disable' : scopeProblem ? 'Fix the target list before enabling' : 'Enable'}
                   >
                     {s.enabled ? <Pause size={13} /> : <Play size={13} />}
                   </button>
