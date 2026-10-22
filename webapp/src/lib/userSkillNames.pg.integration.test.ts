@@ -247,4 +247,12 @@ describe.skipIf(!URL)('user skill names on a real Postgres (PLUGINS_PG_TEST_URL)
       expect(await db().userAttackSkill.count({ where: { userId: 'alice' } })).toBe(0)
     })
   })
+
+  describe('input Postgres cannot store', () => {
+    test('checkNames: a name holding U+0000 is name_invalid and the other names are still answered', async () => {
+      await stored('s-taken', 'alice', 'Taken flow')
+      const results = await checkNames(db(), 'alice', ['Taken flow', 'nul\u0000name', 'Free flow'])
+      expect(results.map((r) => r.reason ?? 'ok')).toEqual(['name_taken', 'name_invalid', 'ok'])
+    })
+  })
 })

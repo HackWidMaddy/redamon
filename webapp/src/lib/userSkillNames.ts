@@ -147,8 +147,11 @@ export async function checkNames(db: Db, userId: string, names: string[]): Promi
   const problems = normalized.map(nameProblem)
   const stored = await db.userAttackSkill.findMany({ where: { userId }, select: { name: true } })
   const storedSplits = stored.map((s) => splitVersion(s.name))
-  const roots = normalized.map((n) => splitVersion(n).root)
-  const keys = await nameKeys(db, [...stored.map((s) => s.name), ...storedSplits.map((s) => s.root), ...normalized, ...roots])
+  // A refused name is answered from its problem alone; it never reaches SQL, where one U+0000
+  // would fail the query for every other name.
+  const keyable = normalized.map((n, i) => (problems[i] ? '' : n))
+  const roots = keyable.map((n) => splitVersion(n).root)
+  const keys = await nameKeys(db, [...stored.map((s) => s.name), ...storedSplits.map((s) => s.root), ...keyable, ...roots])
   const s = stored.length
   const n = normalized.length
   const storedKeys = new Set(keys.slice(0, s))
