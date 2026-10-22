@@ -230,8 +230,9 @@ export const MCP_SCOPE_COPY: Record<McpScope, ScopeCopy> = {
       'fields, the ones the project form already lets a person edit, and nothing else: the ' +
       'target domain, the address list, the targeting mode, ownership verification and the ' +
       'target guardrail stay refused whatever the token holds.\n\n' +
-      'Every new batch root runs the permanent guardrail, and on a third-party engagement any ' +
-      'widening - a new root, a new GitHub organisation or repository, a new supply-chain ' +
+      'Every batch host, scan root and registrable domain runs the permanent guardrail, and on a ' +
+      'third-party engagement any widening - a host or scan root the old list did not admit, a ' +
+      'new GitHub organisation or repository, a new supply-chain ' +
       'organisation or repository - must arrive with a new authorization record.\n\n' +
       'Stated plainly: a token holding this AND Record what authorized an engagement can ' +
       'record an authorization for any document digest and widen with it. That claim is ' +

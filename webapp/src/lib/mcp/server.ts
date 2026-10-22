@@ -361,8 +361,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
       title: 'Get recon status',
       description:
         'Report whether a full recon scan is running for this project, and its current phase. ' +
-        'If the orchestrator cannot be reached this reports "status unknown" and fails - it ' +
-        'never reports "not running", because those are different facts.',
+        'For a domain batch, `currentGroup` is the scan root of the scope group being scanned ' +
+        '(for example "api.example.com" for a "*.api.example.com" entry), not its registrable ' +
+        'domain. If the orchestrator cannot be reached this reports "status unknown" and fails - ' +
+        'it never reports "not running", because those are different facts.',
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
       inputSchema: { projectId: projectIdSchema.describe('From list_projects.') },
@@ -662,6 +664,9 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'Counts and names only: no property values are returned.\n\n' +
         'Each side hides its own muted findings, so a finding muted after a version was frozen ' +
         'shows as resolved, and one unmuted since shows as added. Neither changed on the target.\n\n' +
+        'A version saved before the graph named its Domain nodes after the registrable domain ' +
+        '(api.example.com became a Subdomain of Domain example.com) differs from a later one in ' +
+        'its Domain nodes once, across that change; the hosts beneath them did not change.\n\n' +
         `${UNTRUSTED_DATA_NOTE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
@@ -1767,17 +1772,20 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         targetIps: z.array(z.string().max(64)).max(1000).optional()
           .describe('IP / CIDR mode. Mutually exclusive with the other two.'),
         domainBatchHosts: z.array(z.string().max(253)).max(500).optional()
-          .describe('Domain-batch mode: the raw host list. The server derives the grouping. '
-            + 'An entry may be a wildcard - "*.example.com" or "*example.com" - which makes '
-            + 'that one domain be fully enumerated (subdomain discovery, as single-domain '
-            + 'mode runs it) instead of scanned as listed; every other entry stays literal. '
-            + 'A wildcard must name a registrable domain, not a deeper name and not a public '
-            + 'suffix. Listing the BARE domain alongside a wildcard ("example.com" next to '
-            + '"*.example.com") also puts the apex itself in scope; a wildcard on its own '
-            + 'scans only what enumeration discovers beneath it. That is the same control '
-            + 'the project form calls "Root" - there is no separate flag, the list is the '
-            + 'whole interface. The project form can edit the list later, and so can '
-            + 'update_project_scope, which needs its own permission.'),
+          .describe('Domain-batch mode: the raw host list. The server derives the scope groups, '
+            + 'one per scan root, grouped by registrable domain (Public Suffix List: '
+            + '"www.acme.co.uk" belongs to acme.co.uk). An entry is a host, scanned exactly as '
+            + 'listed, or a wildcard at any depth - "*.example.com", "*.api.example.com" or '
+            + '"*example.com" - which makes that name a scan root that is fully enumerated '
+            + '(subdomain discovery, as single-domain mode runs it). A host under a wildcard is '
+            + 'seeded into its group; a wildcard under another one is covered by it. A wildcard '
+            + 'on a public suffix ("*.co.uk", "*.github.io") is refused. Listing the BARE name '
+            + 'alongside its wildcard ("api.example.com" next to "*.api.example.com") also puts '
+            + 'that name itself in scope; a wildcard on its own scans only what enumeration '
+            + 'discovers beneath it. That is the same control the project form calls "Root" - '
+            + 'there is no separate flag, the list is the whole interface. The project form '
+            + 'can edit the list later, and so can update_project_scope, which needs its own '
+            + 'permission.'),
         subdomainList: z.array(z.string().max(253)).max(5000).optional()
           .describe('Single-domain mode only. Empty: the domain is fully enumerated. Otherwise '
             + 'prefixes ("www.", "eu.api.") naming the ONLY hosts scanned, with no discovery; '
@@ -1867,12 +1875,14 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'target guardrail stay fixed whatever the token holds; a different target is a different ' +
         'project (create_project).\n\n' +
         'domainBatchHosts replaces a domain-batch project\'s host list (only on a project created ' +
-        'in batch mode); the grouping is re-derived here, every host and root goes through the ' +
-        'permanent guardrail, and the new list through the target guardrail unless the project ' +
-        'switched it off. An active login recording is re-pointed at the new list. ' +
+        'in batch mode); the scope groups are re-derived here, every host, scan root and ' +
+        'registrable domain goes through the permanent guardrail, and the new list through the ' +
+        'target guardrail unless the project switched it off. An active login recording is re-pointed at the new list. ' +
         'gvmScanTargets is both, ips_only or hostnames_only. GitHub names and ' +
         'the supply-chain repository are validated as the form validates them.\n\n' +
-        'On a THIRD-PARTY engagement a widening - a new batch host or root, a new GitHub ' +
+        'A widening is a list that admits a host the old one did not; a regroup, or a narrower ' +
+        'wildcard under an enumerated one ("*.api.example.com" inside "*.example.com"), is not. ' +
+        'On a THIRD-PARTY engagement a widening - a new batch host or scan root, a new GitHub ' +
         'organisation, more repositories, a new supply-chain organisation or repository - is ' +
         'refused unless `authorization` records what authorized the wider scope, in the same ' +
         'transaction. Passing `authorization` needs the engagement:authorize permission too. ' +

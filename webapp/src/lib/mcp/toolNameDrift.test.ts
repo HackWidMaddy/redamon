@@ -192,6 +192,10 @@ describe('P8: every tool named in an agent-facing string exists', () => {
       // honours settings.targetGuardrailEnabled.
       /domain-batch configuration.*outside what any token may write/i,
       /cannot change what RedAmon points at/i,
+      // Nested wildcards shipped: a deeper wildcard is a scan root of its own,
+      // and a subdomain list names EXACT hosts, never seeds beside discovery.
+      /A wildcard must name a registrable domain, not a deeper name/i,
+      /Hosts seeded in addition to whatever discovery finds/i,
     ]
     const problems: string[] = []
     for (const file of AGENT_FACING) {
