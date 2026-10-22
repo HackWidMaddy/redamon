@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover - dependency guaranteed by the image
 from recon.main_recon_modules.ip_filter import is_non_routable_ip, is_url_safe_to_probe
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.helpers.cdn_ranges import is_reliable_edge_cdn_name
+from recon.helpers.public_suffix import org_domain
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -260,6 +261,19 @@ class _RunCtx:
         return None
 
 
+def _run_ctx(settings: dict) -> _RunCtx:
+    """The run's one context: a Domain batch's groups share its per-key cache
+    and its search budget (a key every group of an org shares is asked once).
+    Held in a circuit_breaker run cache, so reset_registry() drops it."""
+    from recon.helpers import circuit_breaker
+    cache = circuit_breaker.run_cache("origin_discovery_ctx")
+    hit, ctx = cache.get("ctx")
+    if not hit:
+        ctx = _RunCtx(settings)
+        cache.put("ctx", ctx)
+    return ctx
+
+
 # ---------------------------------------------------------------------------
 # Favicon mmh3 (unwaf favicon.go computeMMH3) — matches httpx favicon_hash
 # ---------------------------------------------------------------------------
@@ -310,57 +324,6 @@ def _favicon_hash_for_host(host: str, existing: Any, ctx: _RunCtx) -> Optional[i
 # ---------------------------------------------------------------------------
 # Fronted-host selection
 # ---------------------------------------------------------------------------
-
-# Common multi-label public suffixes. A naive last-two-labels registrable domain
-# turns `www.acme.co.uk` into `co.uk`, so SPF/crt.sh/passive-DNS get queried for
-# the public suffix and the real origin is silently never a candidate — a whole
-# class of ccTLD targets. This is a curated subset of the Public Suffix List
-# (the image ships no PSL library); it covers the common cases, not every entry.
-_MULTI_LABEL_SUFFIXES = frozenset({
-    "co.uk", "org.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk", "ac.uk", "gov.uk", "nhs.uk",
-    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
-    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz", "school.nz", "geek.nz",
-    "co.za", "org.za", "net.za", "gov.za", "ac.za", "web.za",
-    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp", "ad.jp", "ed.jp", "gr.jp", "lg.jp",
-    "com.br", "net.br", "org.br", "gov.br", "edu.br",
-    "co.in", "net.in", "org.in", "gen.in", "firm.in", "ind.in", "gov.in", "ac.in", "edu.in", "res.in",
-    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
-    "co.kr", "or.kr", "ne.kr", "re.kr", "pe.kr", "go.kr", "ac.kr",
-    "com.ru", "net.ru", "org.ru", "msk.ru", "spb.ru",
-    "com.tr", "net.tr", "org.tr", "gov.tr", "edu.tr", "bel.tr",
-    "com.mx", "net.mx", "org.mx", "gob.mx", "edu.mx",
-    "com.ar", "net.ar", "org.ar", "gob.ar", "edu.ar",
-    "com.sg", "net.sg", "org.sg", "gov.sg", "edu.sg",
-    "com.hk", "net.hk", "org.hk", "gov.hk", "edu.hk", "idv.hk",
-    "co.il", "org.il", "net.il", "ac.il", "gov.il", "muni.il", "k12.il",
-    "co.id", "or.id", "net.id", "web.id", "ac.id", "go.id", "sch.id", "my.id",
-    "co.th", "or.th", "net.th", "in.th", "ac.th", "go.th",
-    "com.tw", "net.tw", "org.tw", "gov.tw", "edu.tw", "idv.tw",
-    "com.ua", "net.ua", "org.ua", "in.ua", "kiev.ua",
-    "com.pl", "net.pl", "org.pl", "edu.pl", "gov.pl",
-    "com.gr", "net.gr", "org.gr", "edu.gr", "gov.gr",
-    "com.pk", "net.pk", "org.pk", "gov.pk", "edu.pk",
-    "com.eg", "net.eg", "org.eg", "gov.eg", "edu.eg",
-    "com.sa", "net.sa", "org.sa", "gov.sa", "edu.sa",
-    "com.ph", "net.ph", "org.ph", "gov.ph", "edu.ph",
-    "com.my", "net.my", "org.my", "gov.my", "edu.my",
-    "com.ng", "net.ng", "org.ng", "gov.ng", "edu.ng",
-})
-
-
-def _registrable_domain(host: str) -> str:
-    """Registrable domain (unwaf extractMainDomain, PSL-aware for common ccTLDs).
-
-    `www.acme.co.uk` -> `acme.co.uk` (not `co.uk`); `a.b.acme.com` -> `acme.com`.
-    """
-    parts = (host or "").strip(".").split(".")
-    if len(parts) <= 2:
-        return ".".join(parts) if parts != [""] else host
-    last2 = ".".join(parts[-2:])
-    if last2 in _MULTI_LABEL_SUFFIXES:
-        return ".".join(parts[-3:])
-    return last2
-
 
 def _resolve_ips(host: str) -> Set[str]:
     try:
@@ -1153,9 +1116,19 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optio
 # Per-host orchestration
 # ---------------------------------------------------------------------------
 
-def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict) -> Dict[str, str]:
-    """Run every enabled source for one host; map ip -> first source. Never raises."""
-    domain = _registrable_domain(host)
+_KEY_FROM_HOST = object()
+
+
+def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict,
+                       key=_KEY_FROM_HOST) -> Dict[str, str]:
+    """Run every enabled source for one host; map ip -> first source. Never raises.
+
+    ``key`` is the name the domain-keyed sources (SPF/MX, crt.sh, the
+    ``<word>.<key>`` wordlist, passive DNS) query: from ``_candidate_key_rule``,
+    else the host's registrable domain. An IP literal, a name on a public
+    suffix, or a None key gets none of them, so only the host-keyed scanners run.
+    """
+    domain = org_domain(host) if key is _KEY_FROM_HOST else key
     favicon = _favicon_hash_for_host(host, entry.get("favicon_hash"), ctx)
     if favicon is not None:
         entry["favicon_hash"] = favicon
@@ -1172,7 +1145,7 @@ def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict) -> Dict
             # surface it (e.g. an invalid API key) instead of a silent empty result
             _log("-", f"{host}: source '{name}' failed: {str(e)[:120]}")
 
-    if ctx.settings.get("ORIGIN_DISCOVERY_KEYLESS", True):
+    if domain and ctx.settings.get("ORIGIN_DISCOVERY_KEYLESS", True):
         # Keyed by the registrable domain so N fronted subdomains of one domain
         # don't each re-resolve the same ~30 subdomains / SPF+MX / up-to-500 crt.sh
         # SANs (F2). Cache stores only non-empty results (transient failures retry).
@@ -1184,9 +1157,10 @@ def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict) -> Dict
         _run("censys", "cert_san", lambda: _discover_via_censys(host, ctx))
         _run("fofa", "cert_san", lambda: _discover_via_fofa(host, favicon, ctx))
         _run("zoomeye", "cert_san", lambda: _discover_via_zoomeye(host, favicon, ctx))
-        _run("otx", "passive_dns", lambda: _discover_via_otx(domain, ctx))
-        _run("virustotal", "passive_dns", lambda: _discover_via_virustotal(domain, ctx))
-    if ctx.settings.get("ORIGIN_DISCOVERY_PASSIVE_DNS", True):
+        if domain:
+            _run("otx", "passive_dns", lambda: _discover_via_otx(domain, ctx))
+            _run("virustotal", "passive_dns", lambda: _discover_via_virustotal(domain, ctx))
+    if domain and ctx.settings.get("ORIGIN_DISCOVERY_PASSIVE_DNS", True):
         _run("securitytrails", "passive_dns", lambda: _discover_via_securitytrails(domain, ctx))
         _run("viewdns", "passive_dns", lambda: _discover_via_viewdns(domain, ctx))
 
@@ -1206,9 +1180,36 @@ _METHOD_LABEL = {
 }
 
 
-def _process_host(host: str, entry: dict, ctx: _RunCtx) -> Tuple[List[dict], dict]:
+def _candidate_key_rule(combined_result: dict):
+    """host -> the candidate key (§4.9, REC-30).
+
+    The org when the org is in scope (a group has it as its scan root, or
+    ownership was proven at <prefix>.<org>), else the group's own scan root:
+    the active probes then never reach an org-derived candidate the operator
+    did not put in scope. A file without scope groups (a legacy file, partial
+    recon, IP mode) keeps the host's registrable domain.
+    """
+    from recon.helpers.org_work import org_in_scope
+    metadata = combined_result.get("metadata") or {}
+    groups = combined_result.get("scope_groups") or []
+    scan_root = str(metadata.get("root_domain") or combined_result.get("domain") or "").lower()
+    org = str(metadata.get("org_domain") or "").lower()
+    if not groups or not org or not scan_root or metadata.get("ip_mode"):
+        return org_domain
+    if org == scan_root or org_in_scope(org, groups):
+        return lambda host: org if org_domain(host) else None
+    _log("*", f"candidate key: {scan_root} (org not in scope)")
+
+    def _scan_root_key(host):
+        h = str(host or "").lower()
+        under = h == scan_root or h.endswith("." + scan_root)
+        return scan_root if under and org_domain(h) else None
+    return _scan_root_key
+
+
+def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST) -> Tuple[List[dict], dict]:
     meta: dict = {"candidates": [], "methods": [], "errors": {}}
-    candidates = _gather_candidates(host, entry, ctx, meta)
+    candidates = _gather_candidates(host, entry, ctx, meta, key=key)
     kept = _dedup_and_filter(candidates, entry, ctx, meta)
     meta["candidates"] = [ip for ip, _ in kept]
     if not kept:
@@ -1273,7 +1274,8 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
     if not settings.get("ORIGIN_DISCOVERY_ENABLED", False):
         return combined_result
 
-    ctx = _RunCtx(settings)
+    ctx = _run_ctx(settings)
+    key_for = _candidate_key_rule(combined_result)
     fronted = _select_fronted_hosts(combined_result, ctx)
     if not fronted:
         _log("-", "no CDN-fronted hosts in http_probe — nothing to unmask")
@@ -1287,7 +1289,7 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
     all_confirmed: List[dict] = []
     for host, entry in fronted.items():
         try:
-            confirmed, meta = _process_host(host, entry, ctx)
+            confirmed, meta = _process_host(host, entry, ctx, key=key_for(host))
         except Exception as e:  # a host never sinks the whole module
             payload["candidates_meta"][host] = {"errors": {"fatal": str(e)[:200]}}
             _log("!", f"{host}: {e}")

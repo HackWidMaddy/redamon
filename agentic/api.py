@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shlex
+import time
 from contextlib import asynccontextmanager
 from typing import Any, List, Literal, Optional
 
@@ -307,8 +308,11 @@ async def check_target_guardrail(body: GuardrailRequest):
         )
         return result
     except Exception as e:
+        # A malformed or missing verdict lands here too. This check is the
+        # soft, user-disableable one and stays fail-open; the session-start
+        # check refuses on the same error.
         logger.error(f"Guardrail error: {e}")
-        return {"allowed": True, "reason": f"Guardrail error: {str(e)}"}
+        return {"allowed": True, "verdict": "unknown", "reason": f"Guardrail verdict unknown: {str(e)}"}
 
 
 # =============================================================================
@@ -2900,6 +2904,115 @@ async def command_whisperer(body: CommandWhispererRequest):
 
 
 # =============================================================================
+# SKILL METADATA - the upload dialog's "Generate with AI" for user attack skills
+# =============================================================================
+
+import skill_metadata  # noqa: E402
+
+
+class SkillMetadataItem(BaseModel):
+    key: str
+    content: str
+    file_name: str = ""
+    # The current name, as context when only the description is asked.
+    name: str = ""
+    want_name: bool = False
+    want_description: bool = False
+
+
+class SkillMetadataRequest(BaseModel):
+    items: list[SkillMetadataItem]
+    other_names: list[str] = []
+    # Set by the webapp from the caller's saved "Skill names & descriptions"
+    # model and effective user, like every feature endpoint.
+    model: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+def _skill_metadata_size_error(body: SkillMetadataRequest, model: str) -> Optional[JSONResponse]:
+    def refuse(error: str) -> JSONResponse:
+        return JSONResponse(content={"error": error, "model_used": model}, status_code=400)
+
+    if not 1 <= len(body.items) <= skill_metadata.MAX_ITEMS:
+        return refuse(f"Send 1 to {skill_metadata.MAX_ITEMS} skills")
+    for item in body.items:
+        if not item.content.strip() or len(item.content) > 50 * 1024:
+            return refuse("Each skill needs a text of at most 50 KB")
+        if not (item.want_name or item.want_description):
+            return refuse("Each skill must ask for a name or a description")
+        if len(item.key) > 64:
+            return refuse("A skill key is at most 64 characters")
+    if len(body.other_names) > skill_metadata.OTHER_NAMES_MAX:
+        return refuse(f"At most {skill_metadata.OTHER_NAMES_MAX} other names")
+    return None
+
+
+@app.post("/skill-metadata/generate", tags=["Skills"],
+          dependencies=[Depends(require_master_internal_auth), Depends(require_internal_auth)])
+async def generate_skill_metadata(body: SkillMetadataRequest):
+    """Propose the missing name and/or description of up to 5 uploaded skills, on the caller's model.
+
+    Nothing is saved: the webapp re-validates the answer and the person reviews it.
+    """
+    started = time.monotonic()
+    model = (body.model or "").strip()
+    missing = _feature_request_error(model, body.user_id)
+    if missing:
+        return missing
+    too_big = _skill_metadata_size_error(body, model)
+    if too_big:
+        return too_big
+    llm, failure = await _build_feature_llm("Skill metadata", model, body.user_id)
+    if failure:
+        return failure
+
+    other_names = [n[:skill_metadata.NAME_MAX] for n in body.other_names]
+    gate = asyncio.Semaphore(skill_metadata.CONCURRENCY)
+    unavailable: list[JSONResponse] = []
+    call_failures: list[JSONResponse] = []
+
+    async def one(item: SkillMetadataItem) -> dict:
+        async with gate:
+            messages = skill_metadata.build_messages(item, other_names)
+            try:
+                response, failed = await asyncio.wait_for(
+                    _invoke_feature_llm("Skill metadata", model, llm, messages),
+                    skill_metadata.ITEM_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                return {"key": item.key, "error": "timeout"}
+        if failed:
+            if failed.status_code == 503:
+                unavailable.append(failed)
+            else:
+                call_failures.append(failed)
+            return {"key": item.key, "error": "model_call_failed"}
+        answer = skill_metadata.parse_answer(
+            normalize_content(response.content), item.want_name, item.want_description)
+        return {"key": item.key, **answer} if answer else {"key": item.key, "error": "unreadable_answer"}
+
+    try:
+        items = await asyncio.wait_for(asyncio.gather(*(one(i) for i in body.items)),
+                                       skill_metadata.REQUEST_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        # Still one line per request: it is the operator's only record of a Generate call.
+        logger.info("skill_metadata user=%s model=%s items=%d ok=0 failed=%d ms=%d timeout",
+                    body.user_id, model, len(body.items), len(body.items),
+                    int((time.monotonic() - started) * 1000))
+        return _feature_error("agent_timeout", model, 504, "The model took too long, try again")
+
+    failed = sum(1 for i in items if "error" in i)
+    # Counts only: a skill file, its name or the generated text can hold anything.
+    logger.info("skill_metadata user=%s model=%s items=%d ok=%d failed=%d ms=%d",
+                body.user_id, model, len(items), len(items) - failed, failed,
+                int((time.monotonic() - started) * 1000))
+    if unavailable:
+        return unavailable[0]
+    if call_failures and len(call_failures) == len(items):
+        return call_failures[0]
+    return {"items": items, "model_used": model}
+
+
+# =============================================================================
 # SESSION MANAGEMENT PROXY — proxies to kali-sandbox:8013 session endpoints
 # =============================================================================
 
@@ -4539,9 +4652,11 @@ def _graph_exec_respond(final: str, params: dict) -> JSONResponse:
 _TRAFFIC_REPLAY_SENDS: dict[str, int] = {}
 
 
-# Short-TTL cache for the per-project auth profile. One proxy_brain run fans out
-# to many replays, and each was doing a full project GET with a 10s timeout on
-# the send path.
+# Cache for the project row behind replay auth. One proxy_brain run fans out to
+# many replays, and each was doing a full project GET with a 10s timeout on the
+# send path. An entry is reused for at most the TTL, and never once a settings
+# load has seen the project's updatedAt move: a rescope must not keep sending a
+# session to a host it no longer covers.
 _AUTH_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
 _AUTH_PROFILE_TTL_SEC = 60.0
 
@@ -4565,9 +4680,12 @@ async def _profile_auth_base(project_id: str, txn: dict) -> dict:
             r.raise_for_status()
             return r.json()
         import time as _time  # `time` is not imported at module scope in this file
+        from project_settings import seen_project_updated_at
         _now = _time.time()
         _hit = _AUTH_PROFILE_CACHE.get(project_id)
-        if _hit and (_now - _hit[0]) < _AUTH_PROFILE_TTL_SEC:
+        _seen = seen_project_updated_at(project_id)
+        if (_hit and (_now - _hit[0]) < _AUTH_PROFILE_TTL_SEC
+                and (_seen is None or _hit[1].get("updatedAt") == _seen)):
             project = _hit[1]
         else:
             project = await asyncio.to_thread(_fetch)
@@ -4575,36 +4693,17 @@ async def _profile_auth_base(project_id: str, txn: dict) -> dict:
         profile = project.get("authProfile")
         if not profile:
             return {}
-        # Scope: the profile's explicit hosts, else the project's target domains.
-        scope = list(profile.get("scopeHosts") or [])
-        if not scope:
-            if not project.get("ipMode"):
-                roots = []
-                root = (project.get("targetDomain") or "").strip()
-                if root:
-                    roots.append(root)
-                # A domain-batch project leaves targetDomain empty and keeps its
-                # scope in the derived groups.
-                for g in (project.get("domainBatchGroups") or []):
-                    if isinstance(g, dict):
-                        gr = str(g.get("rootDomain") or "").strip()
-                        if gr and gr not in roots:
-                            roots.append(gr)
-                for r in roots:
-                    # Subdomains are the project's own surface and are exactly what
-                    # the captured transactions hit. An apex-only scope left every
-                    # replay against a discovered host silently unauthenticated
-                    # (mirrors default_scope_hosts in recon/helpers/auth_profile.py).
-                    scope.append(r)
-                    scope.append(f"*.{r}")
-                if root:
-                    for pre in (project.get("subdomainList") or []):
-                        pre = str(pre).strip().rstrip(".")
-                        if pre:
-                            scope.append(f"{pre}.{root}")
-            scope += [str(ip) for ip in (project.get("targetIps") or [])]
+        # The same scope as the agent's curl session (§4.6), from the webapp's
+        # scope groups; the profile's explicit hosts only narrow it, and the
+        # request's host is RoE-checked.
         from auth_profile import auth_headers_for_host
-        return auth_headers_for_host(profile, host, scope)
+        from recon_settings.engagement import derive_roe_enabled
+        from scope_groups import auth_scope_patterns, scope_groups_from_project
+        groups = scope_groups_from_project(project)[0]
+        patterns = auth_scope_patterns(groups, ip_mode=bool(project.get("ipMode")),
+                                       target_ips=project.get("targetIps") or [])
+        roe = (project.get("roeExcludedHosts") or []) if derive_roe_enabled(project) else []
+        return auth_headers_for_host(profile, host, patterns, roe)
     except Exception:  # noqa: BLE001
         return {}
 

@@ -1043,6 +1043,7 @@ class AgentState(TypedDict):
     _redundant_transition_count: int  # Consecutive no-op transition_phase requests to the current phase
     _abort_transition: bool  # True when user aborted a phase transition (routes to generate_response)
     _guardrail_blocked: bool  # True when project target was blocked by the scope guardrail
+    _scope_signature: Optional[str]  # The scope the guardrails last approved; a change re-runs them
 
     # Tool plan execution (parallel wave)
     _current_plan: Optional[dict]  # ToolPlan.model_dump() with results after execution
@@ -1300,6 +1301,7 @@ def create_initial_state(
         "_redundant_transition_count": 0,
         "_abort_transition": False,
         "_guardrail_blocked": False,
+        "_scope_signature": None,
         "_current_plan": None,
         # Attack Chain memory
         "chain_findings_memory": [],

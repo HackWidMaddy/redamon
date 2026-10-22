@@ -3,7 +3,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Play, Loader2, ArrowRight, Upload, FileText, Trash2, Info } from 'lucide-react'
 import { Modal, Tooltip, WikiInfoButton } from '@/components/ui'
-import { underAnyRoot } from '@/lib/partialReconScope'
+import { type ProjectRoots, admitsPartialHost } from '@/lib/partialReconScope'
+import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
+import { isValidDomain } from '@/lib/validation'
 import { announceProjectWrite } from '@/lib/projectVersion'
 import type { GraphInputs, PartialReconParams, UserTargets } from '@/lib/recon-types'
 import { useOpenApiSourceLabels } from '@/hooks/useOpenApiSourceLabels'
@@ -21,7 +23,6 @@ interface PartialReconModalProps {
   targetDomain?: string
   /** The project's roots as the form holds them; shown when graph-inputs cannot be fetched. */
   projectRoots?: string[]
-  subdomainPrefixes?: string[]
   isStarting?: boolean
   userId?: string
   /** OpenAPI: the project's configured documents, listed with their last status. */
@@ -252,7 +253,6 @@ const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/
 const IPV6_RE = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/
 const CIDR_V4_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/
 const CIDR_V6_RE = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\/\d{1,3}$/
-const HOSTNAME_RE = /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/
 
 function validateIp(value: string): string | null {
   if (IPV4_RE.test(value)) {
@@ -284,17 +284,24 @@ function validatePort(value: string): string | null {
   return null
 }
 
-function describeRoots(roots: readonly string[]): string {
-  return roots.length === 1 ? roots[0] : `any of ${roots.join(', ')}`
+/** The run's scope in one line: each group (`*.api.example.com (enumerated)`,
+ *  `example.com: www (listed)`), or the bare roots when the groups are unknown. */
+function describeScope(scope: ProjectRoots): string {
+  return scope.groups.length
+    ? scope.groups.map(groupLabel).join('; ')
+    : `under ${scope.roots.join(', ')}`
 }
 
-function validateUrl(value: string, roots: readonly string[]): string | null {
+// A typed host must pass the same rule the orchestrator and the recon container
+// apply (§4.6): strictly under an enumerated scan root, one of a listed group's
+// hosts, or a scan root itself only when Root is on.
+function validateUrl(value: string, scope: ProjectRoots): string | null {
   try {
     const url = new URL(value)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return `URL must use http or https: ${value}`
     if (!url.hostname) return `URL has no hostname: ${value}`
-    if (roots.length && !underAnyRoot(url.hostname, roots)) {
-      return `${url.hostname} is out of scope (not a subdomain of ${describeRoots(roots)})`
+    if (scope.roots.length && !admitsPartialHost(scope, url.hostname)) {
+      return `${url.hostname} is out of scope for this run (${describeScope(scope)})`
     }
     return null
   } catch {
@@ -302,10 +309,10 @@ function validateUrl(value: string, roots: readonly string[]): string | null {
   }
 }
 
-function validateSubdomain(value: string, roots: readonly string[]): string | null {
-  if (!HOSTNAME_RE.test(value)) return `Invalid hostname: ${value}`
-  if (roots.length && !underAnyRoot(value, roots)) {
-    return `${value} is not a subdomain of ${describeRoots(roots)}`
+function validateSubdomain(value: string, scope: ProjectRoots): string | null {
+  if (!isValidDomain(value)) return `Invalid hostname: ${value}`
+  if (scope.roots.length && !admitsPartialHost(scope, value)) {
+    return `${value} is out of scope for this run (${describeScope(scope)})`
   }
   return null
 }
@@ -346,6 +353,10 @@ const noteStyle = {
   borderRadius: '6px', backgroundColor: 'var(--bg-secondary, #1e293b)',
   border: '1px solid var(--border-color, #334155)', overflowWrap: 'anywhere' as const,
 }
+const legacyGraphStyle = {
+  ...noteStyle, color: 'var(--status-warning-text)', backgroundColor: 'var(--status-warning-bg)',
+  border: '1px solid var(--status-warning)',
+}
 const errorBoxStyle = {
   fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
   backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
@@ -383,12 +394,13 @@ export function PartialReconModal({
   projectId,
   targetDomain = '',
   projectRoots,
-  subdomainPrefixes = [],
   isStarting = false,
   userId,
   openapiSources,
 }: PartialReconModalProps) {
   const [graphInputs, setGraphInputs] = useState<GraphInputs | null>(null)
+  // The saved project's scope groups: what the orchestrator judges typed input by.
+  const [scopeGroups, setScopeGroups] = useState<ScopeGroup[] | null>(null)
   const [loadingInputs, setLoadingInputs] = useState(false)
   const [userSettings, setUserSettings] = useState<Record<string, string> | null>(null)
   const [customSubdomains, setCustomSubdomains] = useState('')
@@ -446,6 +458,11 @@ export function PartialReconModal({
       domain: formRoots[0] || null, domains: formRoots, stale_domains: [], empty_domains: [],
       existing_subdomains_count: 0, existing_ips_count: 0, existing_ports_count: 0, source: 'settings',
     }
+    setScopeGroups(null)
+    fetch(`/api/projects/${projectId}`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(project => setScopeGroups(Array.isArray(project?.scopeGroups) ? project.scopeGroups : null))
+      .catch(() => setScopeGroups(null))
     fetch(`/api/recon/${projectId}/graph-inputs/${toolId}`)
       .then(res => res.ok ? res.json() : null)
       .then((data: GraphInputs | null) => {
@@ -521,7 +538,20 @@ export function PartialReconModal({
     [graphInputs],
   )
   const domain = domains[0] || ''
+  // This run's groups; without them (an older webapp, a failed read) the rule
+  // falls back to "under a root", and the server still applies the full one.
+  const partialScope = useMemo<ProjectRoots>(() => {
+    const wanted = new Set(domains.map(d => d.toLowerCase()))
+    return {
+      mode: 'batch', roots: domains, wildcardRoots: [],
+      groups: (scopeGroups ?? []).filter(g => wanted.has(g.scanRoot)),
+    }
+  }, [domains, scopeGroups])
   const staleDomains = graphInputs?.stale_domains ?? []
+  // Domain nodes built under the old scope model (§4.11.6): the start route
+  // refuses until a full recon rebuilds the graph, so Run is off here too.
+  const legacyGraph = graphInputs?.legacy_graph ?? []
+  const oldModelGraph = !loadingInputs && legacyGraph.length > 0
   const emptyDomains = graphInputs?.empty_domains ?? []
   const isSubdomainDiscovery = toolId === 'SubdomainDiscovery'
   const enumerableDomains = useMemo(
@@ -571,8 +601,8 @@ export function PartialReconModal({
 
   // Subdomain validation
   const subdomainValidation = useMemo(
-    () => validateLines(customSubdomains, v => validateSubdomain(v, domains)),
-    [customSubdomains, domains],
+    () => validateLines(customSubdomains, v => validateSubdomain(v, partialScope)),
+    [customSubdomains, partialScope],
   )
 
   // IP validation
@@ -589,8 +619,8 @@ export function PartialReconModal({
 
   // URL validation (resource enum tools: Katana, Hakrawler) -- must be in project scope
   const urlValidation = useMemo(
-    () => validateLines(customUrls, v => validateUrl(v, domains)),
-    [customUrls, domains],
+    () => validateLines(customUrls, v => validateUrl(v, partialScope)),
+    [customUrls, partialScope],
   )
 
   const hasValidationErrors = (hasSubdomainInput && subdomainValidation.errors.length > 0)
@@ -610,7 +640,7 @@ export function PartialReconModal({
     const customSubs = customSubdomains
       .split('\n')
       .map(s => s.trim().toLowerCase())
-      .filter(s => s && HOSTNAME_RE.test(s) && underAnyRoot(s, domains))
+      .filter(s => s && isValidDomain(s) && admitsPartialHost(partialScope, s))
     // Deduplicate, graph first
     const seen = new Set<string>()
     const options: { value: string; label: string; source: string }[] = []
@@ -621,7 +651,7 @@ export function PartialReconModal({
       if (!seen.has(s)) { seen.add(s); options.push({ value: s, label: s, source: 'custom' }) }
     }
     return options
-  }, [graphInputs?.existing_subdomains, customSubdomains, domains])
+  }, [graphInputs?.existing_subdomains, customSubdomains, partialScope])
 
   // Build dropdown options for URL attachment: existing BaseURLs from graph
   const urlAttachToOptions = useMemo(() => {
@@ -809,7 +839,7 @@ export function PartialReconModal({
             <div style={{ fontSize: '13px', fontFamily: 'monospace', color: 'var(--text-primary, #e2e8f0)' }}>
               {loadingInputs ? 'Loading...' : (
                 <>
-                  {domains.length ? <RootsSummary roots={domains} /> : (inputCounts ? 'No domain' : 'No domain configured')}
+                  {domains.length ? <RootsSummary roots={domains} /> : (inputCounts ? 'No scan root' : 'No scan root configured')}
                   {inputCounts ? ` ${inputCounts}` : null}
                 </>
               )}
@@ -853,9 +883,16 @@ export function PartialReconModal({
           </div>
         </div>
 
+        {oldModelGraph && (
+          <div style={legacyGraphStyle} role="alert" data-testid="partial-recon-legacy-graph">
+            This project&apos;s graph was built before the current scope model
+            (old domain nodes: <strong>{legacyGraph.join(', ')}</strong>). Run a full recon first;
+            partial recon is off until then.
+          </div>
+        )}
         {!loadingInputs && staleDomains.length > 0 && (
           <div style={noteStyle} data-testid="partial-recon-stale">
-            <strong>{staleDomains.join(', ')}</strong>: not in this project any more, not scanned; the next full recon removes {staleDomains.length === 1 ? 'it' : 'them'}.
+            <strong>{staleDomains.join(', ')}</strong>: no longer a scan root of this project, not scanned; the next full recon removes {staleDomains.length === 1 ? 'it' : 'them'}.
           </div>
         )}
         {!loadingInputs && emptyDomains.length > 0 && (
@@ -1316,7 +1353,7 @@ export function PartialReconModal({
         {/* SubdomainDiscovery: which roots to enumerate */}
         {isSubdomainDiscovery && !loadingInputs && (domains.length > 1 || (domains.length === 1 && enumerableDomains.length === 0)) && (
           <div>
-            <div style={labelStyle}>Domains to enumerate</div>
+            <div style={labelStyle}>Scan roots to enumerate</div>
             <div
               data-testid="partial-recon-discovery-list"
               style={{
@@ -1349,26 +1386,14 @@ export function PartialReconModal({
                 )
               })}
             </div>
-            <div style={hintStyle}>A batch domain is enumerated only when its hostname list has a wildcard (*.domain).</div>
+            <div style={hintStyle}>Only an enumerated scope group (a *.name entry) runs subdomain discovery; a listed group scans exactly its hosts.</div>
           </div>
         )}
         {isSubdomainDiscovery && !loadingInputs && domains.length > 0 && runDomains.length === 0 && (
           <div style={errorBoxStyle}>
             {enumerableDomains.length === 0
-              ? 'No domain in this project may be enumerated: a batch domain is enumerated only when its hostname list has a wildcard (*.domain).'
-              : 'Tick at least one domain to enumerate.'}
-          </div>
-        )}
-
-        {/* Subdomain prefix warning (SubdomainDiscovery only) */}
-        {toolId === 'SubdomainDiscovery' && subdomainPrefixes.length > 0 && (
-          <div style={{
-            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
-            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
-          }}>
-            This project has subdomain prefixes locked to <strong>{subdomainPrefixes.join(', ')}</strong>.
-            Partial recon ignores this filter and runs full discovery to find all subdomains.
-            New subdomains found outside the prefix list will still be added to the graph.
+              ? 'No scan root in this project may be enumerated: only an enumerated scope group (a *.name entry) runs subdomain discovery.'
+              : 'Tick at least one scan root to enumerate.'}
           </div>
         )}
 
@@ -1420,14 +1445,14 @@ export function PartialReconModal({
           <button
             type="button"
             onClick={handleRun}
-            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted}
+            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph}
             style={{
               padding: '8px 16px', borderRadius: '6px', border: 'none',
               backgroundColor: '#3b82f6', color: '#fff',
-              cursor: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted ? 'not-allowed' : 'pointer',
+              cursor: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph ? 'not-allowed' : 'pointer',
               fontSize: '13px',
               display: 'flex', alignItems: 'center', gap: '6px',
-              opacity: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted ? 0.5 : 1,
+              opacity: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph ? 0.5 : 1,
             }}
           >
             {isStarting ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={14} />}

@@ -12,21 +12,30 @@
  *  - its own permission, never auto-ticked by any profile;
  *  - refused while anything reads or writes the graph: the in-app agent reads
  *    the batch groups every turn, and the scanners read their targets at spawn;
- *  - every value validated, every new batch root through the permanent
- *    guardrail, the batch grouping re-derived here and never taken from a caller;
+ *  - every value validated, every batch host and root through the permanent
+ *    guardrail and, unless the project switched it off, the soft (LLM) one,
+ *    the batch grouping re-derived here and never taken from a caller;
  *  - on a third-party engagement a WIDENING must arrive with an authorization
  *    record, written in the same transaction, and passing one needs
  *    engagement:authorize as well;
  *  - a compare-and-swap on `updatedAt`, and an audit row with every before/after;
  *  - a batch that gains hosts pauses the project's scan schedules in the same
  *    transaction, so no unattended run reaches the new hosts before a person
- *    has looked at them.
+ *    has looked at them;
+ *  - an active login recording is re-pointed at the new scope.
  */
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
-import { validateDomainBatch, type DomainGroup } from '@/lib/domainBatch'
+import { validateDomainBatch } from '@/lib/domainBatch'
+import {
+  type ScopeGroup, isScopeWidening, resolveScopeGroups, sameScope, scopeGuardrailNames, scopeSignature,
+  softGuardrailNames,
+} from '@/lib/scopeGroups'
+import { refreshActiveRecordingScope } from '@/lib/recordingSession'
+import { activationBusy } from '@/lib/activationLock'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
-import { seedProjectDomains } from '@/lib/graphSeedDomains'
+import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
+import { LEGACY_GRAPH_MESSAGE, legacyGraphDomains } from '@/lib/legacyGraph'
 import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
 import { auditableKey, filterReconSettings } from '@/lib/reconSettings/filter'
@@ -34,7 +43,9 @@ import { rescopableFields } from '@/lib/reconSettings/registry'
 import { validateCrossFieldRules } from '@/lib/reconSettings/crossField'
 import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
-import { normaliseAuthorization, refuseHardBlocked, type AuthorizationArgs } from '@/lib/mcp/engagementTools'
+import {
+  normaliseAuthorization, refuseHardBlocked, softGuardrailRefusal, type AuthorizationArgs,
+} from '@/lib/mcp/engagementTools'
 import { busyHint, casVersion, countQueuedJobsNeedingReview, describeAffectedSchedules } from '@/lib/mcp/writeTools'
 
 export interface UpdateProjectScopeArgs {
@@ -48,28 +59,31 @@ type Row = Record<string, unknown> & {
   updatedAt: Date
   engagementKind: string
   domainBatchMode: boolean
+  domainBatchHosts: unknown
   domainBatchGroups: unknown
 }
 
-/** `root|prefix` for every group: the shape a widening shows up in. */
-function batchSignature(groups: unknown): Set<string> {
-  const out = new Set<string>()
-  for (const g of Array.isArray(groups) ? groups as Partial<DomainGroup>[] : []) {
-    for (const p of g?.prefixes ?? []) out.add(`${String(g?.rootDomain ?? '')}|${p}`)
-  }
-  return out
-}
+const batchScope = (hosts: unknown) => resolveScopeGroups({
+  domainBatchMode: true,
+  domainBatchHosts: Array.isArray(hosts) ? hosts.filter((h): h is string => typeof h === 'string') : [],
+}).groups
 
-/** How many host or wildcard entries this change adds to the batch. */
+/**
+ * How many entries this change adds to what the batch admits; 0 unless it is a
+ * widening by containment (D-21): a narrowing, a reorder or a regroup of the
+ * same hosts adds nothing, a seed under an enumerated root adds nothing.
+ * Both sides are derived from host lists, never from a stored group record.
+ */
 function batchEntriesAdded(row: Row, data: Record<string, unknown>): number {
-  if (!('domainBatchGroups' in data)) return 0
-  const before = batchSignature(row.domainBatchGroups)
-  return [...batchSignature(data.domainBatchGroups)].filter(s => !before.has(s)).length
+  if (!('domainBatchHosts' in data)) return 0
+  const before = batchScope(row.domainBatchHosts)
+  const after = batchScope(data.domainBatchHosts)
+  if (!isScopeWidening(before, after)) return 0
+  const known = scopeSignature(before)
+  return Math.max(1, [...scopeSignature(after)].filter(x => !known.has(x)).length)
 }
 
-const rootsOf = (groups: unknown) => new Set(
-  (Array.isArray(groups) ? groups as Partial<DomainGroup>[] : []).map(g => String(g?.rootDomain ?? '')).filter(Boolean)
-)
+const scanRootsOf = (groups: readonly ScopeGroup[]) => new Set(groups.map(g => g.scanRoot))
 
 const repoSet = (v: unknown) => new Set(
   String(v ?? '').split(',').map(r => r.trim().toLowerCase()).filter(Boolean)
@@ -130,7 +144,9 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
 
   const select = {
     ...Object.fromEntries(rescopableFields().map(f => [f.key, true])),
-    engagementKind: true, domainBatchMode: true, domainBatchGroups: true, updatedAt: true,
+    engagementKind: true, domainBatchMode: true, domainBatchHosts: true, domainBatchGroups: true, updatedAt: true,
+    // Not changed here; read for the soft guardrail and the recording scope.
+    targetGuardrailEnabled: true, roeExcludedHosts: true,
   }
   assertReadableSelect(select, 'update_project_scope')
   const row = await prisma.project.findUnique({ where: { id: args.projectId }, select }) as Row | null
@@ -149,17 +165,22 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
     }
     const batch = validateDomainBatch(data.domainBatchHosts as string[])
     if (!batch.ok) throw new McpToolError(batch.errors.join(' '), 'setting_rejected', { rejectedKey: 'domainBatchHosts' })
-    const before = rootsOf(row.domainBatchGroups)
-    const after = rootsOf(batch.groups)
+    // Scan roots, both sides derived from host lists: a legacy stored record
+    // grouped under `co.uk` is not a removed root of a row now under acme.co.uk.
+    const before = scanRootsOf(batchScope(row.domainBatchHosts))
+    const after = scanRootsOf(batch.groups)
     addedRoots = [...after].filter(r => !before.has(r)).sort()
     removedRoots = [...before].filter(r => !after.has(r)).sort()
-    // Every root this project would scan, not only the new ones: a root that
-    // joined the permanent blocklist since it was added must not ride along.
-    refuseHardBlocked([...after])
+    // Every host and root this project would scan, not only the new ones: a
+    // name that joined the permanent blocklist since it was added must not ride
+    // along, and a host under a government name must not hide behind its root.
+    refuseHardBlocked(scopeGuardrailNames({
+      domainBatchMode: true, domainBatchHosts: data.domainBatchHosts as string[],
+    }))
     // The grouping is the scope every reader uses, so it is derived here from
     // the host list and never accepted from a caller.
-    data.domainBatchHosts = batch.groups.flatMap(g => g.hosts)
-    data.domainBatchGroups = batch.groups
+    data.domainBatchHosts = batch.entries
+    data.domainBatchGroups = batch.legacy
   }
 
   const crossField = await validateCrossFieldRules({ ...row, ...data }, Object.keys(data), ctx.token.userId)
@@ -179,6 +200,31 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   const changed = Object.keys(data)
   if (changed.every(k => JSON.stringify(row[k] ?? null) === JSON.stringify(data[k] ?? null)) && !authorization) {
     throw new McpToolError('Nothing to change: the project already holds these values.', 'bad_args')
+  }
+
+  // A version activation swaps the graph out and back; a scope written between
+  // its clear and its restore would describe neither graph.
+  if ('domainBatchHosts' in data && await activationBusy(args.projectId)) {
+    throw new McpToolError(
+      'A version activation is in progress for this project. Nothing was written; retry once it finishes.',
+      'busy'
+    )
+  }
+
+  // A rewrite of the derived record alone (a legacy row re-saved with the same
+  // hosts) is not a scope change and must not read as one in the activity feed.
+  const regroupOnly = 'domainBatchHosts' in data
+    && sameScope(batchScope(row.domainBatchHosts), batchScope(data.domainBatchHosts))
+  const batchRescoped = 'domainBatchHosts' in data && !regroupOnly
+
+  // Every scope change, as the project form's save does: the soft guardrail
+  // judges the whole new scope, a narrowing included.
+  if (batchRescoped && row.targetGuardrailEnabled !== false) {
+    const refusal = await softGuardrailRefusal({
+      targetDomains: softGuardrailNames(batchScope(data.domainBatchHosts)),
+      userId: ctx.token.userId,
+    })
+    if (refusal) throw new McpToolError(`Target blocked by the guardrail: ${refusal}`, 'target_blocked')
   }
 
   const version = casVersion(row.updatedAt, args.expectedUpdatedAt)
@@ -228,18 +274,34 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   // nodes, so a new root without one could not be scanned on its own.
   // The owner is the token's user: assertMcpProjectAccess proved it, and the
   // row's own userId is not an MCP-readable column.
-  const graphSeeded = await seedProjectDomains(addedRoots, ctx.token.userId, args.projectId)
+  // Seeding attaches to Domain nodes too, so on a graph built under the old
+  // scope model (§4.11.6) it waits for the full recon that rebuilds it.
+  const legacyGraph = addedRoots.length > 0
+    ? (await legacyGraphDomains(ctx.token.userId, args.projectId, batchScope(data.domainBatchHosts))) ?? []
+    : []
+  // The orgs of the added scan roots: the graph names its Domain after the org.
+  const addedOrgs = seedDomainNames(
+    batchScope(data.domainBatchHosts).filter(g => addedRoots.includes(g.scanRoot)))
+  const graphSeeded = legacyGraph.length === 0
+    && await seedProjectDomains(addedOrgs, ctx.token.userId, args.projectId)
+
+  const recordingScopeUpdated = batchRescoped && await refreshActiveRecordingScope(prisma, args.projectId, {
+    domainBatchMode: true,
+    domainBatchHosts: data.domainBatchHosts as string[],
+    roeExcludedHosts: Array.isArray(row.roeExcludedHosts) ? row.roeExcludedHosts as string[] : [],
+  })
 
   const shown = changed.filter(k => k !== 'domainBatchGroups')
+  const audited = regroupOnly ? shown : changed
   void writeAudit({
     actorId: ctx.token.userId,
     action: 'mcp.update_project_scope',
     targetType: 'project',
     targetId: args.projectId,
-    before: Object.fromEntries(changed.map(k => [k, row[k] ?? null])),
+    before: Object.fromEntries(audited.map(k => [k, row[k] ?? null])),
     after: {
       tokenId: ctx.token.tokenId, tokenPrefix: ctx.token.tokenPrefix,
-      changes: Object.fromEntries(changed.map(k => [k, data[k] ?? null])),
+      changes: Object.fromEntries(audited.map(k => [k, data[k] ?? null])),
       widenings,
       authorizationId,
       authorizationDigest: authorization?.documentSha256 ?? null,
@@ -265,8 +327,11 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
     pausedSchedules,
     affectedSchedules,
     graphSeeded,
+    legacyGraph,
+    recordingScopeUpdated,
     note:
-      (graphSeeded ? '' : 'The new roots could not be added to the graph yet; the next full recon adds them. ') +
+      (graphSeeded ? '' : "The new registrable domains' Domain nodes could not be added to the graph yet; the next full recon adds them. ") +
+      (legacyGraph.length > 0 ? `${LEGACY_GRAPH_MESSAGE} (old domain nodes: ${legacyGraph.join(', ')}). ` : '') +
       (pausedSchedules.count > 0
         ? `The batch gained hosts, so ${pausedSchedules.count} scheduled scan(s) were paused; a person ` +
           're-enables them in the Scans tab once they have reviewed the new scope. '

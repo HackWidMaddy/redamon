@@ -60,6 +60,11 @@ vi.mock('@/lib/auth', () => ({ createWsTicket: (...a: unknown[]) => h.createTick
 // GVM/GitHub-Hunt/TruffleHog start routes gate on a recon-output file; make it present
 // so the only thing that can refuse them here is the activation lock.
 vi.mock('fs', async orig => ({ ...(await orig<typeof import('fs')>()), existsSync: () => true }))
+// The old-model graph check has its own tests; here the graph is current.
+vi.mock('@/lib/legacyGraph', async orig => ({
+  ...(await orig<typeof import('@/lib/legacyGraph')>()),
+  legacyGraphDomains: async () => [],
+}))
 vi.mock('@/lib/orchestratorError', () => ({
   normalizeOrchestratorStartError: (d: { error?: string }, fb: string) => ({ error: d?.error ?? fb }),
 }))

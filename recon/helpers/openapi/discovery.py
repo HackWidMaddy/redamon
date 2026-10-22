@@ -71,10 +71,24 @@ def _norm_host(value):
     return str(value or '').strip().strip('[]').rstrip('.').lower()
 
 
-def scope_payload(settings):
+def scope_payload(settings, group=None):
+    """The OpenAPI fetch scope of one target, as a Scope payload.
+
+    With a scope group (SCOPE_GROUPS) it is the group's auth scope, the same
+    hosts the webapp's authScopePatterns names: an ENUMERATE group's strict
+    subdomains, an EXACT group's listed hosts, the scan root only with Include
+    Root. Without one, the legacy TARGET_DOMAIN + SUBDOMAIN_LIST reading.
+    """
+    excluded = list(settings.get('ROE_EXCLUDED_HOSTS') or []) if settings.get('ROE_ENABLED') else []
+    if group is not None and not settings.get('IP_MODE'):
+        return {'root': _norm_host(group.get('scanRoot')),
+                'hosts': [_norm_host(h) for h in group.get('exactHosts') or [] if _norm_host(h)],
+                'include_subdomains': group.get('mode') == 'enumerate',
+                'include_root': bool(group.get('includeRoot')),
+                'ip_networks': [],
+                'excluded_hosts': excluded}
     root = _norm_host(settings.get('TARGET_DOMAIN'))
     prefixes = [p.strip() for p in settings.get('SUBDOMAIN_LIST') or [] if isinstance(p, str)]
-    excluded = list(settings.get('ROE_EXCLUDED_HOSTS') or []) if settings.get('ROE_ENABLED') else []
     if settings.get('IP_MODE'):
         return {'root': '', 'hosts': [], 'include_subdomains': False, 'include_root': False,
                 'ip_networks': list(settings.get('TARGET_IPS') or []), 'excluded_hosts': excluded}
@@ -88,11 +102,6 @@ def scope_payload(settings):
             'excluded_hosts': excluded}
 
 
-def _group_settings(settings, group):
-    return {**settings, 'TARGET_DOMAIN': group.get('rootDomain') or '',
-            'SUBDOMAIN_LIST': list(group.get('prefixes') or [])}
-
-
 def operator_targets(settings, extra_urls=()):
     """Hosts and networks the operator typed, exempt from the address guard.
 
@@ -100,24 +109,16 @@ def operator_targets(settings, extra_urls=()):
     is scanned whatever it resolves to (recon/main.py, "Operator-supplied hosts
     are NOT filtered"), and IP mode applies no never-scannable filter.
     """
+    from recon.helpers.batch_groups import settings_scope_groups
     hosts, networks = set(), []
-    root = _norm_host(settings.get('TARGET_DOMAIN'))
-    if root:
-        hosts.add(root)
-        for prefix in settings.get('SUBDOMAIN_LIST') or []:
-            clean = str(prefix).strip().rstrip('.')
-            if clean and clean != '*':
-                hosts.add(f'{clean}.{root}')
-    for group in settings.get('DOMAIN_BATCH_GROUPS') or []:
-        if not isinstance(group, dict):
-            continue
-        g = _norm_host(group.get('rootDomain'))
-        prefixes = [p for p in group.get('prefixes') or [] if isinstance(p, str)]
-        if not g or '*' in prefixes:
-            continue
-        for p in prefixes:
-            clean = p.strip().rstrip('.')
-            hosts.add(g if not clean else f'{clean}.{g}')
+    batch = bool(settings.get('DOMAIN_BATCH_MODE'))
+    for group in settings_scope_groups(settings) if not settings.get('IP_MODE') else []:
+        root = _norm_host(group.get('scanRoot'))
+        hosts.update(_norm_host(h) for h in group.get('exactHosts') or [])
+        # A batch root is named only when listed; a single-domain target is
+        # the name the operator typed either way.
+        if root and (group.get('includeRoot') or not batch):
+            hosts.add(root)
     for value in settings.get('TARGET_IPS') or []:
         try:
             networks.append(ipaddress.ip_network(str(value).strip(), strict=False))
@@ -274,21 +275,23 @@ def _discover(recon_data, settings, seed_urls, explicit_urls, result):
         return
     diagnostics = result['diagnostics']
 
-    run_settings = settings
-    group_scopes = []
+    from recon.helpers.batch_groups import settings_scope_groups
+    groups = settings_scope_groups(settings) if not settings.get('IP_MODE') else []
+    own_group = groups[0] if groups else None
     own_index = 0
+    group_scopes = []
     if settings.get('DOMAIN_BATCH_MODE'):
-        groups = [g for g in settings.get('DOMAIN_BATCH_GROUPS') or [] if isinstance(g, dict)]
-        own_index = next((i for i, g in enumerate(groups) if g.get('rootDomain') == recon_data.get('domain')), None)
-        if own_index is None:
+        own_root = _norm_host(recon_data.get('domain'))
+        own_index = next((i for i, g in enumerate(groups) if _norm_host(g.get('scanRoot')) == own_root), None)
+        own_group = groups[own_index] if own_index is not None else None
+        if own_group is None:
             diagnostics.append({'url': '', 'code': 'invalid_scope',
                                 'message': 'This run is not one of the Domain batch groups'})
             print('[!][OpenAPI] Domain batch: this run is not an approved group; nothing fetched')
             return
-        run_settings = _group_settings(settings, groups[own_index])
-        group_scopes = [Scope.from_payload(scope_payload(_group_settings(settings, g))) for g in groups]
+        group_scopes = [Scope.from_payload(scope_payload(settings, g)) for g in groups]
 
-    scope = Scope.from_payload(scope_payload(run_settings))
+    scope = Scope.from_payload(scope_payload(settings, own_group))
     if not scope.is_valid:
         diagnostics.append({'url': '', 'code': 'invalid_scope', 'message': 'OpenAPI requires a configured target'})
         return

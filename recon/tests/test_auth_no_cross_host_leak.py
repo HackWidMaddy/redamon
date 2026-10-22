@@ -19,7 +19,8 @@ from recon.helpers.nuclei_helpers import build_nuclei_command
 
 AUTH = ["Cookie: sid=abc123"]
 
-SETTINGS = {'TARGET_DOMAIN': 'example.test', 'SUBDOMAIN_LIST': [], 'IP_MODE': False}
+# "." puts example.test itself in scope; without it only its subdomains get auth.
+SETTINGS = {'TARGET_DOMAIN': 'example.test', 'SUBDOMAIN_LIST': ['.'], 'IP_MODE': False}
 PROFILE = {'authType': 'cookie', 'authValue': 'sid=abc123',
            'authHeaderName': '', 'extraHeaders': {}}
 

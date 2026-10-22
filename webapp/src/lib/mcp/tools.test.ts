@@ -150,6 +150,23 @@ describe('list_projects', () => {
     await listProjects(ctx())
     expect(h.orchestratorFetch).not.toHaveBeenCalled()
   })
+
+  test('reports the derived enumeration counts and a one-line scope, never the raw lists', async () => {
+    h.findManyProjects.mockResolvedValue([
+      { id: 'b', name: 'batch', targetDomain: '', targetIps: [], ipMode: false, domainBatchMode: true,
+        updatedAt: new Date(), subdomainList: [],
+        domainBatchHosts: ['*.example.com', 'www.acme.co.uk', '*.example.org'] },
+      { id: 's', name: 'single', targetDomain: 'example.net', targetIps: [], ipMode: false, domainBatchMode: false,
+        updatedAt: new Date(), subdomainList: ['.'], domainBatchHosts: [] },
+    ])
+    const { projects } = await listProjects(ctx())
+    expect(projects.map(p => [p.wildcardDomainCount, p.enumerateGroupCount, p.scopeSummary])).toEqual([
+      [2, 2, '3 scope groups across 3 domains (2 enumerated)'],
+      [0, 1, '*.example.net (enumerated, +root)'],
+    ])
+    expect(projects[0]).not.toHaveProperty('domainBatchHosts')
+    expect(projects[0]).not.toHaveProperty('subdomainList')
+  })
 })
 
 // --- get_recon_status ----------------------------------------------------------

@@ -882,7 +882,13 @@ def _collect_subdomains(recon_data: dict) -> list[str]:
     """
     Pull every resolvable subdomain from the DNS map. We include the root
     domain too: every root of a Domain batch run (recon_data["domains"]).
+
+    A group's recon file narrows that (§4.6): the scan root only when it is a
+    target, an EXACT group's listed hosts and nothing else. IP mode's synthetic
+    root is never a name to check.
     """
+    from recon.helpers.recon_scope import recon_scope
+    scope = recon_scope(recon_data)
     names: set[str] = set()
     dns_data = recon_data.get("dns") or {}
     roots = recon_data.get("domains")
@@ -904,6 +910,11 @@ def _collect_subdomains(recon_data: dict) -> list[str]:
             if isinstance(n, str) and n.strip():
                 names.add(n.strip().lower())
 
+    names = {n for n in names if not n.startswith("ip-targets.")}
+    if scope.mode and not isinstance(recon_data.get("domains"), list):
+        if scope.exact:
+            names |= set(scope.targets())
+        names = {n for n in names if scope.admits(n)}
     return [n for n in names if n and "." in n]
 
 

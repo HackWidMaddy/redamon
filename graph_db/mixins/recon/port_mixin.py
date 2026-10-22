@@ -8,6 +8,7 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
+from graph_db.mixins.recon.scope import org_for_scan_root
 from graph_db.technology_identity import resolve_tech_name, resolve_tech_version
 
 
@@ -252,6 +253,10 @@ class PortMixin:
             # Update Domain node with port scan metadata
             metadata = recon_data.get("metadata", {})
             root_domain = metadata.get("root_domain", "")
+            # The flat per-tool stamp goes on the org Domain (§4.11.3): a scan
+            # root below its org has no Domain node of its own.
+            if root_domain:
+                root_domain = metadata.get("org_domain") or org_for_scan_root(root_domain, recon_data)
 
             if root_domain:
                 try:

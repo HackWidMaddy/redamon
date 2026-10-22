@@ -11,6 +11,12 @@ export interface ProjectListItem {
   description: string | null
   targetDomain: string
   subdomainList?: string[]
+  /** The scope fields, when the list route sends them: a batch row's
+   *  targetDomain is empty, and its target is derived from domainBatchHosts. */
+  ipMode?: boolean
+  targetIps?: string[]
+  domainBatchMode?: boolean
+  domainBatchHosts?: string[]
   createdAt: string
   updatedAt: string
   user: {

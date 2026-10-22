@@ -344,7 +344,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
       description:
         'List the RedAmon projects this token can reach. The token belongs to one user and ' +
         'only ever sees that user\'s own projects. Start here to discover a projectId; every ' +
-        'other tool needs one. This does not report scan state - use get_recon_status for that.',
+        'other tool needs one. This does not report scan state - use get_recon_status for that.\n\n' +
+        'Each project carries `scopeSummary`, its scope in one line, and `enumerateGroupCount`, ' +
+        'how many of its scope groups are fully enumerated: that is the difference between a ' +
+        'five-host scan and a multi-hour one.',
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
       inputSchema: {},
@@ -358,8 +361,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
       title: 'Get recon status',
       description:
         'Report whether a full recon scan is running for this project, and its current phase. ' +
-        'If the orchestrator cannot be reached this reports "status unknown" and fails - it ' +
-        'never reports "not running", because those are different facts.',
+        'For a domain batch, `currentGroup` is the scan root of the scope group being scanned ' +
+        '(for example "api.example.com" for a "*.api.example.com" entry), not its registrable ' +
+        'domain. If the orchestrator cannot be reached this reports "status unknown" and fails - ' +
+        'it never reports "not running", because those are different facts.',
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
       inputSchema: { projectId: projectIdSchema.describe('From list_projects.') },
@@ -659,6 +664,9 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'Counts and names only: no property values are returned.\n\n' +
         'Each side hides its own muted findings, so a finding muted after a version was frozen ' +
         'shows as resolved, and one unmuted since shows as added. Neither changed on the target.\n\n' +
+        'A version saved before the graph named its Domain nodes after the registrable domain ' +
+        '(api.example.com became a Subdomain of Domain example.com) differs from a later one in ' +
+        'its Domain nodes once, across that change; the hosts beneath them did not change.\n\n' +
         `${UNTRUSTED_DATA_NOTE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
@@ -939,7 +947,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'budget, and returns the same thing every time. Run one with run_graph_view.\n\n' +
         'The query text itself is deliberately not shown. Note a view saved in the app can still ' +
         'be refused here: this surface proves a query is tenant-scoped and read-only by stricter ' +
-        'rules than the app applies.',
+        'rules than the app applies.\n\n' +
+        '`mayNeedUpdate` is true when a view names a Domain the graph no longer has: Domain nodes ' +
+        'carry the registrable domain, so a view written for `api.example.com` as a Domain now ' +
+        'returns nothing. Its rows would read as a clean target; tell the person instead.',
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
       inputSchema: { projectId: projectIdSchema },
@@ -1735,6 +1746,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'Note that roeGlobalMaxRps 0 means NO ceiling rather than a slow one.\n\n' +
         'Only a DIGEST of the scope document is stored, never the document. Pass documentSha256, ' +
         'or pass documentText and it is digested here.\n\n' +
+        'The permanent guardrail checks every host and root and cannot be switched off. The ' +
+        'target guardrail (a model judging whether the target looks like one nobody may test) ' +
+        'runs as well, unless settings.targetGuardrailEnabled is false; it is refused as ' +
+        '`target_blocked`.\n\n' +
         'Pass idempotencyKey, derived from the authorization digest and the program handle. A ' +
         'second call with the same key returns the FIRST project instead of creating another, ' +
         'which is what makes a retried run safe.\n\n' +
@@ -1754,23 +1769,30 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         engagementKind: z.enum(['internal', 'third_party'])
           .describe('Whose estate the target is. third_party requires a ceiling and an authorization.'),
         targetDomain: z.string().max(253).optional()
-          .describe('Single-domain mode. Mutually exclusive with the other two.'),
+          .describe('Single-domain mode. Mutually exclusive with the other two. A domain or a '
+            + 'subdomain at any depth ("api.example.com"), stored lower-cased and with a leading '
+            + '"*." dropped; a public suffix ("co.uk") or an IP address is refused.'),
         targetIps: z.array(z.string().max(64)).max(1000).optional()
           .describe('IP / CIDR mode. Mutually exclusive with the other two.'),
         domainBatchHosts: z.array(z.string().max(253)).max(500).optional()
-          .describe('Domain-batch mode: the raw host list. The server derives the grouping. '
-            + 'An entry may be a wildcard - "*.example.com" or "*example.com" - which makes '
-            + 'that one domain be fully enumerated (subdomain discovery, as single-domain '
-            + 'mode runs it) instead of scanned as listed; every other entry stays literal. '
-            + 'A wildcard must name a registrable domain, not a deeper name and not a public '
-            + 'suffix. Listing the BARE domain alongside a wildcard ("example.com" next to '
-            + '"*.example.com") also puts the apex itself in scope; a wildcard on its own '
-            + 'scans only what enumeration discovers beneath it. That is the same control '
-            + 'the project form calls "Root" - there is no separate flag, the list is the '
-            + 'whole interface. The project form can edit the list later, and so can '
-            + 'update_project_scope, which needs its own permission.'),
+          .describe('Domain-batch mode: the raw host list. The server derives the scope groups, '
+            + 'one per scan root, grouped by registrable domain (Public Suffix List: '
+            + '"www.acme.co.uk" belongs to acme.co.uk). An entry is a host, scanned exactly as '
+            + 'listed, or a wildcard at any depth - "*.example.com", "*.api.example.com" or '
+            + '"*example.com" - which makes that name a scan root that is fully enumerated '
+            + '(subdomain discovery, as single-domain mode runs it). A host under a wildcard is '
+            + 'seeded into its group; a wildcard under another one is covered by it. A wildcard '
+            + 'on a public suffix ("*.co.uk", "*.github.io") is refused. Listing the BARE name '
+            + 'alongside its wildcard ("api.example.com" next to "*.api.example.com") also puts '
+            + 'that name itself in scope; a wildcard on its own scans only what enumeration '
+            + 'discovers beneath it. That is the same control the project form calls "Root" - '
+            + 'there is no separate flag, the list is the whole interface. The project form '
+            + 'can edit the list later, and so can update_project_scope, which needs its own '
+            + 'permission.'),
         subdomainList: z.array(z.string().max(253)).max(5000).optional()
-          .describe('Hosts seeded in addition to whatever discovery finds.'),
+          .describe('Single-domain mode only. Empty: the domain is fully enumerated. Otherwise '
+            + 'prefixes ("www.", "eu.api.") naming the ONLY hosts scanned, with no discovery; '
+            + '"." puts the domain itself in scope as well.'),
         engagementIdentityHeader: z.string().max(400).optional()
           .describe('"Name: value", sent with every request so the target can attribute it to you.'),
         settings: z.record(z.string(), z.unknown()).optional()
@@ -1856,15 +1878,20 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'target guardrail stay fixed whatever the token holds; a different target is a different ' +
         'project (create_project).\n\n' +
         'domainBatchHosts replaces a domain-batch project\'s host list (only on a project created ' +
-        'in batch mode); the grouping is re-derived here, and every root goes through the ' +
-        'permanent guardrail. gvmScanTargets is both, ips_only or hostnames_only. GitHub names and ' +
+        'in batch mode); the scope groups are re-derived here, every host, scan root and ' +
+        'registrable domain goes through the permanent guardrail, and the new list through the ' +
+        'target guardrail unless the project switched it off. An active login recording is re-pointed at the new list. ' +
+        'gvmScanTargets is both, ips_only or hostnames_only. GitHub names and ' +
         'the supply-chain repository are validated as the form validates them.\n\n' +
-        'On a THIRD-PARTY engagement a widening - a new batch host or root, a new GitHub ' +
+        'A widening is a list that admits a host the old one did not; a regroup, or a narrower ' +
+        'wildcard under an enumerated one ("*.api.example.com" inside "*.example.com"), is not. ' +
+        'On a THIRD-PARTY engagement a widening - a new batch host or scan root, a new GitHub ' +
         'organisation, more repositories, a new supply-chain organisation or repository - is ' +
         'refused unless `authorization` records what authorized the wider scope, in the same ' +
         'transaction. Passing `authorization` needs the engagement:authorize permission too. ' +
         'Removals and narrowing need neither.\n\n' +
-        'A batch that gains hosts also PAUSES the project\'s scan schedules in the same ' +
+        'A batch that admits a host it did not before also PAUSES the project\'s scan ' +
+        'schedules in the same ' +
         'transaction, so no unattended run reaches the new hosts first; the result lists them in ' +
         '`pausedSchedules`, and only a person re-enables them, in the Scans tab.\n\n' +
         'Refused while anything reads or writes this project\'s graph. A compare-and-swap on the ' +
@@ -1939,8 +1966,13 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'hook (Jev-only) asks for off or jev. Every hook is off when ' +
         'aiInPipeline is off, and a hook on Jev reads as its static fallback when the project ' +
         'owner has no Jev token.\n\n' +
+        '`scope.scopeGroups` is the scope the scan runs, derived from the saved targets: one ' +
+        'group per scan root, `enumerate` (subdomain discovery) or `exact` (only the listed ' +
+        'hosts), and whether the root itself is a target. `scope.invalidEntries` lists saved ' +
+        'entries the current rules refuse.\n\n' +
         '`startable` is false when a third-party engagement is missing its ceiling or its ' +
-        'authorization record, which is exactly what start_recon will refuse on.',
+        'authorization record, or the saved scope holds a refused entry, which is exactly what ' +
+        'start_recon will refuse on.',
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
       inputSchema: { projectId: projectIdSchema },

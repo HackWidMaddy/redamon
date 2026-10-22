@@ -4,10 +4,11 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Plus, FolderOpen, Users, RefreshCw, Trash2, Upload } from 'lucide-react'
 import Link from 'next/link'
-import { useProjects, useDeleteProject } from '@/hooks/useProjects'
+import { useProjects, useDeleteProject, type ProjectListItem } from '@/hooks/useProjects'
 import { useUsers, useCreateUser, useDeleteUser } from '@/hooks/useUsers'
 import { useProject } from '@/providers/ProjectProvider'
 import { ProjectCard } from '@/components/projects/ProjectCard'
+import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import { ImportModal } from './ImportModal'
 import styles from './page.module.css'
@@ -41,14 +42,8 @@ export default function ProjectsPage() {
     }
   }, [userId, users, setUserId, setCurrentProject])
 
-  const handleSelectProject = (project: { id: string; name: string; targetDomain: string }) => {
-    setCurrentProject({
-      id: project.id,
-      name: project.name,
-      targetDomain: project.targetDomain,
-      createdAt: '',
-      updatedAt: ''
-    })
+  const handleSelectProject = (project: ProjectListItem) => {
+    setCurrentProject(toProjectSummary(project))
     router.push(`/graph?project=${project.id}`)
   }
 
@@ -182,7 +177,7 @@ export default function ProjectsPage() {
               key={project.id}
               id={project.id}
               name={project.name}
-              targetDomain={project.targetDomain}
+              target={projectTargetLabel(project)}
               description={project.description}
               createdAt={project.createdAt}
               onSelect={() => handleSelectProject(project)}

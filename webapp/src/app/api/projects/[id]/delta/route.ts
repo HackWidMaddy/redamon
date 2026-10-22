@@ -13,6 +13,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import prisma from '@/lib/prisma'
+import { SCOPE_SELECT, currentScanRoots } from '@/lib/scanCoverage'
 import { resolveVersionSelector, isCurrentSelector } from '@/lib/scanVersionAccess'
 import { captureGraphSnapshot, loadSnapshot, snapshotToGraphPayload } from '@/lib/scanSnapshot'
 import { computeReconDelta, buildDeltaOverlay } from '@/lib/reconDelta'
@@ -98,10 +100,12 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const toLoaded = await load(toSel)
     if (toLoaded instanceof NextResponse) return toLoaded
 
+    // Coverage of a scan root removed since the run is not this scope's gap.
+    const scope = await prisma.project.findUnique({ where: { id }, select: SCOPE_SELECT })
     const delta = computeReconDelta(fromLoaded.data, toLoaded.data, {
       from: fromLoaded.liveNodeIds,
       to: toLoaded.liveNodeIds,
-    })
+    }, scope ? currentScanRoots(scope) : null)
 
     return NextResponse.json(
       {

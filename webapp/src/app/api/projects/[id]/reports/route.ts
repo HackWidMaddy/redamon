@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
 import { gatherReportData } from '@/lib/report/reportData'
 import { generateReportHtml, type LLMNarratives } from '@/lib/report/reportTemplate'
@@ -105,7 +106,7 @@ export async function POST(_request: NextRequest, { params }: RouteParams) {
     const report = await prisma.report.create({
       data: {
         projectId: id,
-        title: `Pentest Report - ${reportData.project.targetDomain || reportData.project.name}`,
+        title: `Pentest Report - ${projectTargetLabel(reportData.project) || reportData.project.name}`,
         filename,
         filePath,
         fileSize: htmlBuffer.length,
@@ -162,7 +163,8 @@ function condenseForAgent(data: ReturnType<typeof gatherReportData> extends Prom
   return {
     project: {
       name: data.project.name,
-      targetDomain: data.project.targetDomain,
+      // A batch has no targetDomain; its scope summary names it instead.
+      targetDomain: projectTargetLabel(data.project) || data.project.targetDomain,
       roeEngagementType: (data.project as any).roeEngagementType,
       roeClientName: (data.project as any).roeClientName,
     },

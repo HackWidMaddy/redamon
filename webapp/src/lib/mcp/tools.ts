@@ -30,6 +30,7 @@ import {
 } from '@/lib/mcpAuth'
 import { projectReconSettings, reconSettingsSelect } from '@/lib/reconSettings/filter'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
+import { resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
 import { McpToolError } from '@/lib/mcp/errors'
 import { assertTenantScoped, TenantViolation } from '@/lib/mcp/graphGuard'
 import { agentBaseUrl } from '@/lib/agentFetch'
@@ -109,10 +110,11 @@ export async function listProjects(ctx: McpContext) {
   const select = {
     id: true, name: true, targetDomain: true, targetIps: true,
     ipMode: true, domainBatchMode: true, updatedAt: true,
-    // The groups themselves are internal, but whether any of them enumerates is
-    // the difference between a five-host scan and a multi-hour one, so a caller
-    // choosing a project needs it. Reduced to a count below; never returned raw.
-    domainBatchGroups: true,
+    // The host and prefix lists derive the scope groups: whether any of them
+    // enumerates is the difference between a five-host scan and a multi-hour
+    // one, so a caller choosing a project needs it. Reduced to counts and a
+    // one-line summary below; never returned raw.
+    domainBatchHosts: true, subdomainList: true,
   }
   assertReadableSelect(select, 'list_projects')
 
@@ -124,13 +126,18 @@ export async function listProjects(ctx: McpContext) {
     orderBy: { updatedAt: 'desc' },
   })
   return {
-    projects: projects.map(({ domainBatchGroups, ...p }) => ({
-      ...p,
-      wildcardDomainCount: Array.isArray(domainBatchGroups)
-        ? (domainBatchGroups as Array<{ prefixes?: string[] }>)
-            .filter(g => (g?.prefixes || []).includes('*')).length
-        : 0,
-    })),
+    projects: projects.map(({ domainBatchHosts, subdomainList, ...p }) => {
+      const { groups } = resolveScopeGroups({ ...p, domainBatchHosts, subdomainList })
+      const enumerated = groups.filter(g => g.mode === 'enumerate').length
+      return {
+        ...p,
+        // Enumerated Domain-batch groups, as before; 0 for a single domain.
+        wildcardDomainCount: p.domainBatchMode ? enumerated : 0,
+        // Enumerated scope groups in every mode, a single domain included.
+        enumerateGroupCount: enumerated,
+        scopeSummary: scopeSummary(groups),
+      }
+    }),
   }
 }
 

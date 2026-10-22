@@ -68,10 +68,10 @@ class FakeGraph:
         self.prunes.append({"sources": list(sources), "since": since, "keep_hosts": tuple(keep_hosts)})
         return {"pruned": 0, "stale": 0, "revived": 0}
 
-    def update_graph_coverage(self, user_id, project_id, domain, record):
+    def update_graph_coverage(self, user_id, project_id, domain, record, run_started_at=None):
         if self.raise_on_coverage:
             raise RuntimeError("write failed")
-        self.coverage.append({"domain": domain, **record})
+        self.coverage.append({"domain": domain, "run_started_at": run_started_at, **record})
         return self.matched
 
 
@@ -163,6 +163,9 @@ class TestTheCoverageRecord:
         assert recon_main._write_coverage_record("example.com") is True
         (record,) = graph.coverage
         assert record["domain"] == "example.com"
+        # Keyed on the run, so the org's later groups merge instead of overwrite.
+        assert record["run_started_at"] == recon_main._RUN_STARTED_AT
+        assert record["org_domain"] == "example.com"
         assert record["gaps_json"] == "[]"
         assert record["skipped_hosts"] == [] and record["nuclei_truncated"] is False
         assert record["at"]
@@ -224,7 +227,8 @@ class TestWhereThePruneRuns:
         assert calls == [("record", "ip-targets.p1"), ("prune",)]
 
     def _groups(self, *roots):
-        return [{'rootDomain': r, 'prefixes': ['.']} for r in roots]
+        return [{'scanRoot': r, 'orgDomain': r, 'mode': 'exact', 'includeRoot': True,
+                 'exactHosts': []} for r in roots]
 
     def _batch(self, recon_main, monkeypatch, results):
         prune = mock.Mock()

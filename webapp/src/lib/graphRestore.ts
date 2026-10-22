@@ -139,17 +139,30 @@ async function loadUniqueKeys(session: Session): Promise<Map<string, string[]>> 
 }
 
 /**
- * Properties an earlier release wrote and nothing writes any more: OpenAPI
- * declarations stored as JSON (up to 1 MiB per Endpoint), the Domain import
- * summary and stamp, and a transaction-local lock. A scan version saved before
- * they were retired, or a project exported then, would bring them back.
+ * Properties an earlier release wrote and nothing writes any more, per label
+ * (`*` = every label). A scan version saved before they were retired, or a
+ * project exported then, would bring them back.
+ *
+ * - every label: OpenAPI declarations stored as JSON (up to 1 MiB per
+ *   Endpoint), the Domain import summary and stamp, and a transaction-local lock;
+ * - `Domain`: the flat per-run props of the scan-root Domain (§4.11.3). The
+ *   Domain is now the org, shared by several scan roots, so one run's
+ *   `filtered_mode` or `target` would describe only one of them. Per label on
+ *   purpose: `GithubHunt.target` and `MultiscannerScan.target` are live, and an
+ *   IP-mode Domain keeps its own `scan_type` and `modules_executed`.
  */
-export const RETIRED_NODE_PROPERTIES = [
-  'openapi_declarations',
-  'openapi_summary',
-  'openapi_last_import_at',
-  '_openapi_write_lock',
-] as const
+export const RETIRED_NODE_PROPERTIES_BY_LABEL: Readonly<Record<string, readonly string[]>> = {
+  '*': ['openapi_declarations', 'openapi_summary', 'openapi_last_import_at', '_openapi_write_lock'],
+  Domain: ['target', 'filtered_mode', 'wildcard_mode', 'subdomain_filter', 'modules_executed',
+    'anonymous_mode', 'bruteforce_mode', 'scan_type'],
+}
+
+/** The retired properties to drop from one node. */
+export function retiredPropertiesFor(labels: readonly string[], properties: Record<string, unknown>): string[] {
+  const out = [...RETIRED_NODE_PROPERTIES_BY_LABEL['*']]
+  if (labels.includes('Domain') && properties.ip_mode !== true) out.push(...RETIRED_NODE_PROPERTIES_BY_LABEL.Domain)
+  return out
+}
 
 /**
  * Recreate `nodes` + `relationships` for `projectId`. The caller owns clearing
@@ -174,7 +187,7 @@ export async function restoreGraph(
       project_id: opts.projectId,
       _exportId: node._exportId,
     }
-    for (const retired of RETIRED_NODE_PROPERTIES) delete properties[retired]
+    for (const retired of retiredPropertiesFor(node.labels, properties)) delete properties[retired]
     // Pre-re-key snapshots have no cert_key; the uniqueness constraint now
     // requires it. Derive it before MERGE so old certificates do not collapse.
     if (node.labels.includes('Certificate') && !properties.cert_key) {

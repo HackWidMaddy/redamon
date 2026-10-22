@@ -6,9 +6,10 @@ import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import type { Project } from '@prisma/client'
 import { validateProjectForm } from '@/lib/validation'
-import { isHardBlockedDomain } from '@/lib/hard-guardrail'
+import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { validateDomainBatch } from '@/lib/domainBatch'
-import { ipModeRoot } from '@/lib/partialReconScope'
+import { scopeGuardrailNames } from '@/lib/scopeGroups'
+import { ipModeRoot, resolveProjectRoots } from '@/lib/partialReconScope'
 import { tabForAnchor } from '@/lib/projectSettingsLinks'
 import { graphScanHref, type ScanModal } from '@/lib/scanModalLink'
 import { useProject } from '@/providers/ProjectProvider'
@@ -222,21 +223,14 @@ function validateTargetForMode(formData: ProjectFormData): string | null {
   return null
 }
 
-/** The first target this project would scan that is permanently blocked, whatever
- *  the mode. A batch must be checked group by group: one blocked domain in a list
- *  of twenty is still a blocked scan. */
+/** The first name this project would scan that is permanently blocked, whatever
+ *  the mode: every batch host and group root, or the target and its prefix hosts.
+ *  One blocked host in a list of twenty is still a blocked scan. */
 function firstHardBlockedTarget(
   formData: ProjectFormData
 ): { domain: string; reason: string } | null {
-  const domains = formData.domainBatchMode
-    ? validateDomainBatch(formData.domainBatchHosts || []).groups.map(g => g.rootDomain)
-    : (!formData.ipMode && formData.targetDomain ? [formData.targetDomain] : [])
-
-  for (const domain of domains) {
-    const check = isHardBlockedDomain(domain)
-    if (check.blocked) return { domain, reason: check.reason }
-  }
-  return null
+  const hit = firstHardBlocked(scopeGuardrailNames(formData))
+  return hit ? { domain: hit.name, reason: hit.reason } : null
 }
 
 // Fetch defaults from the recon backend (single source of truth)
@@ -998,12 +992,13 @@ export function ProjectForm({
   // only when it cannot fetch graph-inputs; the orchestrator decides the scope.
   const partialReconRoots = useMemo(() => {
     if (formData.ipMode) return projectId ? [ipModeRoot(projectId)] : []
-    if (formData.domainBatchMode) {
-      return validateDomainBatch(formData.domainBatchHosts || []).groups.map(g => g.rootDomain)
-    }
-    const target = (formData.targetDomain || '').trim()
-    return target ? [target] : []
-  }, [formData.ipMode, formData.domainBatchMode, formData.domainBatchHosts, formData.targetDomain, projectId])
+    return resolveProjectRoots({
+      domainBatchMode: formData.domainBatchMode,
+      domainBatchHosts: formData.domainBatchHosts || [],
+      targetDomain: formData.targetDomain,
+      subdomainList: formData.subdomainList || [],
+    }, projectId ?? '').roots
+  }, [formData.ipMode, formData.domainBatchMode, formData.domainBatchHosts, formData.targetDomain, formData.subdomainList, projectId])
 
   // Partial recon confirm handler
   const handlePartialReconConfirm = useCallback(async (params: PartialReconParams) => {
@@ -1297,7 +1292,11 @@ export function ProjectForm({
 
         {activeTab === 'target' && viewMode === 'tabs' && (
           <>
-            <TargetSection data={formData} updateField={updateField} mode={mode} />
+            <TargetSection
+              data={formData} updateField={updateField} mode={mode}
+              savedScope={mode === 'edit' ? baseline : undefined}
+              projectId={mode === 'edit' ? projectId : undefined}
+            />
             <AuthenticationSection data={formData} updateField={updateField} projectId={projectId} mode={mode} />
             <ScanModulesSection data={formData} updateField={updateField} />
           </>
@@ -1458,7 +1457,6 @@ export function ProjectForm({
         projectId={projectId}
         targetDomain={formData.targetDomain || ''}
         projectRoots={partialReconRoots}
-        subdomainPrefixes={formData.subdomainList as string[] || []}
         isStarting={isPartialReconStarting}
         userId={userId ?? undefined}
         openapiSources={formData.openapiSources}

@@ -12,7 +12,7 @@
  * Server only: it imports the Prisma runtime.
  */
 import { Prisma } from '@prisma/client'
-import { NAME_MAX_CHARS, UserSkillError } from './userSkills'
+import { NAME_MAX_CHARS, UserSkillError, type NameCheckReason, type NameCheckResult } from './userSkills'
 
 type Db = Pick<Prisma.TransactionClient, '$queryRaw' | 'userAttackSkill'>
 
@@ -79,7 +79,7 @@ export function splitVersion(s: string): { root: string; n: number | null } {
 }
 
 /** `root` cut so `root + suffix` fits NAME_MAX_CHARS, never inside a surrogate pair. */
-function withSuffix(root: string, suffix: string): string {
+export function withSuffix(root: string, suffix: string): string {
   const room = NAME_MAX_CHARS - suffix.length
   let out = ''
   for (const ch of root) {
@@ -127,4 +127,78 @@ export async function suggestVersionName(
     if (!(await isNameTaken(db, userId, candidate))) return { name: candidate, version: next }
   }
   throw new UserSkillError(409, 'name_taken', 'No free version name was found; type a name.')
+}
+
+const CANDIDATES_PER_ROUND = 5
+const SUGGESTION_ROUNDS = 3
+
+/**
+ * The answer for a batch of names, in order: each against the user's skills and against the
+ * names before it in the batch (the later of two equal names is the duplicate). Keys are
+ * computed in SQL like every name comparison. Read-only; it takes no lock itself: the upload
+ * dialog calls it as an early answer, and the batch writer calls it under the lock as the rule.
+ *
+ * A fixed number of queries whatever the batch or the library size (one read, one key query,
+ * at most SUGGESTION_ROUNDS more), because the dialog re-checks after every edit and the
+ * writer runs it while other writers wait for the lock.
+ */
+export async function checkNames(db: Db, userId: string, names: string[]): Promise<NameCheckResult[]> {
+  const normalized = names.map(normalizeName)
+  const problems = normalized.map(nameProblem)
+  const stored = await db.userAttackSkill.findMany({ where: { userId }, select: { name: true } })
+  const storedSplits = stored.map((s) => splitVersion(s.name))
+  // A refused name is answered from its problem alone; it never reaches SQL, where one U+0000
+  // would fail the query for every other name.
+  const keyable = normalized.map((n, i) => (problems[i] ? '' : n))
+  const roots = keyable.map((n) => splitVersion(n).root)
+  const keys = await nameKeys(db, [...stored.map((s) => s.name), ...storedSplits.map((s) => s.root), ...keyable, ...roots])
+  const s = stored.length
+  const n = normalized.length
+  const storedKeys = new Set(keys.slice(0, s))
+  const storedRootKeys = keys.slice(s, 2 * s)
+  const batchKeys = keys.slice(2 * s, 2 * s + n)
+  const batchRootKeys = keys.slice(2 * s + n)
+
+  const seen = new Set<string>()
+  const results: NameCheckResult[] = normalized.map((name, i) => {
+    const problem = problems[i]
+    if (problem) return { normalized: name, available: false, reason: problem.code as NameCheckReason, suggestion: null }
+    const key = batchKeys[i]
+    const reason: NameCheckReason | null = seen.has(key) ? 'name_duplicate' : storedKeys.has(key) ? 'name_taken' : null
+    seen.add(key)
+    return reason
+      ? { normalized: name, available: false, reason, suggestion: null }
+      : { normalized: name, available: true, suggestion: null }
+  })
+
+  // The family rule of suggestVersionName for a new upload: the highest vN among stored names
+  // with the same root (a bare root counts as v1). A new upload has no lineage to follow.
+  const pending = results.flatMap((r, i) => (r.reason === 'name_taken' || r.reason === 'name_duplicate' ? [i] : []))
+  const top = new Map<number, number>()
+  for (const i of pending) {
+    let t = 1
+    storedRootKeys.forEach((k, j) => {
+      if (k === batchRootKeys[i]) t = Math.max(t, storedSplits[j].n ?? 1)
+    })
+    top.set(i, t)
+  }
+  const given = new Set<string>()
+  let open = pending
+  for (let round = 0; round < SUGGESTION_ROUNDS && open.length; round++) {
+    const candidates = open.flatMap((i) => Array.from({ length: CANDIDATES_PER_ROUND },
+      (_, c) => withSuffix(roots[i], ` v${top.get(i)! + 1 + round * CANDIDATES_PER_ROUND + c}`)))
+    const candidateKeys = await nameKeys(db, candidates)
+    open = open.filter((i, row) => {
+      for (let c = 0; c < CANDIDATES_PER_ROUND; c++) {
+        const at = row * CANDIDATES_PER_ROUND + c
+        const key = candidateKeys[at]
+        if (storedKeys.has(key) || seen.has(key) || given.has(key)) continue
+        given.add(key)
+        results[i].suggestion = candidates[at]
+        return false
+      }
+      return true
+    })
+  }
+  return results
 }

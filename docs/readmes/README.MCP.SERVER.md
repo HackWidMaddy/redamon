@@ -68,7 +68,7 @@ set of recon tuning settings, and query the attack-surface graph.
 | `mute_findings` | Mute 1-5000 findings with a reason. Never a proven or kept-visible one, never over an existing mute; no cap on a token's total; stamped `muted_channel=mcp` + token prefix. | `triage:mute` |
 | `unmute_findings` | Unmute 1-5000 findings from the muted list, writing the Mute Rules exemption FIRST. A rule's mute only with `includeRuleMutes`, never during a recon scan. | `triage:mute` |
 | `search_muted_findings` | Page every muted finding with the Muted Nodes filters (who muted, rule, token, text), with exact facets. The only source of a muted finding's id. | `triage:read` |
-| `update_project_scope` | Change an existing project's eight target LISTS (batch hosts, GitHub org/repos, GVM strategy, supply-chain org/repo/ref/scope). Guardrail on every root; a third-party widening needs an authorization record. | `project:rescope` (+ `engagement:authorize` to pass `authorization`) |
+| `update_project_scope` | Change an existing project's eight target LISTS (batch hosts, GitHub org/repos, GVM strategy, supply-chain org/repo/ref/scope). Guardrail on every listed host, scan root and registrable domain, and the refusal names the host; a third-party widening (a host the old list did not admit) needs an authorization record. | `project:rescope` (+ `engagement:authorize` to pass `authorization`) |
 
 **Deliberately not exposed:** the agent chat, partial recon, project
 delete/import, secrets and LLM keys, re-pointing an existing project's target

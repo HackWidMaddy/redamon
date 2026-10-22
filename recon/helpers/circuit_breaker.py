@@ -847,6 +847,10 @@ class RunCache:
         with self._lock:
             return len(self._data)
 
+    def keys(self) -> list:
+        with self._lock:
+            return list(self._data)
+
 
 _caches: dict[str, RunCache] = {}
 

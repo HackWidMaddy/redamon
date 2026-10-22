@@ -34,6 +34,9 @@ class _Session:
         self.calls.append((' '.join(query.split()), params))
         return _Result()
 
+    def execute_write(self, work):
+        return work(self)
+
     def __enter__(self):
         return self
 
@@ -143,12 +146,16 @@ def test_path_parameters_are_written_and_linked_to_every_method():
 
 
 def test_source_status_lands_on_the_runs_domain_and_an_empty_list_clears_it():
+    # Filed under the run's scan root, on that root's org Domain (here its own
+    # name: no scope groups, as in IP mode); an empty list clears only that
+    # root's entries (§4.11.5).
     status = ['src-1|0123456789ab|ok|2026-10-19T00:00:00Z']
     _, calls = _write({}, openapi={'source_status': status}, domain='ip-targets.p1')
     writes = [p for q, p in calls if 'SET d.openapi_source_status' in q]
-    assert writes == [{'root': 'ip-targets.p1', 'user_id': 'u1', 'project_id': 'p1', 'status': status}]
+    assert writes == [{'org': 'ip-targets.p1', 'root': 'ip-targets.p1', 'user_id': 'u1', 'project_id': 'p1',
+                       'new': ['ip-targets.p1|src-1|0123456789ab|ok|2026-10-19T00:00:00Z']}]
     _, calls = _write({}, openapi={'source_status': []})
-    assert [p['status'] for q, p in calls if 'SET d.openapi_source_status' in q] == [[]]
+    assert [p['new'] for q, p in calls if 'SET d.openapi_source_status' in q] == [[]]
 
 
 def test_a_run_without_openapi_leaves_the_status_alone():

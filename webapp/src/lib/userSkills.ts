@@ -15,6 +15,22 @@ export const MAX_ENABLED_USER_SKILLS_PER_PROJECT = 20
 export const MAX_CONTENT_SIZE = 50 * 1024
 export const NAME_MAX_CHARS = 100
 export const DESCRIPTION_MAX_CHARS = 500
+// One upload batch is one JSON body and one transaction under the per-user lock.
+export const MAX_SKILLS_PER_BATCH = 50
+// MAX_CONTENT_SIZE counts UTF-16 units, so 50 non-ASCII files can approach 8 MB of UTF-8 JSON;
+// past the proxy's 10 MB Next truncates the body silently, so refuse it first with a clear 413.
+export const MAX_SKILL_BATCH_BYTES = 8 * 1024 * 1024
+// Skills per Generate-with-AI request: the dialog sends them one request at a time to show progress,
+// and the agent's per-request timeout covers 5 skills run 3 at a time.
+export const SKILL_METADATA_ITEMS_PER_REQUEST = 5
+export const USER_SKILL_LIMIT_TEXT = `You have ${MAX_SKILLS_PER_USER} skills, the maximum. Delete one first.`
+
+/** One item of a refused batch upload: its position in the request, the reason, and a free name when taken. */
+export interface BatchItemRefusal { index: number; code: string; error: string; suggestion?: string }
+
+export type NameCheckReason = 'name_invalid' | 'name_too_long' | 'name_taken' | 'name_duplicate'
+/** The early answer for one name of a batch (userSkillNames.checkNames). */
+export interface NameCheckResult { normalized: string; available: boolean; reason?: NameCheckReason; suggestion: string | null }
 
 export interface AttackSkillConfig {
   builtIn: Record<string, boolean>

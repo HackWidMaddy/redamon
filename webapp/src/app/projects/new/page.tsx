@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { ProjectForm } from '@/components/projects'
 import { useCreateProject } from '@/hooks/useProjects'
 import { useProject } from '@/providers/ProjectProvider'
+import { toProjectSummary } from '@/lib/projectSummary'
 import type { Project } from '@prisma/client'
 import { useAlertModal, useToast } from '@/components/ui'
 import styles from './page.module.css'
@@ -46,14 +47,7 @@ export default function NewProjectPage() {
       }).catch(() => {})
     }
 
-    setCurrentProject({
-      id: project.id,
-      name: project.name,
-      targetDomain: project.targetDomain,
-      description: project.description || undefined,
-      createdAt: project.createdAt.toString(),
-      updatedAt: project.updatedAt.toString()
-    })
+    setCurrentProject(toProjectSummary(project))
 
     return project
   }

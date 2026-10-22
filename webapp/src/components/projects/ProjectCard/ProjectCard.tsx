@@ -7,7 +7,8 @@ import styles from './ProjectCard.module.css'
 interface ProjectCardProps {
   id: string
   name: string
-  targetDomain: string
+  /** One line naming the target (projectTargetLabel): a batch has no targetDomain. */
+  target: string
   description?: string | null
   createdAt: string
   isSelected?: boolean
@@ -18,7 +19,7 @@ interface ProjectCardProps {
 export function ProjectCard({
   id,
   name,
-  targetDomain,
+  target,
   description,
   createdAt,
   isSelected,
@@ -68,7 +69,7 @@ export function ProjectCard({
         <div className={styles.meta}>
           <div className={styles.metaItem}>
             <Globe size={12} />
-            <span>{targetDomain || 'No target set'}</span>
+            <span>{target || 'No target set'}</span>
           </div>
           <div className={styles.metaItem}>
             <Calendar size={12} />

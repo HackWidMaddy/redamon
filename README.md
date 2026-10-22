@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/samugit83/redamon/stargazers"><img height="24" src="https://img.shields.io/github/stars/samugit83/redamon?style=flat&color=2E8B57&label=Stars" alt="GitHub Stars"/></a>
-  <img height="24" src="https://img.shields.io/badge/v7.1.0-release-2E8B57?style=flat" alt="Version 7.1.0"/>
+  <img height="24" src="https://img.shields.io/badge/v7.2.0-release-2E8B57?style=flat" alt="Version 7.2.0"/>
   <img height="24" src="https://img.shields.io/badge/WARNING-SECURITY%20TOOL-B22222?style=flat" alt="Security Tool Warning"/>
   <img height="24" src="https://img.shields.io/badge/LICENSE-MIT-4169A1?style=flat" alt="MIT License"/>
   <img height="24" src="https://img.shields.io/badge/AI-AUTONOMOUS%20AGENT-6A5ACD?style=flat&logo=openai&logoColor=white" alt="AI Powered"/>
@@ -762,7 +762,7 @@ Two-agent pipeline. A **Triage Agent** scores every finding in the graph with a 
 
 ### Agent Skills
 
-An **LLM-powered Intent Router** classifies user requests into agent skills: CVE (MSF), SQL Injection, XSS, SSRF, RCE, Path Traversal / LFI / RFI, Credential Testing, Social Engineering, Availability Testing, or custom user-defined skills uploaded as Markdown files. Ready-to-use **[community skills](agentic/community-skills/)** ship for API testing, XSS, SQLi, XXE, BFLA, SSTI, IDOR / BOLA, insecure deserialization, mass assignment, subdomain takeover, and insecure file uploads -- download the `.md` file and upload it via **Global Settings > Agent Skills** to activate it for your user. You can also [contribute your own](https://github.com/samugit83/redamon/wiki/Agent-Skills#share-your-skills-with-the-community) by opening a PR.
+An **LLM-powered Intent Router** classifies user requests into agent skills: CVE (MSF), SQL Injection, XSS, SSRF, RCE, Path Traversal / LFI / RFI, Credential Testing, Social Engineering, Availability Testing, or custom user-defined skills uploaded as Markdown files. Ready-to-use **[community skills](agentic/community-skills/)** ship for API testing, XSS, SQLi, XXE, BFLA, SSTI, IDOR / BOLA, insecure deserialization, mass assignment, subdomain takeover, and insecure file uploads -- download the `.md` file and upload it via **Global Settings > Agent Skills** (or a project's Agent Skills section), one file or a batch, to activate it for your user. You can also [contribute your own](https://github.com/samugit83/redamon/wiki/Agent-Skills#share-your-skills-with-the-community) by opening a PR.
 
 > **[Wiki: Agent Skills](https://github.com/samugit83/redamon/wiki/Agent-Skills)** | **[Community Skills](agentic/community-skills/)**
 

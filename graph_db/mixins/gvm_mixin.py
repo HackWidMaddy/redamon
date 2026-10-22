@@ -841,8 +841,11 @@ class GvmMixin:
                 except Exception as e:
                     stats["errors"].append(f"TLS Certificates processing failed: {e}")
 
-            # Update Domain node with GVM scan metadata
-            if target_domain:
+            # Update the org Domain node(s) with GVM scan metadata: a Domain
+            # node is the org; a batch's GVM run covers every org of the batch.
+            org_domains = [o for o in (metadata.get("org_domains")
+                                       or [metadata.get("org_domain") or target_domain]) if o]
+            for org_domain in org_domains:
                 try:
                     summary = gvm_data.get("summary", {})
                     session.run(
@@ -856,7 +859,7 @@ class GvmMixin:
                             d.gvm_low = $low,
                             d.updated_at = datetime()
                         """,
-                        root_domain=target_domain, user_id=user_id, project_id=project_id,
+                        root_domain=org_domain, user_id=user_id, project_id=project_id,
                         scan_timestamp=scan_timestamp,
                         total_vulns=summary.get("total_vulnerabilities", 0),
                         critical=summary.get("critical", 0),

@@ -22,7 +22,10 @@ from datetime import datetime, timezone
 
 from graph_db.cert_key import build_cert_key
 from graph_db.cpe_resolver import _is_ip_address
-from graph_db.mixins.recon.scope import attach_roots, root_for_host
+from graph_db.mixins.recon.scope import (
+    IN_SCOPE, OUT_OF_SCOPE, attach_for_host, attach_roots, classify_host, home_domain,
+    org_for_scan_root, scope_groups_by_root,
+)
 from urllib.parse import urlparse as _urlparse
 
 
@@ -123,10 +126,11 @@ class OsintMixin:
             stats["errors"].append("No shodan data found in recon_data")
             return stats
 
-        # `domain` is the root this scan looked up; a host under any of the
-        # project's roots is in scope and joins its own root.
+        # `domain` is the scan root this group looked up. A host under any of
+        # the project's scan roots is in scope and joins its root's org Domain
+        # (attach_for_host); anything else is an ExternalDomain found by `home`.
         domain = recon_data.get("domain", "")
-        roots = attach_roots(recon_data)
+        home = home_domain(recon_data)
 
         with self.driver.session() as session:
 
@@ -286,7 +290,7 @@ class OsintMixin:
                     if not hostname:
                         continue
                     try:
-                        root = root_for_host(hostname, roots)
+                        kind, root = attach_for_host(hostname, recon_data)
 
                         if root:
                             session.run(
@@ -318,7 +322,7 @@ class OsintMixin:
                                 user_id=user_id, project_id=project_id
                             )
                             stats["relationships_created"] += 1
-                        else:
+                        elif kind == OUT_OF_SCOPE:
                             # Out-of-scope hostname → ExternalDomain
                             session.run(
                                 """
@@ -331,7 +335,7 @@ class OsintMixin:
                                 MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
                                 MERGE (ed)-[:DISCOVERED_BY]->(d)
                                 """,
-                                ed_domain=hostname, ip=ip, domain=domain,
+                                ed_domain=hostname, ip=ip, domain=home,
                                 user_id=user_id, project_id=project_id
                             )
                             stats["relationships_created"] += 1
@@ -340,12 +344,16 @@ class OsintMixin:
                         stats["errors"].append(f"Failed to create subdomain {hostname}: {e}")
 
             # ── 3. Domain DNS → Subdomain + DNSRecord nodes ──
+            # Shodan answers for the name recon queried (the org); its labels
+            # are relative to THAT name, never to this group's scan root, or an
+            # org record would be written as mail.<scan root> (§4.9).
             domain_dns = shodan_data.get("domain_dns", {})
+            dns_base = domain_dns.get("domain") or domain
             for sub_name in domain_dns.get("subdomains", []):
                 if not sub_name:
                     continue
-                fqdn = f"{sub_name}.{domain}" if domain and not sub_name.endswith(domain) else sub_name
-                root = root_for_host(fqdn, roots)
+                fqdn = f"{sub_name}.{dns_base}" if dns_base and not sub_name.endswith(dns_base) else sub_name
+                kind, root = attach_for_host(fqdn, recon_data)
 
                 try:
                     if root:
@@ -370,7 +378,7 @@ class OsintMixin:
                             user_id=user_id, project_id=project_id
                         )
                         stats["relationships_created"] += 1
-                    else:
+                    elif kind == OUT_OF_SCOPE:
                         # Out-of-scope → ExternalDomain
                         session.run(
                             """
@@ -382,7 +390,7 @@ class OsintMixin:
                             MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
                             MERGE (ed)-[:DISCOVERED_BY]->(d)
                             """,
-                            ed_domain=fqdn, domain=domain,
+                            ed_domain=fqdn, domain=home,
                             user_id=user_id, project_id=project_id
                         )
 
@@ -395,7 +403,9 @@ class OsintMixin:
                 rec_sub = record.get("subdomain", "")
                 if not rec_type or not rec_value:
                     continue
-                fqdn = f"{rec_sub}.{domain}" if rec_sub and domain else domain
+                fqdn = f"{rec_sub}.{dns_base}" if rec_sub and dns_base else dns_base
+                if attach_for_host(fqdn, recon_data)[0] != IN_SCOPE:
+                    continue
                 try:
                     session.run(
                         """
@@ -541,10 +551,14 @@ class OsintMixin:
             return stats
 
         domain = recon_data.get("domain", "")
-        # `domain` is the root this pass looked up; a host under any of the run's
-        # roots is in scope and joins its own root, and no root's apex is a Subdomain.
+        # `domain` is the scan root this pass looked up; a host under any of the
+        # run's scan roots is in scope and joins its root's org Domain. A scan
+        # root itself is a Subdomain only when its group made it a target
+        # (attach_for_host); a legacy file, with no scope groups, never makes
+        # an apex a Subdomain, as before.
+        home = home_domain(recon_data)
         roots = attach_roots(recon_data)
-        apexes = {r.lower() for r in roots}
+        apexes = set() if scope_groups_by_root(recon_data) else {r.lower() for r in roots}
 
         with self.driver.session() as session:
 
@@ -562,25 +576,31 @@ class OsintMixin:
                 # Create/update subdomain or external domain node
                 if subdomain and subdomain.lower() not in apexes and subdomain not in seen_subs:
                     seen_subs.add(subdomain)
-                    root = root_for_host(subdomain, roots)
+                    kind, root = attach_for_host(subdomain, recon_data)
                     try:
                         if root:
-                            session.run(
+                            # MATCH, never MERGE: the run's domain write (or
+                            # ensure_root_domains, in a batch) made the root's
+                            # Domain, and creating one here could leave a Domain
+                            # the scope no longer names.
+                            rec = session.run(
                                 """
-                                MERGE (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                                MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
                                 SET d.updated_at = datetime()
                                 MERGE (s:Subdomain {name: $subdomain, user_id: $uid, project_id: $pid})
                                 ON CREATE SET s.discovered_by = 'urlscan', s.status = 'resolved',
                                               s.updated_at = datetime()
                                 MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                 MERGE (s)-[:BELONGS_TO]->(d)
+                                RETURN count(s) AS n
                                 """,
                                 domain=root, subdomain=subdomain,
                                 uid=user_id, pid=project_id
-                            )
-                            stats["subdomains_created"] += 1
-                            stats["relationships_created"] += 1
-                        else:
+                            ).single()
+                            if rec and rec["n"]:
+                                stats["subdomains_created"] += 1
+                                stats["relationships_created"] += 1
+                        elif kind == OUT_OF_SCOPE:
                             session.run(
                                 """
                                 MERGE (ed:ExternalDomain {domain: $ed_domain, user_id: $uid, project_id: $pid})
@@ -591,7 +611,7 @@ class OsintMixin:
                                 MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
                                 MERGE (ed)-[:DISCOVERED_BY]->(d)
                                 """,
-                                ed_domain=subdomain, domain=domain,
+                                ed_domain=subdomain, domain=home,
                                 uid=user_id, pid=project_id
                             )
                     except Exception as e:
@@ -655,7 +675,7 @@ class OsintMixin:
                         MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
                         SET d += $props, d.updated_at = datetime()
                         """,
-                        domain=domain, uid=user_id, pid=project_id, props=props
+                        domain=home, uid=user_id, pid=project_id, props=props
                     )
                     stats["domain_enriched"] = True
                 except Exception as e:
@@ -824,14 +844,15 @@ class OsintMixin:
         they are never scanned or attacked.
         """
         external_domains = recon_data.get("external_domains_aggregated", [])
-        domain = recon_data.get("domain", "")
+        # The org Domain of this group's scan root: its ExternalDomains hang off it.
+        domain = home_domain(recon_data)
         if not external_domains:
             return
-        # Each module judged "external" against the one root it scanned, so in a
-        # Domain batch a host under a SIBLING root lands here too. It is not
-        # foreign: it joins that root as a Subdomain (a sibling's apex is its
-        # Domain node already).
-        roots = attach_roots(recon_data)
+        # Each module judged "external" against the one scan root it scanned, so
+        # in a Domain batch a host under a SIBLING scan root lands here too. It
+        # is not foreign: it joins that root's org as a Subdomain. A scan root
+        # itself is left to the domain writer, which makes it a node only when
+        # it is a target.
 
         print(f"\n[GRAPH] External Domains: {len(external_domains)} foreign domains")
 
@@ -841,9 +862,9 @@ class OsintMixin:
                 ed_domain = ed.get("domain", "")
                 if not ed_domain:
                     continue
-                root = root_for_host(ed_domain, roots)
-                if root:
-                    if ed_domain.strip().lower() != root.strip().lower():
+                kind, root = classify_host(ed_domain, recon_data)
+                if kind != OUT_OF_SCOPE:
+                    if kind == IN_SCOPE and ed_domain.strip().lower() != root.strip().lower():
                         try:
                             session.run("""
                                 MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
@@ -852,7 +873,8 @@ class OsintMixin:
                                               s.updated_at = datetime()
                                 MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                 MERGE (s)-[:BELONGS_TO]->(d)
-                            """, domain=root, name=ed_domain.strip().lower(), uid=user_id, pid=project_id,
+                            """, domain=org_for_scan_root(root, recon_data), name=ed_domain.strip().lower(),
+                                uid=user_id, pid=project_id,
                                 source=(ed.get("sources") or ["external_reference"])[0])
                         except Exception as e:
                             logger.warning(f"Cross-root Subdomain graph error for {ed_domain}: {e}")
@@ -905,7 +927,6 @@ class OsintMixin:
             "certificates_merged": 0, "subdomains_merged": 0,
             "relationships_created": 0, "errors": [],
         }
-        roots = attach_roots(recon_data)
         try:
             hosts = (recon_data.get("censys") or {}).get("hosts") or []
             if not hosts:
@@ -1090,7 +1111,7 @@ class OsintMixin:
 
                             # Reverse DNS → Subdomain nodes
                             for hostname in host.get("reverse_dns_names") or []:
-                                root = root_for_host(hostname, roots) if hostname else None
+                                root = attach_for_host(hostname, recon_data)[1] if hostname else None
                                 if not root:
                                     continue
                                 try:
@@ -1140,7 +1161,6 @@ class OsintMixin:
         }
         try:
             rows = (recon_data.get("fofa") or {}).get("results") or []
-            roots = attach_roots(recon_data)
             if not rows:
                 stats["errors"].append("No fofa results in recon_data")
             else:
@@ -1277,7 +1297,7 @@ class OsintMixin:
                             # FOFA host may carry port suffix (e.g. "sub.example.com:8080") — strip it
                             host_raw = (row.get("host") or "").strip()
                             host = host_raw.split(":")[0] if ":" in host_raw else host_raw
-                            root = root_for_host(host, roots) if host and host != ip else None
+                            root = attach_for_host(host, recon_data)[1] if host and host != ip else None
                             if root:
                                 session.run(
                                     """
@@ -1327,10 +1347,10 @@ class OsintMixin:
         try:
             otx = recon_data.get("otx") or {}
             reports = otx.get("ip_reports") or []
-            # `domain` is the root this scan looked up (external names hang off
-            # it); a name under any of the project's roots joins its own root.
-            domain = recon_data.get("domain", "") or ""
-            roots = attach_roots(recon_data)
+            # `domain` is the org Domain of the scan root this group looked up
+            # (external names and the org-level report hang off it); a name
+            # under any of the project's scan roots joins its root's org.
+            domain = home_domain(recon_data) or ""
             dr = otx.get("domain_report")
             if not reports and not (dr and isinstance(dr, dict) and dr.get("domain")):
                 stats["errors"].append("No otx ip_reports or domain_report in recon_data")
@@ -1397,7 +1417,7 @@ class OsintMixin:
                             first_seen = rec.get("first") or ""
                             last_seen = rec.get("last") or ""
 
-                            root = root_for_host(hostname, roots)
+                            kind, root = attach_for_host(hostname, recon_data)
                             if root:
                                 # In-scope → Subdomain node
                                 try:
@@ -1443,7 +1463,7 @@ class OsintMixin:
                                     stats["relationships_created"] += 1
                                 except Exception as e2:
                                     stats["errors"].append(f"OTX pdns in-scope {hostname}: {e2}")
-                            elif hostname and "@" not in hostname:
+                            elif kind == OUT_OF_SCOPE and "@" not in hostname:
                                 # Out-of-scope → ExternalDomain node
                                 try:
                                     session.run(
@@ -1548,7 +1568,9 @@ class OsintMixin:
                 # ── Domain report ────────────────────────────────────────
                 if dr and isinstance(dr, dict) and dr.get("domain"):
                     try:
-                        dom_name = dr["domain"]
+                        # An org-level report: it lands on the org Domain of
+                        # this group's scan root (the report names the org).
+                        dom_name = domain or dr["domain"]
                         dom_pulse_details = dr.get("pulse_details") or {}
                         whois = dr.get("whois") or {}
 
@@ -1887,7 +1909,9 @@ class OsintMixin:
                                     d.vt_popularity_umbrella = $popularity_umbrella,
                                     d.updated_at = datetime()
                                 """,
-                                name=dr["domain"], user_id=user_id, project_id=project_id,
+                                # An org-level report: the org Domain of this group.
+                                name=home_domain(recon_data) or dr["domain"],
+                                user_id=user_id, project_id=project_id,
                                 reputation=dr.get("reputation"),
                                 malicious=_ast.get("malicious"),
                                 suspicious=_ast.get("suspicious"),
@@ -1968,7 +1992,6 @@ class OsintMixin:
                  "subdomains_merged": 0, "relationships_created": 0, "errors": []}
         try:
             rows = (recon_data.get("zoomeye") or {}).get("results") or []
-            roots = attach_roots(recon_data)
             if not rows:
                 stats["errors"].append("No zoomeye results in recon_data")
             else:
@@ -2083,7 +2106,7 @@ class OsintMixin:
                                 hostname_val = hostname_val.strip().lower()
                                 if not hostname_val:
                                     continue
-                                if root_for_host(hostname_val, roots):
+                                if attach_for_host(hostname_val, recon_data)[1]:
                                     session.run(
                                         """
                                         MERGE (s:Subdomain {name: $name, user_id: $user_id,
@@ -2131,7 +2154,9 @@ class OsintMixin:
                 with self.driver.session() as session:
                     # ── 1. Domain report → Domain node enrichment ──
                     if domain_report and isinstance(domain_report, dict):
-                        domain_name = domain_report.get("domain")
+                        # An org-level report: the org Domain of this group.
+                        domain_name = (home_domain(recon_data) or domain_report.get("domain")
+                                       if domain_report.get("domain") else None)
                         risk = domain_report.get("risk") or {}
                         if domain_name and isinstance(risk, dict):
                             try:
@@ -2373,8 +2398,9 @@ class OsintMixin:
             "relationships_created": 0, "errors": [],
         }
         roots = attach_roots(recon_data)
-        # An IP, or a URL under no root, belongs to the root this pass queried.
-        domain = recon_data.get("domain") or (roots[0] if roots else "")
+        # An IP, or a URL under no scan root, belongs to the org Domain of the
+        # scan root this pass queried.
+        domain = home_domain(recon_data) or (org_for_scan_root(roots[0], recon_data) if roots else "")
         try:
             uncover = recon_data.get("uncover") or {}
             hosts = uncover.get("hosts") or []
@@ -2393,6 +2419,14 @@ class OsintMixin:
                 for hostname in hosts:
                     if not hostname:
                         continue
+                    # A host under no scan root (or a scan root that is no
+                    # target) gets no node: uncover searches by org and
+                    # certificate, so its hosts are not scope by themselves.
+                    host_org = attach_for_host(hostname, recon_data)[1]
+                    if not host_org:
+                        stats.setdefault("hosts_out_of_scope", 0)
+                        stats["hosts_out_of_scope"] += 1
+                        continue
                     try:
                         session.run(
                             """
@@ -2407,7 +2441,7 @@ class OsintMixin:
                             sources=sources, total_raw=total_raw, total_deduped=total_deduped,
                         )
                         stats["subdomains_created"] += 1
-                        host_root = root_for_host(hostname, roots) or domain
+                        host_root = host_org
                         if host_root:
                             session.run(
                                 """

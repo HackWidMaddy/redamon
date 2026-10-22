@@ -20,8 +20,10 @@ interface GraphToolbarProps {
   onOpenFileSystem?: () => void
   isFileSystemOpen?: boolean
   // Target info
-  targetDomain?: string
-  subdomainList?: string[]
+  /** One line naming the target (projectTargetLabel). */
+  targetLabel?: string
+  /** One line per scope group, shown on hover. */
+  scopeLines?: string[]
   // Recon props
   onStartRecon?: () => void
   onPauseRecon?: () => void
@@ -108,8 +110,8 @@ export function GraphToolbar({
   onOpenFileSystem,
   isFileSystemOpen = false,
   // Target info
-  targetDomain,
-  subdomainList = [],
+  targetLabel,
+  scopeLines = [],
   // Recon props
   onStartRecon,
   onPauseRecon,
@@ -206,21 +208,20 @@ export function GraphToolbar({
     <div className={styles.toolbar}>
       <WikiInfoButton target="graph" title="Open Red Zone wiki page" />
 
-      {targetDomain && (
+      {targetLabel && (
         <>
           <div className={styles.divider} />
           <div className={styles.targetSection}>
-            {subdomainList.length > 0 && (
+            {scopeLines.length > 0 ? (
               <div className={styles.subdomainWrapper}>
-                <span className={styles.subdomainList}>
-                  {subdomainList.join(', ')}
-                </span>
+                <span className={styles.targetDomain}>{targetLabel}</span>
                 <div className={styles.subdomainTooltip}>
-                  {subdomainList.join(', ')}
+                  {scopeLines.map(line => <div key={line}>{line}</div>)}
                 </div>
               </div>
+            ) : (
+              <span className={styles.targetDomain}>{targetLabel}</span>
             )}
-            <span className={styles.targetDomain}>{targetDomain}</span>
           </div>
         </>
       )}

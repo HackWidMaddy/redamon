@@ -146,13 +146,7 @@ export default function InsightsPage() {
       {/* Header */}
       <DashboardHeader
         projectName={currentProject?.name || null}
-        targetDomain={
-          currentProject?.domainBatchMode
-            // A batch project has no single targetDomain; name its groups so the
-            // header is not blank.
-            ? `${currentProject.domainBatchDomains?.length ?? 0} domains` + ((currentProject.domainBatchWildcardDomains?.length ?? 0) > 0 ? ` (${currentProject.domainBatchWildcardDomains?.length} enumerated)` : '')
-            : currentProject?.targetDomain || null
-        }
+        targetDomain={currentProject?.targetLabel || currentProject?.targetDomain || null}
         ipMode={currentProject?.ipMode || false}
         isLoading={isAnyLoading}
         onRefresh={refresh}

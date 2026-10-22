@@ -188,6 +188,9 @@ export interface GraphInputs {
   stale_domains?: string[]
   /** Roots in `domains` with no recon data in the graph yet. */
   empty_domains?: string[]
+  /** Domain nodes built under the old scope model (§4.11.6); non-empty means
+   *  partial recon is refused until a full recon rebuilds the graph. */
+  legacy_graph?: string[]
   /** SubdomainDiscovery only: the roots allowed to enumerate (a batch group
    *  enumerates only when the operator wrote a wildcard for it). */
   discovery_domains?: string[]

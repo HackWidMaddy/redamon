@@ -212,6 +212,18 @@
   color: var(--status-warning);
 }
 
+/* A saved scope the current rules refuse: the schedule is (or will be) paused. */
+.scopeBadge {
+  display: block;
+  margin-top: 2px;
+  max-width: 260px;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--status-warning);
+}
+
 .spinner { animation: spin 1s linear infinite; }
 
 @keyframes spin {

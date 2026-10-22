@@ -11,7 +11,9 @@ vi.mock('@/app/api/graph/neo4j', () => ({
   getGraphSession: () => ({ run, close }),
 }))
 
-import { parseCoverageGaps, readDegradedSourceCount } from './scanCoverage'
+import {
+  currentScanRoots, gapInScope, parseCoverageGaps, readDegradedSourceCount, skippedHostInScope,
+} from './scanCoverage'
 
 const records = (gapsPerDomain: unknown[]) => ({
   records: gapsPerDomain.map(g => ({ get: (_k: string) => g })),
@@ -77,5 +79,34 @@ describe('readDegradedSourceCount', () => {
     run.mockResolvedValue({ records: [] })
     await readDegradedSourceCount('p1')
     expect(close).toHaveBeenCalledOnce()
+  })
+})
+
+describe('coverage of a removed scan root (§4.11.7)', () => {
+  test('the current scan roots of a project', () => {
+    expect([...currentScanRoots({ targetDomain: 'Api.Example.com' })!]).toEqual(['api.example.com'])
+    expect(currentScanRoots({ ipMode: true, targetIps: ['10.0.0.1'] } as never)).toBeNull()
+  })
+
+  test("a gap is kept only for a current root; an untagged gap is kept", () => {
+    const roots = new Set(['api.example.com'])
+    expect(gapInScope({ source: 's', root: 'API.example.com' }, roots)).toBe(true)
+    expect(gapInScope({ source: 's', root: 'old.example.com' }, roots)).toBe(false)
+    expect(gapInScope({ source: 's' }, roots)).toBe(true)
+    expect(gapInScope({ source: 's', root: 'old.example.com' }, null)).toBe(true)
+  })
+
+  test('a skipped host belongs to the longest root it sits under', () => {
+    const roots = new Set(['api.example.com'])
+    expect(skippedHostInScope('v1.api.example.com:443', roots)).toBe(true)
+    expect(skippedHostInScope('api.example.com:80', roots)).toBe(true)
+    expect(skippedHostInScope('www.example.com:443', roots)).toBe(false)
+    expect(skippedHostInScope('www.example.com:443', null)).toBe(true)
+  })
+
+  test('the run-close count can drop a removed root', async () => {
+    run.mockResolvedValueOnce(records([JSON.stringify([
+      { source: 'a', root: 'api.example.com' }, { source: 'b', root: 'gone.example.com' }])]))
+    expect(await readDegradedSourceCount('p1', new Set(['api.example.com']))).toBe(1)
   })
 })

@@ -211,11 +211,11 @@ if __name__ == "__main__":
 # Properties applied via `SET n += $props`
 # ---------------------------------------------------------------------------
 # The scan above reads property names out of the Cypher text, so it cannot see a
-# property whose name only ever exists as a dict key in Python. `wildcard_mode`
-# is one of those: removing its line from schema_sections.md leaves every test
-# above green. It is load-bearing - it is the only thing distinguishing "this
-# Domain was enumerated" from "this Domain was scanned as listed" - so it gets a
-# behavioural test of its own.
+# property whose name only ever exists as a dict key in Python. The Domain's
+# props are one such dict. A Domain node is the org, shared by every scan root
+# under it, so it carries no per-run scope fields any more (wildcard_mode,
+# filtered_mode, ...): what was scanned lives in the project's scope groups.
+# That retirement gets a behavioural test, since the scan cannot see it.
 
 class _FakeSession:
     """Captures every Cypher call instead of running it."""
@@ -263,21 +263,25 @@ def _domain_props_for(metadata_extra: dict) -> dict:
     raise AssertionError("the Domain MERGE never ran")
 
 
-def test_wildcard_mode_is_written_onto_the_domain_node():
-    # A mixed batch writes both values in one run, so the flag has to travel from
-    # the recon metadata onto the node rather than being inferred later.
-    assert _domain_props_for({"wildcard_mode": True})["wildcard_mode"] is True
-    assert _domain_props_for({"wildcard_mode": False})["wildcard_mode"] is False
+RETIRED = ("target", "filtered_mode", "wildcard_mode", "subdomain_filter",
+           "modules_executed", "anonymous_mode", "bruteforce_mode", "scan_type")
 
 
-def test_wildcard_mode_defaults_to_false_for_older_recon_files():
-    # A recon file written before this feature has no such key. It must read as
-    # "not enumerated" rather than raising or writing None.
-    assert _domain_props_for({})["wildcard_mode"] is False
+def test_the_run_scope_fields_never_reach_the_org_domain():
+    props = _domain_props_for({k: True for k in RETIRED} | {"scan_timestamp": "t"})
+    assert not set(RETIRED) & set(props)
+    assert props["scan_timestamp"] == "t"
 
 
-def test_wildcard_mode_is_declared_in_the_schema():
+def test_an_older_recon_file_writes_none_either():
+    assert not set(RETIRED) & set(_domain_props_for({}))
+
+
+def test_the_schema_declares_the_org_model():
     # Declared in ONE place; schema_catalog.py is generated from it.
     sections = (PROJECT_ROOT / "graph_db" / "schema_sections.md").read_text()
     domain_block = sections.split("**Domain**", 1)[1].split("**Subdomain**", 1)[0]
-    assert "wildcard_mode" in domain_block
+    subdomain_block = sections.split("**Subdomain**", 1)[1].split("**", 1)[0]
+    assert "wildcard_mode" not in domain_block
+    assert "recon_coverage_roots" in domain_block
+    assert "is_scan_root" in subdomain_block

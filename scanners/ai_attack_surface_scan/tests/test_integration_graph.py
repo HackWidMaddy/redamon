@@ -151,8 +151,11 @@ class TestGraphIntegration(unittest.TestCase):
 
     # --- regression: custom (off-graph) targets must never orphan --- #
     def test_custom_hostname_materialises_connected_chain(self):
-        # Nothing seeded: a fully custom hostname target. Expect the full anchor
-        # chain Domain -> Subdomain -> BaseURL -> Endpoint -> Vulnerability.
+        # Only the Domain recon wrote is seeded: a custom hostname under it. Expect
+        # the full anchor chain Domain -> Subdomain -> BaseURL -> Endpoint -> Vulnerability.
+        with self.driver.session() as s:
+            s.run("CREATE (:Domain {name:'example.com', user_id:$uid, project_id:$pid})",
+                  uid=UID, pid=PID)
         target = tl.Target(baseurl="http://newhost.example.com", path="/v1/chat/completions",
                            ai_interface_type="llm-chat", ai_model_ids=["qwen2.5"])
         f = Finding(source="garak", chip="prompt-injection", name="pi",
@@ -175,6 +178,21 @@ class TestGraphIntegration(unittest.TestCase):
             "MATCH (e:Endpoint {path:'/v1/chat/completions', project_id:$pid}) "
             "WHERE e.source='ai_attack_target' AND e.ai_interface_type='llm-chat' "
             "AND e.ai_attack_synthetic=true RETURN count(e)", pid=PID), 1)
+        self.assertEqual(self._orphan_count(), 0)
+
+    def test_custom_hostname_under_no_domain_is_external(self):
+        # No Domain covers the host: it is out of scope, so it becomes an
+        # ExternalDomain and no Domain is invented for it (GDB-12).
+        f = Finding(source="garak", chip="prompt-injection", name="pi",
+                    baseurl="http://x.acme.co.uk", path="/chat",
+                    ai_owasp_llm_id="LLM01", ai_payload_class="garak-promptinject")
+        with self.driver.session() as s:
+            self.assertEqual(write_finding(s, f, UID, PID), "created")
+        self.assertEqual(self._count(
+            "MATCH (d:Domain {project_id:$pid}) RETURN count(d)", pid=PID), 0)
+        self.assertEqual(self._count(
+            "MATCH (ed:ExternalDomain {domain:'x.acme.co.uk', project_id:$pid}) "
+            "WHERE 'ai_attack_target' IN ed.sources RETURN count(ed)", pid=PID), 1)
         self.assertEqual(self._orphan_count(), 0)
 
     def test_custom_ip_target_anchors_to_ip(self):

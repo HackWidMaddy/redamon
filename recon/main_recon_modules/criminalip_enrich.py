@@ -364,17 +364,26 @@ def run_criminalip_enrichment(combined_result: dict, settings: dict) -> dict:
     cip_scope = cb.scope("criminalip", label="CriminalIP", unit="IP(s)")
 
     try:
-        if domain and not is_ip_mode:
-            print(f"[*][CriminalIP] Fetching domain report for {domain}...")
-            res = _cip_get("domain/report", keys, params={"query": domain})
+        def _domain_report(d):
+            """The org's Criminal IP domain report, or None without one."""
+            print(f"[*][CriminalIP] Fetching domain report for {d}...")
+            res = _cip_get("domain/report", keys, params={"query": d})
             if res.answered:
-                cip_data["domain_report"] = _parse_domain_report(domain, res.data)
-                if cip_data["domain_report"]:
-                    print(f"[+][CriminalIP] Domain report retrieved for {domain}")
+                report = _parse_domain_report(d, res.data)
+                if report:
+                    print(f"[+][CriminalIP] Domain report retrieved for {d}")
                 else:
-                    print(f"[!][CriminalIP] No domain report data for {domain}")
-            elif res.outcome is not cb.Outcome.SKIPPED:
+                    print(f"[!][CriminalIP] No domain report data for {d}")
+                return report
+            if res.outcome is not cb.Outcome.SKIPPED:
                 print(f"[!][CriminalIP] Domain report unavailable ({res.detail})")
+            return None
+
+        if domain and not is_ip_mode:
+            # The org, once per run; the org's other groups reuse the answer.
+            from recon.helpers.org_work import once_per_org, org_of
+            cip_data["domain_report"], _ = once_per_org(
+                "criminalip_domain", org_of(combined_result), _domain_report, label="CriminalIP")
 
         max_workers = settings.get("CRIMINALIP_WORKERS", 5)
         rate_limiter = _RateLimiter(1.0)

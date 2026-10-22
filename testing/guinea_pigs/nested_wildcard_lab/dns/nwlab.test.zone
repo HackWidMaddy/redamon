@@ -1,0 +1,36 @@
+; nwlab.test - the "clean" organisation: SPF and DMARC present, ownership TXT at
+; the org. Every A record points at web1 unless noted. Not DNSSEC-signed.
+$ORIGIN nwlab.test.
+$TTL 60
+@                   IN SOA  ns1.nwlab.test. hostmaster.nwlab.test. 2026102001 3600 600 86400 60
+@                   IN NS   ns1.nwlab.test.
+@                   IN A    192.88.99.60
+@                   IN MX   10 mail.nwlab.test.
+@                   IN TXT  "v=spf1 -all"
+ns1                 IN A    192.88.99.53
+_dmarc              IN TXT  "v=DMARC1; p=reject"
+_redamon-verify     IN TXT  "redamon-verify=nwlab-token"
+
+; EXACT siblings; mail/secret are only in the web1 certificate, cdn only in app.js
+www                 IN A    192.88.99.60
+shop                IN A    192.88.99.60
+mail                IN A    192.88.99.60
+secret              IN A    192.88.99.60
+cdn                 IN A    192.88.99.60
+
+; the deeper ENUMERATE scan root and its children. Brute force is one label deep,
+; so admin.v1.api and internal.v1.api are reachable only through certificate SANs.
+api                 IN A    192.88.99.60
+v1.api              IN A    192.88.99.60
+v2.api              IN A    192.88.99.60
+admin.v1.api        IN A    192.88.99.60
+internal.v1.api     IN A    192.88.99.60
+js-only.v2.api      IN A    192.88.99.60
+
+; nested-wildcard collapse (*.dev.eu.corp under *.eu.corp)
+eu.corp             IN A    192.88.99.60
+dev.eu.corp         IN A    192.88.99.60
+staging.dev.eu.corp IN A    192.88.99.60
+
+; a five-label EXACT host
+a.b.c.d             IN A    192.88.99.60

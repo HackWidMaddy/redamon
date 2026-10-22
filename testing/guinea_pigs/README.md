@@ -10,6 +10,7 @@ and a README mapping every endpoint to the exact pipeline step it exercises.
 |---|---|---|
 | [`web-cache-poisoning/`](web-cache-poisoning/) | `recon/cache_scan` (WCP module): cache oracle, cache-buster isolation, reflected + differential confirmation, framework packs, scoring, negative controls | `cd web-cache-poisoning && docker compose up -d --build` |
 | [`supply_chain_target/`](supply_chain_target/) | Supply-Chain recon (L2): both harvest paths (technologies + source-map mining), scoped/nested/hostile package names, version-preferring dedup, `source_files[:100]` cap, offline OSV verdicts (MAL vs CVE), `Package`/`MalPackageFinding` MERGE + `DEPENDS_ON` anchoring | `cd supply_chain_target && docker compose up -d --build` |
+| [`nested_wildcard_lab/`](nested_wildcard_lab/) | Domain-batch scope groups: exact hosts and `*.` wildcards at any depth, scan roots below the org, the Root checkbox, ownership TXT at the scan root or the org, once-per-org DNS checks, certificate-SAN and JS injection, plus the regression snapshot/compare tooling. Own CoreDNS for `*.nwlab.test` on `192.88.99.53` | `cd nested_wildcard_lab && ./setup.sh && ./host_dns_enable.sh` |
 | [`proxy_brain_target/`](proxy_brain_target/) | Agent `proxy_brain` / `redamon.*`: IDOR/BOLA, SQLi (boolean/error/UNION), reflected XSS, JWT weak-secret role-forge (flag), race/limit-overrun, open redirect, CORS, command injection — one endpoint per manual technique, on `pentest-net` as `pbtarget:5000` | `cd proxy_brain_target && docker compose up -d --build` |
 
 

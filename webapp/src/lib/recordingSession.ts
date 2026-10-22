@@ -1,4 +1,6 @@
+import type { Prisma } from '@prisma/client'
 import { normalizeScopeHosts } from '@/lib/authProfile'
+import { recordingScope, resolveScopeGroups, type ScopeFields } from '@/lib/scopeGroups'
 
 // Server-side max recording window. The operator re-starts to extend.
 export const RECORDING_TTL_MS = 30 * 60 * 1000
@@ -113,10 +115,7 @@ export function mergeMaterial(prev: RecordingMaterial | null | undefined, next: 
   return out
 }
 
-interface ProjectScopeFields {
-  ipMode?: boolean
-  targetDomain?: string | null
-  subdomainList?: string[]
+interface ProjectScopeFields extends ScopeFields {
   targetIps?: string[]
   roeExcludedHosts?: string[]
 }
@@ -131,33 +130,19 @@ function isRoeExcluded(host: string, excluded: string[]): boolean {
 }
 
 /**
- * Default recording scope: the project's own target host(s) (plus listed
- * subdomains, or target IPs in IP mode), minus RoE-excluded hosts. Fail-safe:
- * never broader than what the project targets; the proxy only tags in-scope
- * requests, so operator browsing elsewhere never lands in the corpus.
+ * Default recording scope: the project's auth scope (§4.6: `*.<root>` for an
+ * enumerated group, the listed hosts for a listed one, the root only when it
+ * is a target), or its target IPs in IP mode, minus RoE-excluded hosts.
+ * Fail-safe: never broader than what the project targets; the proxy only tags
+ * in-scope requests, so operator browsing elsewhere never lands in the corpus.
  */
 export function defaultRecordingScope(project: ProjectScopeFields): string[] {
-  const raw: string[] = []
-  if (project.ipMode) {
-    raw.push(...(project.targetIps || []))
-  } else {
-    const root = (project.targetDomain || '').trim()
-    if (root) {
-      raw.push(root)
-      // Subdomains too, mirroring default_scope_hosts in recon. Operators log in
-      // at app./www./portal. far more often than at the apex, and an apex-only
-      // recording scope meant the proxy tagged nothing at all: the operator
-      // recorded a login and the modal reported "no login detected".
-      // Residual, deliberate: the proxy cannot evaluate RoE, so a recording may
-      // capture an RoE-excluded subdomain. The scan-time fan-out still refuses
-      // RoE-excluded hosts (merge_auth_headers checks each one).
-      raw.push(`*.${root}`)
-      for (const pre of project.subdomainList || []) {
-        const clean = String(pre).trim().replace(/\.$/, '')
-        if (clean && clean !== '.') raw.push(`${clean}.${root}`)
-      }
-    }
-  }
+  // Residual, deliberate: the proxy cannot evaluate RoE, so a recording under
+  // `*.<root>` may capture an RoE-excluded subdomain. The scan-time fan-out
+  // still refuses RoE-excluded hosts (merge_auth_headers checks each one).
+  const raw = project.ipMode
+    ? [...(project.targetIps || [])]
+    : recordingScope(resolveScopeGroups(project).groups)
   let { hosts } = normalizeScopeHosts(raw)
   // A non-empty exclusion list IS the limit: there is no separate switch that
   // could leave it configured and inert.
@@ -165,4 +150,32 @@ export function defaultRecordingScope(project: ProjectScopeFields): string[] {
     hosts = hosts.filter(h => !isRoeExcluded(h, project.roeExcludedHosts!))
   }
   return hosts
+}
+
+/**
+ * Re-derive the active recording's scope from the project as it is now. The
+ * proxy tags by the scope stored at Start, so a rescope or an RoE change made
+ * mid-recording would otherwise keep capturing hosts the project dropped.
+ * Never throws: a failure leaves the old scope until the recording expires.
+ */
+export async function refreshActiveRecordingScope(
+  db: Pick<Prisma.TransactionClient, 'recordingSession'>,
+  projectId: string,
+  project: ProjectScopeFields,
+): Promise<boolean> {
+  try {
+    const session = await db.recordingSession.findFirst({
+      where: { projectId, state: 'active', expiresAt: { gt: new Date() } },
+      select: { id: true },
+    })
+    if (!session) return false
+    await db.recordingSession.update({
+      where: { id: session.id },
+      data: { scopeHosts: defaultRecordingScope(project) },
+    })
+    return true
+  } catch (e) {
+    console.error('[recording] could not refresh the recording scope:', e)
+    return false
+  }
 }

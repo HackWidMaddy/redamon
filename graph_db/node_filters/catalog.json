@@ -2210,7 +2210,7 @@
   "locked": [
     {
       "label": "Domain",
-      "reason": "The engagement root; everything else hangs off it."
+      "reason": "The organisation (registrable) domain; scan roots and hosts hang off it."
     },
     {
       "label": "CVE",

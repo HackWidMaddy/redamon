@@ -311,10 +311,20 @@ class _FirstParty(NamedTuple):
 def _first_party_scope(combined_result: dict) -> _FirstParty:
     """The target's own hosts: the run's roots and target list. Unlike the
     endpoint probe scope this never counts a host just because a JS file was
-    fetched from it, since the page loads third-party scripts too."""
+    fetched from it, since the page loads third-party scripts too.
+
+    A group's root here is its org (registrable domain), not its scan root: a
+    script on www.example.com is the target's own code in a run scoped to
+    *.api.example.com, though that run never scans www. A legacy file (no
+    scope_mode) and a partial run keep their scan roots.
+    """
+    from recon.helpers.recon_scope import recon_scope
     metadata = combined_result.get('metadata') or {}
     declared = [r for r in (combined_result.get('domains') or []) if isinstance(r, str) and r.strip()]
     roots = declared or [combined_result.get('domain') or '']
+    group = recon_scope(combined_result)
+    if not declared and group.mode and not group.ip_mode and group.org_domain:
+        roots = [group.org_domain]
     roots = [
         r.strip().strip('.').lower() for r in roots
         if isinstance(r, str) and r.strip() and not r.startswith('ip-targets.')
@@ -1036,6 +1046,7 @@ def _extract_subdomains(
     root_domain,
     known_subdomains: set,
     in_scope_hosts: frozenset = frozenset(),
+    first_party_roots: tuple = (),
 ) -> tuple:
     """
     Extract unique subdomains and external domains from JS-discovered endpoints.
@@ -1045,6 +1056,9 @@ def _extract_subdomains(
     ``in_scope_hosts`` are the target's own hosts outside every root: an IP-mode
     run's root is the synthetic ``ip-targets.<id>``, so without them the
     scanned IPs were reported as external domains of themselves.
+    ``first_party_roots`` are the group's org(s): a host under one but outside
+    every scanned root is the target's own (no third party), yet not this
+    group's to scan, so it lands in neither list.
 
     Returns (new_subdomains: list, external_domains: list)
     """
@@ -1070,6 +1084,8 @@ def _extract_subdomains(
             if hostname not in known_subdomains:
                 new_subdomains.add(hostname)
         elif hostname in in_scope_hosts:
+            continue
+        elif any(hostname == r or hostname.endswith(f'.{r}') for r in first_party_roots):
             continue
         else:
             if hostname not in external_domains:
@@ -1316,11 +1332,13 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
             if ca.get('url'):
                 all_urls_for_subdomain_check.append({'full_url': ca['url']})
 
+        first_party = _first_party_scope(combined_result)
         new_subs, ext_domains = _extract_subdomains(
             all_urls_for_subdomain_check,
             scope_roots,
             known_subs,
-            _first_party_scope(combined_result).hosts,
+            first_party.hosts,
+            first_party.roots,
         )
         results['discovered_subdomains'] = new_subs
         results['external_domains'] = ext_domains

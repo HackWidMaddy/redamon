@@ -11,6 +11,7 @@
  * 1000-row-capped graph dumps do not diff inside a model's context.
  */
 import prisma from '@/lib/prisma'
+import { SCOPE_SELECT, currentScanRoots } from '@/lib/scanCoverage'
 import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { McpToolError } from '@/lib/mcp/errors'
 import { assertVersionInProject, type OwnedScanVersion } from '@/lib/mcp/childAccess'
@@ -329,7 +330,8 @@ export async function compareScanVersions(
     ? await captureCurrentSide(projectId)
     : await loadStoredSide(toSide.version)
 
-  const delta = computeReconDelta(from.data, to.data)
+  const scope = await prisma.project.findUnique({ where: { id: projectId }, select: SCOPE_SELECT })
+  const delta = computeReconDelta(from.data, to.data, {}, scope ? currentScanRoots(scope) : null)
 
   return {
     projectId,

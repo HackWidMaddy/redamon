@@ -1,6 +1,6 @@
 # Community Skills
 
-Ready-to-use attack skill workflows contributed by the community. Download any `.md` file and upload it via **Global Settings > Agent Skills** to activate it for your user.
+Ready-to-use attack skill workflows contributed by the community. Download any `.md` file and upload it via **Global Settings > Agent Skills** (or a project's Agent Skills section) to activate it for your user; **Upload Batch** takes several files at once, and **Import from Community** brings in the whole catalog.
 
 ## Skills
 
@@ -27,6 +27,6 @@ Ready-to-use attack skill workflows contributed by the community. Download any `
 ## Contributing
 
 1. Create your `.md` skill file following the [Writing a Skill File](https://github.com/samugit83/redamon/wiki/Agent-Skills#writing-a-skill-file) format
-2. Test it in your RedAmon instance by uploading via Global Settings
+2. Test it in your RedAmon instance by uploading it with **Upload Skill** (or with others through **Upload Batch**) in Global Settings
 3. Fork the repo, add your `.md` file to this folder, and update this table with your GitHub username
 4. Open a Pull Request

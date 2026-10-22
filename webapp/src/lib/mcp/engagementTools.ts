@@ -33,7 +33,11 @@
  */
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
-import { validateDomainBatch, splitWildcard, MAX_BATCH_HOSTS } from '@/lib/domainBatch'
+import { describeInvalid, validateDomainBatch, MAX_BATCH_HOSTS } from '@/lib/domainBatch'
+import {
+  guardrailNames, resolveScopeGroups, scopeGuardrailNames, softGuardrailNames,
+} from '@/lib/scopeGroups'
+import { internalKeyHeaders } from '@/lib/agentAuth'
 import {
   currentAuthorization,
   describeEngagement,
@@ -49,7 +53,7 @@ import {
   type EngagementProjectRow,
 } from '@/lib/engagement'
 import { describeScanWriters } from '@/lib/graphWriters'
-import { isHardBlockedDomain } from '@/lib/hard-guardrail'
+import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
@@ -230,11 +234,45 @@ async function findByIdempotencyKey(ctx: McpContext, key: string) {
  * either: it would carry an authorization record for a target nobody may touch.
  */
 export function refuseHardBlocked(domains: string[]): void {
-  for (const domain of domains) {
-    const check = isHardBlockedDomain(domain)
-    if (check.blocked) {
-      throw new McpToolError(`Target permanently blocked: ${domain}: ${check.reason}`, 'target_blocked')
-    }
+  const hit = firstHardBlocked(domains)
+  if (hit) {
+    throw new McpToolError(`Target permanently blocked: ${hit.name}: ${hit.reason}`, 'target_blocked')
+  }
+}
+
+const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
+// The soft guardrail fails open by design (the hard guardrail is the control
+// that may not be bypassed), so a hung agent must not stall a write either.
+const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
+
+/**
+ * The soft (LLM) guardrail, as the HTTP project routes call it: the reason when
+ * the agent refuses the target, null when it allows it or cannot be asked.
+ */
+export async function softGuardrailRefusal(target: {
+  targetDomain?: string
+  targetDomains?: string[]
+  targetIps?: string[]
+  userId: string
+}): Promise<string | null> {
+  try {
+    const res = await fetch(`${AGENT_API_URL}/guardrail/check-target`, {
+      method: 'POST',
+      headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
+      signal: AbortSignal.timeout(SOFT_GUARDRAIL_TIMEOUT_MS),
+      body: JSON.stringify({
+        target_domain: target.targetDomain ?? '',
+        target_domains: target.targetDomains ?? [],
+        target_ips: target.targetIps ?? [],
+        user_id: target.userId,
+      }),
+    })
+    if (!res.ok) return null
+    const verdict = await res.json()
+    return verdict?.allowed === false ? String(verdict.reason || 'refused by the guardrail') : null
+  } catch (err) {
+    console.warn('[mcp] soft guardrail unreachable, allowing:', err)
+    return null
   }
 }
 
@@ -275,11 +313,27 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
     engagementKind: args.engagementKind,
   }
 
+  if (args.subdomainList?.length && mode !== 'targetDomain') {
+    throw new McpToolError(
+      'subdomainList is the host list of a single-domain project (targetDomain): each entry is a ' +
+      'prefix such as "www" or "eu.api", scanned exactly. It does not apply to targetIps or ' +
+      'domainBatchHosts.',
+      'bad_args'
+    )
+  }
+
   if (mode === 'targetDomain') {
-    // Same normalization as the HTTP routes: an agent that emits bug-bounty
-    // scope notation must not turn `*.example.com` into a literal target.
-    data.targetDomain = splitWildcard(args.targetDomain!.trim()).rest
-    refuseHardBlocked([data.targetDomain as string])
+    // The rules the form and the HTTP routes apply, judged here rather than in
+    // the schema so an idempotent replay still returns its first project. An
+    // agent that emits bug-bounty scope notation (`*.example.com`) gets the
+    // domain, normalised and lower-cased; a public suffix or an address is
+    // refused with its reason.
+    refuseHardBlocked(scopeGuardrailNames({ targetDomain: args.targetDomain, subdomainList: args.subdomainList }))
+    const resolved = resolveScopeGroups({ targetDomain: args.targetDomain, subdomainList: args.subdomainList ?? [] })
+    if (resolved.invalid.length > 0 || resolved.groups.length === 0) {
+      throw new McpToolError(describeInvalid(resolved.invalid), 'bad_args')
+    }
+    data.targetDomain = resolved.groups[0].scanRoot
   } else if (mode === 'targetIps') {
     data.ipMode = true
     data.targetIps = args.targetIps!.map(s => s.trim()).filter(Boolean)
@@ -289,17 +343,22 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
     if (validation.errors.length > 0) {
       throw new McpToolError(validation.errors.join(' '), 'bad_args')
     }
-    refuseHardBlocked(validation.groups.map(g => g.rootDomain))
+    // Every host and root, so the refusal names the host that was listed.
+    refuseHardBlocked(scopeGuardrailNames({ domainBatchMode: true, domainBatchHosts: hosts }))
     data.domainBatchMode = true
-    data.domainBatchHosts = hosts
+    data.domainBatchHosts = validation.entries
     // The server re-derives the grouping from the raw host list and discards
     // any client-supplied one. That is a control, not a convenience: the
     // grouping decides the run order and therefore what gets scanned together.
-    data.domainBatchGroups = validation.groups
+    data.domainBatchGroups = validation.legacy
   }
 
   if (args.subdomainList?.length) {
-    data.subdomainList = args.subdomainList.map(s => s.trim()).filter(Boolean)
+    // The stored form the project form writes: "." for the target itself,
+    // every other prefix with one trailing dot.
+    data.subdomainList = args.subdomainList
+      .map(s => s.trim().toLowerCase()).filter(Boolean)
+      .map(s => (s === '.' ? '.' : `${s.replace(/\.+$/, '')}.`))
   }
 
   if (args.engagementIdentityHeader) {
@@ -352,6 +411,24 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
         'bad_args'
       )
     }
+  }
+
+  // The soft (LLM) guardrail, as the HTTP create route runs it: on unless the
+  // settings switch it off, and failing open.
+  if (data.targetGuardrailEnabled !== false) {
+    const scope = resolveScopeGroups({
+      ipMode: data.ipMode === true, domainBatchMode: data.domainBatchMode === true,
+      domainBatchHosts: data.domainBatchHosts as string[] | undefined,
+      targetDomain: data.targetDomain as string | undefined,
+      subdomainList: data.subdomainList as string[] | undefined,
+    })
+    const refusal = await softGuardrailRefusal({
+      targetDomain: mode === 'targetDomain' ? data.targetDomain as string : '',
+      targetDomains: mode === 'domainBatchHosts' ? softGuardrailNames(scope.groups) : [],
+      targetIps: mode === 'targetIps' ? data.targetIps as string[] : [],
+      userId: ctx.token.userId,
+    })
+    if (refusal) throw new McpToolError(`Target blocked by the guardrail: ${refusal}`, 'target_blocked')
   }
 
   let created: { id: string; name: string }
@@ -621,12 +698,9 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    // domainBatchGroups explicitly: it is `mcp: never`, so it may not be in the
-    // settings select, and the derived shape below is read from it. It is never
-    // returned raw - only the two sentinel booleans are.
     // roeParsedJson for its version only: a project whose RoE went through the
     // replace route carries limits no migration derived. Never returned.
-    select: { ...reconSettingsSelect(), id: true, updatedAt: true, domainBatchGroups: true, roeParsedJson: true },
+    select: { ...reconSettingsSelect(), id: true, updatedAt: true, roeParsedJson: true },
   })
   if (!project) throw new McpToolError('Project not found', 'not_found')
 
@@ -714,6 +788,17 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
 
   const aiHooks = await resolveAiHooks(row, ctx.token.userId)
 
+  // The scope the next scan runs, derived from the stored target fields exactly
+  // as the scan derives it, and the entries the current rules refuse.
+  const resolvedScope = resolveScopeGroups({
+    ipMode: row.ipMode === true, domainBatchMode: row.domainBatchMode === true,
+    domainBatchHosts: Array.isArray(row.domainBatchHosts) ? row.domainBatchHosts as string[] : [],
+    targetDomain: typeof row.targetDomain === 'string' ? row.targetDomain : '',
+    subdomainList: Array.isArray(row.subdomainList) ? row.subdomainList as string[] : [],
+  })
+  const scopeUnusable = resolvedScope.invalid.length > 0
+    || (row.ipMode !== true && resolvedScope.groups.length === 0)
+
   return {
     projectId,
     engagement,
@@ -723,22 +808,31 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
       targetIps: row.targetIps ?? [],
       domainBatchMode: row.domainBatchMode ?? false,
       domainBatchHosts: row.domainBatchHosts ?? [],
-      // The DERIVED shape of each group, so a caller can verify what the list
-      // actually means instead of re-implementing the rule. `wildcard` and
-      // `includesRoot` are the two sentinels ('*' and '.') the pipeline reads;
-      // neither is a column, and domainBatchGroups itself is never exposed, so
-      // this is the only place the answer is readable.
-      domainBatchGroupShape: (Array.isArray(row.domainBatchGroups) ? row.domainBatchGroups : [])
-        .map(g => {
-          const grp = g as { rootDomain?: string; prefixes?: string[] }
-          const prefixes = grp?.prefixes ?? []
-          return {
-            rootDomain: String(grp?.rootDomain ?? ''),
-            wildcard: prefixes.includes('*'),
-            includesRoot: prefixes.includes('.'),
-            hostCount: prefixes.filter(x => x !== '*' && x !== '.').length,
-          }
-        }),
+      // The DERIVED shape of each batch group, so a caller can verify what the
+      // list actually means instead of re-implementing the rule. rootDomain,
+      // wildcard and includesRoot keep their meaning for older callers
+      // (rootDomain is the scan root); scanRoot, orgDomain, mode and
+      // includeRoot are the same answer in the current vocabulary.
+      domainBatchGroupShape: row.domainBatchMode === true
+        ? resolvedScope.groups.map(g => ({
+            rootDomain: g.scanRoot,
+            wildcard: g.mode === 'enumerate',
+            includesRoot: g.includeRoot,
+            hostCount: g.exactHosts.length,
+            scanRoot: g.scanRoot,
+            orgDomain: g.orgDomain,
+            mode: g.mode,
+            includeRoot: g.includeRoot,
+          }))
+        : [],
+      // Every mode, single domain included (one group).
+      scopeGroups: resolvedScope.groups,
+      // Entries the current rules refuse (a public suffix, a wildcard on one, an
+      // address in a domain field...). While any is listed the scan is refused.
+      invalidEntries: resolvedScope.invalid,
+      // What the non-disableable guardrail checks: every entry, exact host,
+      // scan root and org.
+      guardrailNames: guardrailNames(resolvedScope.groups),
       ipMode: row.ipMode ?? false,
       targetGuardrailEnabled: row.targetGuardrailEnabled ?? false,
       excludedHosts: row.roeExcludedHosts ?? [],
@@ -802,7 +896,7 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
               : lastJob.roeTextSha256 !== engagement.documentTextSha256,
         }
       : null,
-    startable: engagement.blockers.length === 0 && exceeds.length === 0,
+    startable: engagement.blockers.length === 0 && exceeds.length === 0 && !scopeUnusable,
     notes: [
       'Values here are RESOLVED, not written. get_recon_settings echoes what you wrote; this ' +
         'reports what the scan will actually run with, which differs wherever a validator or ' +

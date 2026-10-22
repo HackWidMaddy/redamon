@@ -581,6 +581,18 @@
   "vuln_scan"
  ],
  "SCA_INTEL_CORRELATION_ENABLED": true,
+ "SCOPE_GROUPS": [
+  {
+   "exactHosts": [
+    "a.example.com",
+    "b.example.com"
+   ],
+   "includeRoot": false,
+   "mode": "exact",
+   "orgDomain": "example.com",
+   "scanRoot": "example.com"
+  }
+ ],
  "SECURITYTRAILS_API_KEY": "",
  "SECURITY_CHECK_ADMIN_PORT_EXPOSED": true,
  "SECURITY_CHECK_BASIC_AUTH_NO_TLS": true,

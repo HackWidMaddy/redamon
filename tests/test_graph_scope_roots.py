@@ -21,8 +21,9 @@ from unittest.mock import MagicMock
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO)
 
-from graph_db.mixins.recon.scope import attach_roots, root_for_host, roots_are_ip_mode, scope_roots  # noqa: E402
+from graph_db.mixins.recon.scope import attach_roots, root_for_host, scope_roots  # noqa: E402
 from graph_db.mixins.recon.user_input_mixin import UserInputMixin, _user_input_root  # noqa: E402
+from graph_db.mixins.recon.domain_mixin import DomainMixin  # noqa: E402
 
 ROOTS = ["alpha.test", "beta.test", "gamma.test"]
 
@@ -81,17 +82,8 @@ class TestRootForHost(unittest.TestCase):
         self.assertEqual(root_for_host("192-0-2-10", ["ip-targets.p1"], ip_mode=True), "ip-targets.p1")
         self.assertIsNone(root_for_host("192-0-2-10", ["ip-targets.p1"]))
 
-    def test_ip_mode_lookup_reads_the_domain_flag(self):
-        session = MagicMock()
-        session.run.return_value.single.return_value = {"ip_mode": True}
-        self.assertTrue(roots_are_ip_mode(session, ["ip-targets.p1"], "u1", "p1"))
-        cypher, kwargs = session.run.call_args[0][0], session.run.call_args[1]
-        self.assertIn("d.ip_mode = true", cypher)
-        self.assertEqual((kwargs["uid"], kwargs["pid"]), ("u1", "p1"))
-        self.assertFalse(roots_are_ip_mode(session, [], "u1", "p1"))
 
-
-class _Client(UserInputMixin):
+class _Client(DomainMixin, UserInputMixin):
     def __init__(self):
         session = MagicMock()
         session.__enter__ = MagicMock(return_value=session)
@@ -101,11 +93,15 @@ class _Client(UserInputMixin):
         self.session = session
 
     def merged_domain(self):
-        """The Domain name the HAS_USER_INPUT MERGE was given."""
+        """The Domain the UserInput was linked to; it must also be the one ensured."""
+        ensured = linked = None
         for call in self.session.run.call_args_list:
             if "MERGE (d:Domain" in call[0][0]:
-                return call[1]["domain"]
-        return None
+                ensured = call[1]["names"]
+            if "HAS_USER_INPUT" in call[0][0]:
+                linked = call[1]["domain"]
+        assert ensured == [linked], (ensured, linked)
+        return linked
 
 
 def _ui(values, input_type="subdomains"):

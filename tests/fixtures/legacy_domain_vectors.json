@@ -1,0 +1,60 @@
+{
+  "_comment": "Old-model Domain detection (plan 4.11.6, GDB-09). Read by graph_db's legacy_domain_nodes tests (tests/test_legacy_domain_nodes.py) and the webapp's legacy_graph mirror. Each case seeds `domains` for one tenant and expects `legacy` back for the given `expected` (expectedDomainNames) and `related` (orgs and scan roots). has_subdomain adds a HAS_SUBDOMAIN edge; coverage sets recon_coverage_at. Synthetic names only.",
+  "cases": [
+    {
+      "name": "a suffix root left by the old batch grouping is legacy",
+      "domains": [
+        {"name": "co.uk", "has_subdomain": true},
+        {"name": "acme.co.uk", "has_subdomain": true}
+      ],
+      "expected": ["acme.co.uk"],
+      "related": ["acme.co.uk"],
+      "legacy": ["co.uk"]
+    },
+    {
+      "name": "a mixed-case single-domain target is not legacy",
+      "domains": [{"name": "Alpha.test", "has_subdomain": true, "coverage": true}],
+      "expected": ["alpha.test"],
+      "related": ["alpha.test"],
+      "legacy": []
+    },
+    {
+      "name": "the IP-mode mock root is never legacy",
+      "domains": [{"name": "ip-targets.cmexample", "ip_mode": true, "has_subdomain": true}],
+      "expected": ["example.test"],
+      "related": ["example.test", "ip-targets.cmexample"],
+      "legacy": []
+    },
+    {
+      "name": "a removed root unrelated to the scope keeps its stale semantics",
+      "domains": [
+        {"name": "old-target.test", "has_subdomain": true, "coverage": true},
+        {"name": "example.test", "has_subdomain": true}
+      ],
+      "expected": ["example.test"],
+      "related": ["example.test"],
+      "legacy": []
+    },
+    {
+      "name": "a deeper old root under the current one is legacy",
+      "domains": [{"name": "api.example.test", "coverage": true}],
+      "expected": ["example.test"],
+      "related": ["example.test"],
+      "legacy": ["api.example.test"]
+    },
+    {
+      "name": "an empty seeded Domain holds no data and is not legacy",
+      "domains": [{"name": "co.uk"}],
+      "expected": ["acme.co.uk"],
+      "related": ["acme.co.uk"],
+      "legacy": []
+    },
+    {
+      "name": "the match is label-bounded",
+      "domains": [{"name": "notacme.co.uk", "has_subdomain": true}],
+      "expected": ["acme.co.uk"],
+      "related": ["acme.co.uk"],
+      "legacy": []
+    }
+  ]
+}

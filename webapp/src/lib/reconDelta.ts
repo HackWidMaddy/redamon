@@ -11,6 +11,7 @@
  */
 import type { FormattedGraphData, FormattedNode } from '@/app/api/graph/format'
 import { TRIAGE_PROPERTIES } from '@/lib/triage/properties'
+import { type CoverageGap, gapInScope, skippedHostInScope } from '@/lib/scanCoverage'
 
 /**
  * Identity properties per node label, most-specific first. A node matches across
@@ -77,6 +78,17 @@ export const VOLATILE_PROPERTIES = new Set([
   'recon_coverage_gaps',
   'recon_skipped_hosts',
   'recon_nuclei_truncated',
+  // Which scan roots stamped the org Domain this run, and the run that did.
+  'recon_coverage_roots',
+  'recon_coverage_run',
+  // Per-tool run stamps on the org Domain: the latest run wins, so every run
+  // read as "changed" while nothing about the target did.
+  'scan_timestamp',
+  'port_scan_timestamp',
+  'http_probe_timestamp',
+  'resource_enum_timestamp',
+  'vuln_scan_timestamp',
+  'gvm_scan_timestamp',
   // Per-source OpenAPI fetch status: carries the time of the last fetch, so it
   // changes every run without the Domain changing.
   'openapi_source_status',
@@ -249,7 +261,9 @@ export interface ReconDelta {
  * imported snapshot is untrusted, so anything malformed fails closed rather than
  * being trusted.
  */
-export function extractReconCoverage(to: FormattedGraphData): ReconCoverage | null {
+export function extractReconCoverage(
+  to: FormattedGraphData, roots: ReadonlySet<string> | null = null,
+): ReconCoverage | null {
   const domains = (to.nodes || []).filter(n => n.type === 'Domain')
   let sawRecord = false
   const sources = new Set<string>()
@@ -273,11 +287,11 @@ export function extractReconCoverage(to: FormattedGraphData): ReconCoverage | nu
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
       const source = (entry as { source?: unknown }).source
       if (typeof source !== 'string' || source.length === 0 || source.length > 64) return null
-      sources.add(source)
+      if (gapInScope(entry as CoverageGap, roots)) sources.add(source)
     }
     const skipped = (d.properties || {})['recon_skipped_hosts']
     if (Array.isArray(skipped)) {
-      for (const h of skipped) if (typeof h === 'string') hosts.add(h)
+      for (const h of skipped) if (typeof h === 'string' && skippedHostInScope(h, roots)) hosts.add(h)
     }
     if ((d.properties || {})['recon_nuclei_truncated'] === true) nucleiTruncated = true
   }
@@ -362,7 +376,8 @@ function collectLinks(
 export function computeReconDelta(
   from: FormattedGraphData,
   to: FormattedGraphData,
-  live: LiveNodeIds = {}
+  live: LiveNodeIds = {},
+  scanRoots: ReadonlySet<string> | null = null,
 ): ReconDelta {
   const fromIdx = indexByIdentity(from)
   const toIdx = indexByIdentity(to)
@@ -460,7 +475,7 @@ export function computeReconDelta(
       removedLinks: removedLinks.length,
     },
     lenses,
-    coverage: extractReconCoverage(to),
+    coverage: extractReconCoverage(to, scanRoots),
   }
 }
 

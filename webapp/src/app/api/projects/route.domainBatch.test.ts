@@ -153,3 +153,133 @@ describe('the hard guardrail still checks every batch root', () => {
     expect(mockProjectCreate).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * A batch used to be guardrailed on its group roots only, and a root is the last
+ * two labels: www.agency.gov.uk grouped under `gov.uk`, which no pattern blocked
+ * (they all needed a leading dot), and www.isa.org.jm under `org.jm`, which no
+ * rule names. Every host is checked now, and the refusal names the host.
+ */
+describe('the hard guardrail checks every host and names it', () => {
+  test.each([
+    'www.agency.gov.uk', 'www.isa.org.jm', 'x.met.police.uk',
+  ])('a batch carrying %s is refused, naming it', async (host) => {
+    const res = await POST(postReq({
+      ...BATCH_BASE, targetGuardrailEnabled: false,
+      domainBatchHosts: ['ok.example.com', host],
+    }))
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toContain(`blocked: ${host}:`)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('a wildcard on a government suffix never reaches creation', async () => {
+    const res = await POST(postReq({
+      ...BATCH_BASE, targetGuardrailEnabled: false, domainBatchHosts: ['*.gov.uk'],
+    }))
+    expect(res.status).toBeGreaterThanOrEqual(400)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('a single-domain government target is refused', async () => {
+    const res = await POST(postReq({
+      userId: 'user-1', name: 'S', targetDomain: 'agency.gov.uk', targetGuardrailEnabled: false,
+    }))
+    expect(res.status).toBe(403)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+})
+
+describe('a non-batch project stores no batch scope', () => {
+  test('a client domainBatchGroups on a single-domain create is not stored', async () => {
+    const res = await POST(postReq({
+      userId: 'user-1', name: 'S', targetDomain: 'example.com', targetGuardrailEnabled: false,
+      domainBatchMode: false,
+      domainBatchGroups: [{ rootDomain: 'attacker-chosen.com', prefixes: ['*'] }],
+      domainBatchHosts: ['*.attacker-chosen.com'],
+    }))
+    expect(res.status).toBe(201)
+    const data = mockProjectCreate.mock.calls[0][0].data
+    expect(data).not.toHaveProperty('domainBatchGroups')
+    expect(data.domainBatchHosts).toEqual([])
+  })
+})
+
+describe('a hung agent cannot stall project creation', () => {
+  test('the soft guardrail gives up after its timeout and the create goes ahead', async () => {
+    // A fetch that only ever ends when its signal aborts: an agent that hangs.
+    mockFetch.mockImplementation((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+    }))
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal)
+    const requested: number[] = []
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      requested.push(ms)
+      return realTimeout(20)
+    })
+    try {
+      const res = await POST(postReq({ userId: 'user-1', name: 'S', targetDomain: 'example.com' }))
+      expect(res.status).toBe(201)
+      expect(mockProjectCreate).toHaveBeenCalledTimes(1)
+      expect(requested).toEqual([10_000])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
+describe('a single-domain target gets the batch entry rules', () => {
+  test.each([
+    ['co.uk', [], 'public suffix'],
+    ['192.0.2.10', [], 'IP address'],
+    ['example.com', ['*'], 'subdomain prefix'],
+    ['example.com', ['a..b.'], 'subdomain prefix'],
+  ])('%s with prefixes %j is refused (%s)', async (targetDomain, subdomainList, reason) => {
+    const res = await POST(postReq({
+      userId: 'user-1', name: 'S', targetDomain, subdomainList, targetGuardrailEnabled: false,
+    }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain(reason)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('the target is stored normalised and lower-cased; dotted prefixes are accepted', async () => {
+    const res = await POST(postReq({
+      userId: 'user-1', name: 'S', targetDomain: 'HTTPS://Api.Example.COM/', subdomainList: ['eu.v1.'],
+      targetGuardrailEnabled: false,
+    }))
+    expect(res.status).toBe(201)
+    expect(mockProjectCreate.mock.calls[0][0].data.targetDomain).toBe('api.example.com')
+  })
+
+  test('the soft guardrail sees a deep target and its org', async () => {
+    await POST(postReq({ userId: 'user-1', name: 'S', targetDomain: 'api.example.com', targetGuardrailEnabled: true }))
+    const call = mockFetch.mock.calls.find(c => String(c[0]).includes('/guardrail/check-target'))
+    const body = JSON.parse(call![1].body as string)
+    expect(body.target_domain).toBe('api.example.com')
+    expect(body.target_domains).toEqual(['example.com'])
+  })
+})
+
+describe('WEB-12: the seeded Domain nodes are the orgs', () => {
+  const seeded = () => mockRun.mock.calls
+    .filter(([q]) => String(q).includes('MERGE (d:Domain'))
+    .map(([q, p]) => {
+      expect(String(q)).toContain('user_id: $userId, project_id: $projectId')
+      return (p as { name: string }).name
+    })
+
+  test('a deep single-domain target seeds its registrable domain, not the scan root', async () => {
+    const res = await POST(postReq({ userId: 'user-1', name: 'Deep', targetDomain: 'api.example.com',
+      targetGuardrailEnabled: false }))
+    expect(res.status).toBe(201)
+    expect(seeded()).toEqual(['example.com'])
+  })
+
+  test('a batch seeds each org once', async () => {
+    const res = await POST(postReq({ ...BATCH_BASE, targetGuardrailEnabled: false,
+      domainBatchHosts: ['www.acme.co.uk', 'shop.acme.co.uk', 'sub2.domain2.it'] }))
+    expect(res.status).toBe(201)
+    expect(seeded()).toEqual(['acme.co.uk', 'domain2.it'])
+  })
+})

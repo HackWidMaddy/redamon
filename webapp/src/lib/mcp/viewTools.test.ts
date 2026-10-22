@@ -88,6 +88,22 @@ describe('list_graph_views', () => {
     expect(h.findManyViews.mock.calls[0][0].select.cypherQuery).toBeUndefined()
   })
 
+  test('a view naming a Domain the graph no longer has is flagged, the query still unseen', async () => {
+    h.findProject.mockResolvedValue({ id: 'p1', userId: 'owner', targetDomain: 'api.nwlab.test', subdomainList: [] })
+    h.findManyViews.mockImplementation(async (args: { select: Record<string, boolean> }) => (
+      args.select.cypherQuery
+        ? [{ id: 'g1', cypherQuery: "MATCH (d:Domain {name:'api.nwlab.test'})-[:HAS_SUBDOMAIN]->(s) RETURN s" }]
+        : [{ id: 'g1', name: 'Legacy domain view', description: null, createdAt: new Date() }]
+    ))
+    const r = await listGraphViews(ctx(), 'p1')
+    expect(r.views[0].mayNeedUpdate).toBe(true)
+    expect(JSON.stringify(r)).not.toContain('MATCH')
+    expect(JSON.stringify(r)).not.toContain('api.nwlab.test')
+    // The listed rows themselves never carried the query.
+    const listCall = h.findManyViews.mock.calls.find(([a]) => a.select.name)!
+    expect(listCall[0].select.cypherQuery).toBeUndefined()
+  })
+
   test('the query is scoped to the project', async () => {
     await listGraphViews(ctx(), 'p1')
     expect(h.findManyViews.mock.calls[0][0].where).toEqual({ projectId: 'p1' })

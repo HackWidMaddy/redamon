@@ -13,6 +13,7 @@ import sys
 import uuid
 
 from recon.partial_recon_modules.helpers import (
+    root_orgs,
     _is_ip_or_cidr,
     _should_include_root_domain,
     partial_settings,
@@ -154,6 +155,7 @@ def run_tlsx(config: dict) -> None:
                             "tool_id": "Tlsx",
                         },
                         user_id=user_id, project_id=project_id,
+                        root_orgs=root_orgs(roots),
                     )
                 except Exception as e:
                     print(f"[!][Partial Recon] UserInput node creation failed (non-fatal): {e}")

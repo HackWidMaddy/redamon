@@ -6,6 +6,7 @@ import { unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import path from 'path'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { batchGroupFiles } from '@/lib/reconOutputFiles'
 import { clearProjectGraph } from '@/lib/graphRestore'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
@@ -19,7 +20,9 @@ import { canonicalJson } from '@/lib/fingerprint'
 import { field, fieldsWhere } from '@/lib/reconSettings/registry'
 import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
 import { JEV_ENGINE_SELECT, guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
-import { seedProjectDomains } from '@/lib/graphSeedDomains'
+import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
+import { refreshActiveRecordingScope } from '@/lib/recordingSession'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 import { computeSkillTextOverrides } from '@/lib/plugins/overrideDelivery'
 import { userSkillsForAgent } from '@/lib/userSkillAgentPayload'
 import type { ResolvedPart } from '@/lib/plugins/overrides'
@@ -32,6 +35,7 @@ const GITHUB_HUNT_OUTPUT_PATH = process.env.GITHUB_HUNT_OUTPUT_PATH || '/home/sa
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
+const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
 
 // Recon orchestrator URL for file deletion
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
@@ -123,6 +127,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
     const projectWithoutBinary = {
       ...rest,
+      // Every reader's one derivation of the scope (recon, orchestrator, agent,
+      // replay, the form): never stored, recomputed from the target fields.
+      scopeGroups: resolveScopeGroups(project).groups,
       authProfile: isServiceCaller ? authProfile : toAuthProfileMetadata(authProfile),
       ...(isServiceCaller
         ? {
@@ -249,8 +256,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       // Strip a leading wildcard for the same reason POST does: in single-domain
       // mode `*.example.com` already means what an empty prefix list means, and
       // left intact the star reaches tool arguments, filenames and the graph.
-      const { splitWildcard } = await import('@/lib/domainBatch')
-      updateData.targetDomain = splitWildcard(updateData.targetDomain.trim()).rest
+      const { normalizeHost, splitWildcard } = await import('@/lib/domainBatch')
+      updateData.targetDomain = splitWildcard(normalizeHost(updateData.targetDomain)).rest
     }
     if (Array.isArray(updateData.subdomainList)) {
       updateData.subdomainList = updateData.subdomainList.map((s: string) => s.trim()).filter(Boolean)
@@ -273,7 +280,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const existing = await prisma.project.findUnique({
       where: { id },
       select: {
-        domainBatchMode: true, domainBatchGroups: true,
+        domainBatchMode: true, domainBatchGroups: true, domainBatchHosts: true,
+        targetDomain: true, subdomainList: true, ipMode: true, targetIps: true,
         userId: true, targetGuardrailEnabled: true, attackSkillConfig: true,
         ...JEV_ENGINE_SELECT,
       },
@@ -298,7 +306,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // untouched. Without this guard the absent domainBatchHosts read as empty and
     // every field toggle on a batch project 400'd with "needs at least one hostname".
     const touchesBatchScope = 'domainBatchHosts' in updateData || 'domainBatchMode' in updateData
-    let batchRootsAdded: string[] = []
+    let batchSeedDomains: string[] = []
+    let batchScopeChanged = false
     if (willBeBatch && touchesBatchScope) {
       const { validateDomainBatch } = await import('@/lib/domainBatch')
       const raw = updateData.domainBatchHosts
@@ -309,94 +318,159 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       if (!batch.ok) {
         return NextResponse.json({ error: batch.errors.join(' ') }, { status: 400 })
       }
-      const nextRoots = batch.groups.map(g => g.rootDomain)
-      // Compare the whole derived shape, not just the roots. Turning
-      // `api.example.com` into `*.example.com` leaves the root set identical
-      // while changing that group from "one host" to "every host under this
-      // domain" - the largest widening this feature permits, and the one a
-      // root-only comparison waves straight through.
-      const signature = (gs: Array<{ rootDomain?: string; prefixes?: string[] }>) =>
-        gs.map(g => `${String(g?.rootDomain || '')}|${[...(g?.prefixes || [])].sort().join(',')}`)
-          .sort().join(';')
-      const scopeChanged = signature(batch.groups) !== signature(
-        Array.isArray(existing?.domainBatchGroups)
-          ? existing.domainBatchGroups as Array<{ rootDomain?: string; prefixes?: string[] }>
-          : []
+      // Compare the scope derived from the STORED host list with the new one, never
+      // the stored group records: a regroup of the same hosts (a public-suffix
+      // change, or a row saved by an older writer) is no change, while
+      // `api.example.com` -> `*.example.com` (same root, one host -> every host)
+      // is the largest widening this feature permits.
+      const { resolveScopeGroups, sameScope } = await import('@/lib/scopeGroups')
+      batchScopeChanged = !sameScope(
+        resolveScopeGroups({ domainBatchMode: true, domainBatchHosts: existing?.domainBatchHosts ?? [] }).groups,
+        batch.groups,
       )
-
-      if (scopeChanged) {
-        // The container reads its settings ONCE at spawn, so this edit cannot
-        // re-point a running scan - but it DOES re-point everything that reads
-        // scope live from the row (the agent, the next guardrail, the report)
-        // while the graph still holds the running scan's results. Refuse rather
-        // than leave the two describing different engagements.
-        const { describeScanWriters } = await import('@/lib/graphWriters')
-        const busy = await describeScanWriters(id)
-        if (busy) {
-          return NextResponse.json(
-            { error: `Cannot change the hostname list while ${busy}. Stop the scan, or wait for it to finish, and try again.` },
-            { status: 409 },
-          )
-        }
-
-        // Every root this project would scan gets the non-disableable check.
-        // POST does this at creation; without it here, the one path that can add
-        // a root after creation is the one path that never guardrails it.
-        const { isHardBlockedDomain } = await import('@/lib/hard-guardrail')
-        for (const domain of nextRoots) {
-          const hardCheck = isHardBlockedDomain(domain)
-          if (hardCheck.blocked) {
-            return NextResponse.json(
-              { error: `Target permanently blocked: ${domain}: ${hardCheck.reason}` },
-              { status: 403 },
-            )
-          }
-        }
-
-        // Soft (LLM) guardrail, mirroring POST. Fails OPEN like POST does: an
-        // unreachable agent must not block an edit, because the hard guardrail
-        // above is the control that may not be bypassed.
-        if (existing?.targetGuardrailEnabled !== false) {
-          try {
-            // The agent answers only a caller holding the internal key, and its
-            // verdict is `allowed`; without both this check could never block.
-            const guardrailResponse = await fetch(`${AGENT_API_URL}/guardrail/check-target`, {
-              method: 'POST',
-              headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
-              body: JSON.stringify({
-                target_domain: '', target_domains: nextRoots,
-                target_ips: [], user_id: existing?.userId ?? eff.userId,
-              }),
-            })
-            if (guardrailResponse.ok) {
-              const verdict = await guardrailResponse.json()
-              if (verdict?.allowed === false) {
-                return NextResponse.json(
-                  { error: verdict.reason || 'Target blocked by the guardrail.' },
-                  { status: 403 },
-                )
-              }
-            }
-          } catch (e) {
-            console.warn('[projects PUT] soft guardrail unreachable, allowing:', e)
-          }
-        }
-      }
-
-      updateData.domainBatchHosts = batch.groups.flatMap(g => g.hosts)
-      updateData.domainBatchGroups = batch.groups
-      batchRootsAdded = nextRoots
+      updateData.domainBatchHosts = batch.entries
+      updateData.domainBatchGroups = batch.legacy
+      batchSeedDomains = seedDomainNames(batch.groups)
     }
 
-    // Mutually exclusive modes, enforced on update as well as create: recon checks
-    // IP_MODE first, so a project flagged both ways silently never runs its batch.
-    const nextIpMode = 'ipMode' in updateData ? updateData.ipMode === true : undefined
-    const nextBatchMode = 'domainBatchMode' in updateData ? updateData.domainBatchMode === true : undefined
-    if (nextIpMode && nextBatchMode) {
+    // A project that is not a batch keeps no batch scope. Recon's auth scope and
+    // the agent's replay read these columns whatever the mode, so a list left
+    // over from a batch -> single flip would keep authorizing its hosts.
+    if (!willBeBatch && (existing?.domainBatchGroups != null
+        || (existing?.domainBatchHosts?.length ?? 0) > 0 || 'domainBatchHosts' in updateData)) {
+      updateData.domainBatchGroups = Prisma.DbNull
+      updateData.domainBatchHosts = []
+    }
+
+    // The scope gates apply to EVERY mode and to a mode flip, not only to a batch
+    // host-list edit: a single-domain target change, a batch -> single flip and
+    // entering or leaving IP mode re-point the engagement just as much.
+    const nextScope = {
+      ipMode: 'ipMode' in updateData ? updateData.ipMode === true : existing?.ipMode === true,
+      domainBatchMode: willBeBatch,
+      domainBatchHosts: Array.isArray(updateData.domainBatchHosts)
+        ? updateData.domainBatchHosts as string[] : existing?.domainBatchHosts ?? [],
+      targetDomain: typeof updateData.targetDomain === 'string'
+        ? updateData.targetDomain : existing?.targetDomain ?? '',
+      subdomainList: Array.isArray(updateData.subdomainList)
+        ? updateData.subdomainList as string[] : existing?.subdomainList ?? [],
+      targetIps: Array.isArray(updateData.targetIps)
+        ? updateData.targetIps as string[] : existing?.targetIps ?? [],
+    }
+    // Mutually exclusive modes, enforced on update as well as create, and on the
+    // EFFECTIVE next state: recon checks IP_MODE first, so a project flagged both
+    // ways silently never runs its batch, and a body carrying only one of the two
+    // flags would otherwise leave the stored other one standing. Only a request
+    // that sets a mode flag is judged, so a row already in that state can still
+    // take an unrelated partial save.
+    const setsMode = 'ipMode' in updateData || 'domainBatchMode' in updateData
+    if (setsMode && nextScope.ipMode && nextScope.domainBatchMode) {
       return NextResponse.json(
         { error: 'A project cannot be in both IP mode and Domain batch mode.' },
         { status: 400 },
       )
+    }
+    const { sameScope, softGuardrailNames } = await import('@/lib/scopeGroups')
+    const nextGroups = resolveScopeGroups(nextScope)
+    // A single-domain target or prefix change gets the batch entry rules: no
+    // public suffix, no IP, no malformed prefix. Judged only when the request
+    // touches them, so a stored value the rules now refuse cannot block an
+    // unrelated partial save.
+    const touchesSingleScope = 'targetDomain' in updateData || 'subdomainList' in updateData || setsMode
+    if (!nextScope.ipMode && !nextScope.domainBatchMode && touchesSingleScope && nextGroups.invalid.length > 0) {
+      const { describeInvalid } = await import('@/lib/domainBatch')
+      return NextResponse.json({ error: describeInvalid(nextGroups.invalid) }, { status: 400 })
+    }
+    const sameSet = (a: readonly string[], b: readonly string[]) =>
+      JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
+    // Both sides derived from stored fields, so a legacy spelling (a mixed-case
+    // target, an un-normalised prefix) re-saved unchanged is no scope change.
+    const singleScopeChanged = () => !sameScope(resolveScopeGroups({
+      targetDomain: existing?.targetDomain ?? '', subdomainList: existing?.subdomainList ?? [],
+    }).groups, nextGroups.groups)
+    const scopeChanged = existing != null && (
+      nextScope.ipMode !== (existing.ipMode === true)
+      || nextScope.domainBatchMode !== (existing.domainBatchMode === true)
+      || (nextScope.ipMode
+        ? !sameSet(nextScope.targetIps, existing.targetIps ?? [])
+        : nextScope.domainBatchMode
+          ? batchScopeChanged
+          : singleScopeChanged())
+    )
+    // An unchanged single target keeps its stored spelling: re-casing it would
+    // seed a second graph Domain beside the one a legacy scan named after it.
+    if (!scopeChanged && !nextScope.domainBatchMode && !nextScope.ipMode
+        && typeof updateData.targetDomain === 'string' && existing?.targetDomain) {
+      delete updateData.targetDomain
+    }
+
+    if (scopeChanged) {
+      // A version activation clears and restores the graph; a scope written
+      // between the two would describe neither.
+      const { assertGraphNotActivating } = await import('@/lib/activationLock')
+      const activating = await assertGraphNotActivating(id)
+      if (activating) return activating
+
+      // The container reads its settings ONCE at spawn, so this edit cannot
+      // re-point a running scan - but it DOES re-point everything that reads
+      // scope live from the row (the agent, the next guardrail, the report)
+      // while the graph still holds the running scan's results. Refuse rather
+      // than leave the two describing different engagements.
+      const { describeScanWriters } = await import('@/lib/graphWriters')
+      const busy = await describeScanWriters(id)
+      if (busy) {
+        return NextResponse.json(
+          { error: `Cannot change the project's target while ${busy}. Stop the scan, or wait for it to finish, and try again.` },
+          { status: 409 },
+        )
+      }
+
+      // Every host and root this project would scan gets the non-disableable
+      // check. POST does this at creation; without it here, the paths that can
+      // re-point a project after creation are the paths that never guardrail it.
+      const { scopeGuardrailNames } = await import('@/lib/scopeGroups')
+      const { firstHardBlocked } = await import('@/lib/hard-guardrail')
+      const blocked = firstHardBlocked(scopeGuardrailNames(nextScope))
+      if (blocked) {
+        return NextResponse.json(
+          { error: `Target permanently blocked: ${blocked.name}: ${blocked.reason}` },
+          { status: 403 },
+        )
+      }
+
+      // Soft (LLM) guardrail, mirroring POST. Fails OPEN like POST does: an
+      // unreachable agent must not block an edit, because the hard guardrail
+      // above is the control that may not be bypassed.
+      if (existing?.targetGuardrailEnabled !== false) {
+        try {
+          // The agent answers only a caller holding the internal key, and its
+          // verdict is `allowed`; without both this check could never block.
+          const guardrailResponse = await fetch(`${AGENT_API_URL}/guardrail/check-target`, {
+            method: 'POST',
+            headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
+            signal: AbortSignal.timeout(SOFT_GUARDRAIL_TIMEOUT_MS),
+            body: JSON.stringify({
+              target_domain: !nextScope.ipMode && !nextScope.domainBatchMode
+                ? (nextGroups.groups[0]?.scanRoot ?? '') : '',
+              target_domains: nextScope.ipMode ? [] : softGuardrailNames(nextGroups.groups)
+                .filter(n => nextScope.domainBatchMode || n !== nextGroups.groups[0]?.scanRoot),
+              target_ips: nextScope.ipMode ? nextScope.targetIps : [],
+              user_id: existing?.userId ?? eff.userId,
+            }),
+          })
+          if (guardrailResponse.ok) {
+            const verdict = await guardrailResponse.json()
+            if (verdict?.allowed === false) {
+              return NextResponse.json(
+                { error: verdict.reason || 'Target blocked by the guardrail.' },
+                { status: 403 },
+              )
+            }
+          }
+        } catch (e) {
+          console.warn('[projects PUT] soft guardrail unreachable, allowing:', e)
+        }
+      }
     }
 
     // Supply-chain input becomes a `git clone` argument in the scan container,
@@ -439,8 +513,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // The UI's own audit row. Without it a person reverting an MCP agent's
     // change left no trace, while the agent's change did.
+    // A batch whose derived scope did not change only had its legacy group
+    // record rewritten (a row saved by an older writer, or a public-suffix
+    // regroup): that must not read as a scope change in the activity feed.
+    const regroupOnly = willBeBatch && !scopeChanged
     const changed = Object.keys(updateData).filter(k =>
-      k !== 'updatedById' && comparable(before[k]) !== comparable((project as Record<string, unknown>)[k]))
+      k !== 'updatedById' && !(regroupOnly && k === 'domainBatchGroups')
+      && comparable(before[k]) !== comparable((project as Record<string, unknown>)[k]))
     if (changed.length > 0) {
       const valued = changed.filter(auditsValue)
       void writeAudit({
@@ -462,21 +541,22 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       source: 'api',
     })
 
-    // Ensure Domain node(s) exist in Neo4j (create if missing, update if changed).
-    // A batch project has an empty targetDomain and one root per group, so the
-    // single-domain condition skipped it entirely: a root added on edit had no
-    // Domain node, and the partial-recon picker (which lists Domain nodes) could
-    // never offer it.
+    // Ensure the Domain nodes (one per org) exist in Neo4j. A batch seeds only
+    // when its host list was part of this save; a single domain seeds its org.
     const seedDomains = project.ipMode
       ? []
       : project.domainBatchMode
-        ? batchRootsAdded
-        : (project.targetDomain ? [project.targetDomain] : [])
+        ? batchSeedDomains
+        : seedDomainNames(resolveScopeGroups(project).groups)
     await seedProjectDomains(seedDomains, project.userId, project.id)
+
+    // An active traffic recording keeps the scope it started with unless moved,
+    // as an RoE change moves it; a regroup of the same hosts does not (WEB-15b).
+    if (scopeChanged) await refreshActiveRecordingScope(prisma, id, project)
 
     // Exclude binary document data from response (same as GET)
     const { roeDocumentData: _binary, ...projectWithoutBinary } = project
-    return NextResponse.json(projectWithoutBinary)
+    return NextResponse.json({ ...projectWithoutBinary, scopeGroups: resolveScopeGroups(project).groups })
   } catch (error: unknown) {
     console.error('Failed to update project:', error)
 
@@ -646,6 +726,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       // Fallback: try to delete locally (may fail in Docker due to read-only mounts)
       const filesToDelete = [
         { path: path.join(RECON_OUTPUT_PATH, `recon_${id}.json`), name: 'recon' },
+        ...(await batchGroupFiles(RECON_OUTPUT_PATH, id)).map(p => ({ path: p, name: 'recon group' })),
         { path: path.join(GVM_OUTPUT_PATH, `gvm_${id}.json`), name: 'GVM' },
         { path: path.join(GITHUB_HUNT_OUTPUT_PATH, `github_hunt_${id}.json`), name: 'GitHub hunt' },
       ]

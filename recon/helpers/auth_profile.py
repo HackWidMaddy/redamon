@@ -165,76 +165,111 @@ def _dedupe(entries: Iterable[str]) -> List[str]:
 
 
 def default_scope_hosts(settings: dict, extra_hosts: Iterable[str] = ()) -> List[str]:
-    """The project's own target hosts and their subdomains, minus RoE exclusions.
+    """Where the project's session may go (§4.6), minus RoE exclusions.
 
-    RoE is exclusion-based, so there is no allowlist to inherit: the default is
-    exactly what the project targets, INCLUDING its subdomains (``*.<root>``).
-    The subdomains ARE the project's attack surface — they are what recon
-    discovers and what every crawler is restricted to — so a default scope that
-    covered only the apex silently degraded every authenticated scan to an
-    anonymous one the moment discovery found anything.
+    Per scope group: an ENUMERATE group gets ``*.<scan root>`` (its strict
+    subdomains, which are its attack surface: a scope covering only the root
+    would silently degrade every authenticated scan once discovery found
+    anything); an EXACT group gets exactly its listed hosts; either gets its
+    scan root only when the root is a target. The same rule as the webapp's
+    authScopePatterns and the agent's auth_scope_patterns.
 
     Residual risk, accepted deliberately: a discovered subdomain CNAME'd to a
-    third party is in scope. An operator who cannot accept that sets explicit
-    ``scopeHosts`` on the profile, which replaces this default entirely.
-
-    That trade is only defensible where the operator chose a ROOT and asked for
-    its subdomains. A Domain batch is per GROUP: a literal group names its hosts
-    exactly, so it gets exactly those, and only a wildcard group — where the
-    operator wrote ``*.domain.com``, i.e. "the whole domain" — gets ``*.<root>``.
-    Blanket-wildcarding every batch root would attach the operator's session to
-    thousands of discovered names they never listed.
+    third party is in an ENUMERATE group's scope. An operator who cannot accept
+    that narrows it with explicit ``scopeHosts`` on the profile.
     """
     hosts: List[str] = []
     if settings.get('IP_MODE'):
         hosts.extend(settings.get('TARGET_IPS') or [])
     else:
-        roots: List[str] = []
-        root = _normalize_host(settings.get('TARGET_DOMAIN') or '')
-        if root:
-            roots.append(root)
-        # A domain-batch project leaves TARGET_DOMAIN empty and keeps its scope
-        # in the derived groups; without this it would have no scope at all.
-        for group in settings.get('DOMAIN_BATCH_GROUPS') or []:
-            if not isinstance(group, dict):
-                continue
-            g = _normalize_host(group.get('rootDomain') or '')
-            if not g:
-                continue
-            prefixes = [p for p in (group.get('prefixes') or []) if isinstance(p, str)]
-            if '*' in prefixes:
-                # Enumerated group: the operator asked for the whole domain.
-                if g not in roots:
-                    roots.append(g)
-                continue
-            # Literal group: exactly the hosts it named, and the apex only when
-            # '.' put it in scope.
-            for p in prefixes:
-                clean = p.strip().rstrip('.')
-                hosts.append(g if not clean else f"{clean}.{g}")
-        for r in roots:
-            hosts.append(r)
-            hosts.append(f"*.{r}")
-        if root:
-            for prefix in settings.get('SUBDOMAIN_LIST') or []:
-                clean = str(prefix).strip().rstrip('.')
-                if clean:
-                    hosts.append(f"{clean}.{root}")
+        from recon.helpers.batch_groups import settings_scope_groups
+        for group in settings_scope_groups(settings):
+            root = group['scanRoot']
+            if group['mode'] == 'enumerate':
+                hosts.append(f"*.{root}")
+            else:
+                hosts.extend(group.get('exactHosts') or [])
+            if group.get('includeRoot'):
+                hosts.append(root)
     hosts.extend(extra_hosts or ())
 
     scope = _dedupe(_normalize_scope_entry(h) for h in hosts)
+    return _roe_filtered(scope, settings)
+
+
+def _roe_filtered(scope: List[str], settings: dict) -> List[str]:
     if settings.get('ROE_ENABLED') and settings.get('ROE_EXCLUDED_HOSTS'):
         scope = [h for h in scope if not _is_roe_excluded(h, settings['ROE_EXCLUDED_HOSTS'])]
     return scope
 
 
+def _ip_net(entry: str):
+    try:
+        return ipaddress.ip_network(entry, strict=False)
+    except ValueError:
+        return None
+
+
+def _under(host: str, root: str) -> bool:
+    return host.endswith('.' + root)
+
+
+def _meet(a: str, b: str) -> Optional[str]:
+    """The intersection of two scope entries, when it is one entry. ``*.x`` is
+    the strict subdomains of x, so ``*.example.com`` and ``www.example.com``
+    meet at the host, and ``*.example.com`` never admits ``example.com``.
+    Mirrors agentic/scope_groups.py:_meet."""
+    na, nb = _ip_net(a), _ip_net(b)
+    if na is not None or nb is not None:
+        if na is None or nb is None or na.version != nb.version:
+            return None
+        if na.subnet_of(nb):
+            return a
+        return b if nb.subnet_of(na) else None
+    wa, wb = a.startswith('*.'), b.startswith('*.')
+    ra, rb = (a[2:] if wa else a), (b[2:] if wb else b)
+    if wa and wb:
+        if ra == rb or _under(ra, rb):
+            return a
+        return b if _under(rb, ra) else None
+    if wa:
+        return b if _under(rb, ra) else None
+    if wb:
+        return a if _under(ra, rb) else None
+    return a if a == b else None
+
+
+def intersect_explicit_scope(explicit: Iterable[str], default: List[str]) -> List[str]:
+    """An explicit ``scopeHosts`` only NARROWS the project's scope (D-22): the
+    hosts both admit. ``*.a.example.com`` survives under ``*.example.com``; an
+    explicit ``*.example.com`` on a project listing only ``www.example.com``
+    leaves ``www.example.com``; a host survives only if the project admits it."""
+    kept: List[str] = []
+    for raw in explicit or ():
+        e = _normalize_scope_entry(raw)
+        if not e:
+            continue
+        for d in default:
+            m = _meet(e, d) if d else None
+            if m:
+                kept.append(m)
+    return _dedupe(kept)
+
+
 def resolve_scope_hosts(profile: Optional[dict], settings: Optional[dict] = None,
                         extra_hosts: Iterable[str] = ()) -> List[str]:
-    """Explicit ``scopeHosts`` if the operator set any, else the project default."""
+    """The project default, narrowed by the profile's explicit ``scopeHosts``
+    when set (the intersection, never a replacement), less RoE exclusions.
+
+    An explicit entry used to REPLACE the default, so ``*.example.com`` on a
+    project scoped to ``www.example.com`` sent the session to every subdomain.
+    """
+    settings = settings or {}
+    default = default_scope_hosts(settings, extra_hosts)
     explicit = (profile or {}).get('scopeHosts') or []
-    if explicit:
-        return _dedupe(_normalize_scope_entry(h) for h in explicit)
-    return default_scope_hosts(settings or {}, extra_hosts)
+    if not explicit:
+        return default
+    return _roe_filtered(intersect_explicit_scope(explicit, default), settings)
 
 
 def host_in_scope(host, scope_hosts: Iterable[str]) -> bool:

@@ -134,46 +134,123 @@ def _first_http_status(text: str) -> str:
     return m.group(1) if m else "?"
 
 
-def _curl_target_host(args_str: str):
-    """The host of the first full URL in a curl arg string, or None. A bare host
-    (no scheme) returns None on purpose: the auth scope check needs a host it can
-    resolve unambiguously, and 'attach nothing' is the fail-closed default."""
+# curl options that send the request, or its headers, somewhere the one URL token
+# does not name: a second request (--next), a redirect, a proxy, a rewritten
+# name resolution or socket, or arguments read from a file. The auth headers of
+# `-H` apply to every request the command makes, so any of these could carry
+# the session to a host nobody checked. Prefix matches cover the families.
+_CURL_SESSION_REFUSED = frozenset({
+    "--resolve", "--connect-to", "-x", "--proxy", "-K", "--config", "--next", "-:",
+    "-L", "--location", "--location-trusted", "--url", "--preproxy", "--doh-url",
+    "--dns-servers", "--unix-socket", "--abstract-unix-socket", "--alt-svc",
+})
+_CURL_SESSION_REFUSED_PREFIXES = ("--proxy", "--socks", "--expand-")
+_CURL_SHORT_REFUSED = frozenset("xKL:")
+# Short options that take an argument: in a cluster (`-sXPOST`) the rest of the
+# token, or else the next token, is that argument, never a URL.
+_CURL_SHORT_WITH_ARG = frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz")
+# Long options that take an argument. One missing here only makes its argument
+# count as a second URL, which withholds the session: the safe direction.
+_CURL_LONG_WITH_ARG = frozenset({
+    "--cacert", "--capath", "--cert", "--cert-type", "--ciphers", "--connect-timeout",
+    "--continue-at", "--cookie", "--cookie-jar", "--create-file-mode", "--curves",
+    "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
+    "--dump-header", "--etag-compare", "--etag-save", "--expect100-timeout", "--form",
+    "--form-string", "--header", "--hsts", "--interface", "--ip-tos", "--json",
+    "--keepalive-time", "--key", "--key-type", "--limit-rate", "--local-port",
+    "--max-filesize", "--max-redirs", "--max-time", "--netrc-file", "--noproxy",
+    "--oauth2-bearer", "--output", "--output-dir", "--pass", "--pinnedpubkey",
+    "--proto", "--proto-default", "--proto-redir", "--range", "--rate", "--referer",
+    "--request", "--request-target", "--retry", "--retry-delay", "--retry-max-time",
+    "--speed-limit", "--speed-time", "--stderr", "--tls-max", "--tls13-ciphers",
+    "--trace", "--trace-ascii", "--upload-file", "--url-query", "--user",
+    "--user-agent", "--write-out", "--aws-sigv4", "--variable", "--happy-eyeballs-timeout-ms",
+})
+
+
+def _curl_session_target(args_str: str):
+    """(host, None) when the curl args make exactly one request, to one http(s)
+    URL, with no option that could send it elsewhere; else (None, why)."""
+    import shlex
+    from urllib.parse import urlsplit
     try:
-        import shlex
-        from urllib.parse import urlparse
-        for tok in shlex.split(args_str or ""):
-            if tok.startswith(("http://", "https://")):
-                return urlparse(tok).hostname
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+        tokens = shlex.split(args_str or "")
+    except ValueError:
+        return None, "the arguments could not be parsed"
+    urls: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        i += 1
+        if tok.startswith("--"):
+            name = tok.split("=", 1)[0]
+            if name in _CURL_SESSION_REFUSED or name.startswith(_CURL_SESSION_REFUSED_PREFIXES):
+                return None, f"it uses {name}"
+            if name in _CURL_LONG_WITH_ARG and "=" not in tok:
+                i += 1
+        elif tok.startswith("-") and len(tok) > 1:
+            for j, ch in enumerate(tok[1:], start=1):
+                if ch in _CURL_SHORT_REFUSED:
+                    return None, f"it uses -{ch}"
+                if ch in _CURL_SHORT_WITH_ARG:
+                    if j == len(tok) - 1:
+                        i += 1
+                    break
+        else:
+            urls.append(tok)
+    if len(urls) != 1:
+        return None, "it names more than one URL" if urls else "it names no URL"
+    url = urls[0]
+    if not url.lower().startswith(("http://", "https://")):
+        return None, "its URL is not a full http(s) URL"
+    # URL globbing ({a,b}, [1-3]) or a backslash can make one token several
+    # hosts. Only an IPv6 literal may carry brackets.
+    probe = re.sub(r"^(https?://(?:[^/@\[]*@)?)\[[0-9a-f:.%]+\]", r"\1h", url, flags=re.I)
+    if re.search(r"[{}\[\]\\\s]", probe):
+        return None, "its URL uses globbing or a backslash"
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        host = None
+    return (host, None) if host else (None, "its URL has no host")
+
+
+def _curl_target_host(args_str: str):
+    """The host of a curl command that sends one request to one full http(s) URL,
+    or None. A bare host (no scheme) returns None on purpose: the auth scope
+    check needs a host it can resolve unambiguously."""
+    return _curl_session_target(args_str)[0]
 
 
 def _maybe_attach_curl_session(tool_args: dict) -> dict:
     """When the agent set use_session=true, append the project's auth headers to
-    the curl args — but ONLY for an in-scope host. The raw value is resolved from
-    project settings here (agent side), never handled by the LLM. Fails closed:
-    no profile, no host, or out of scope -> args unchanged, request stays anon."""
+    the curl args, but ONLY for a command that makes one request to an in-scope,
+    non-RoE-excluded host. The raw value is resolved from project settings here
+    (agent side), never handled by the LLM. Fails closed: otherwise the command
+    runs anonymously and `_session_note` says why, for the tool output."""
+    if not tool_args.get("use_session"):
+        return tool_args
+    withheld = "[session] Auth headers NOT attached: {}. The request ran without them."
     try:
-        if not tool_args.get("use_session"):
-            return tool_args
         from auth_profile import auth_headers_for_host
-        from project_settings import target_scope_domains
+        from project_settings import auth_scope_patterns
         profile = get_setting("AUTH_PROFILE")
-        host = _curl_target_host(tool_args.get("args", ""))
-        if not profile or not host:
-            return tool_args
-        scope_domains = []
-        for d in target_scope_domains():
-            scope_domains += [d, f"*.{d}"]   # subdomains are in scope, mirroring recon
-        headers = auth_headers_for_host(profile, host, scope_domains)
+        if not profile:
+            return {**tool_args, "_session_note": withheld.format("this project has no auth profile")}
+        host, why = _curl_session_target(tool_args.get("args", ""))
+        if not host:
+            return {**tool_args, "_session_note": withheld.format(
+                f"{why}; a session rides only a single request to a single http(s) URL")}
+        roe = (get_setting("ROE_EXCLUDED_HOSTS") or []) if get_setting("ROE_ENABLED") else []
+        headers = auth_headers_for_host(profile, host, auth_scope_patterns(), roe)
         if not headers:
-            return tool_args
+            return {**tool_args, "_session_note": withheld.format(
+                f"{host} is outside the authenticated-session scope or RoE-excluded")}
         import shlex as _shlex
         extra = "".join(f" -H {_shlex.quote(f'{k}: {v}')}" for k, v in headers.items())
         return {**tool_args, "args": (tool_args.get("args", "") + extra)}
     except Exception:  # noqa: BLE001
-        return tool_args
+        return {**tool_args, "_session_note": withheld.format("the session could not be resolved")}
 
 
 # =============================================================================
@@ -2397,8 +2474,12 @@ class PhaseAwareToolExecutor:
         # Opt-in authenticated identity for execute_curl. Injected here so the raw
         # session value never reaches the LLM (mirrors the ctx tag), and only for
         # an in-scope host so a curl the model points off-target cannot leak it.
+        session_note = None
         if tool_name == "execute_curl":
             tool_args = _maybe_attach_curl_session(tool_args)
+            if "_session_note" in tool_args:
+                tool_args = dict(tool_args)
+                session_note = tool_args.pop("_session_note")
 
         # proxy_brain: the signed tenant/session tag is how its kali `redamon` SDK
         # reaches the corpus (/traffic/exec) and the replay path (/traffic/replay),
@@ -2474,7 +2555,8 @@ class PhaseAwareToolExecutor:
             else:
                 output = await active_tool.ainvoke(tool_args)
             # Extract clean text from MCP response (list of content blocks, etc.)
-            return self._extract_text_from_output(output)
+            text = self._extract_text_from_output(output)
+            return f"{session_note}\n\n{text}" if session_note else text
 
         is_mcp = tool_name in self._mcp_tool_names
         # Snapshot the generation BEFORE the call so concurrent failures

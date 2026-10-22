@@ -1,0 +1,13 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "nwlab shop", "version": "1.0.0"},
+  "servers": [{"url": "https://www.nwlab.test"}],
+  "paths": {
+    "/shop/items": {
+      "get": {"operationId": "listItems", "responses": {"200": {"description": "ok"}}}
+    },
+    "/shop/cart": {
+      "get": {"operationId": "getCart", "responses": {"200": {"description": "ok"}}}
+    }
+  }
+}

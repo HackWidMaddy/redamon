@@ -61,7 +61,8 @@ GUARDRAIL_DOMAINS_PROMPT = """Evaluate these target domains for a penetration te
 
 Target domains: {targets}
 
-These are ALL in scope for the same engagement. Block the WHOLE set if ANY ONE of
+These are ALL in scope for the same engagement: registrable domains, and the scan
+roots under them (api.example.com under example.com). Block the WHOLE set if ANY ONE of
 them is a well-known/public/government/major-company domain, and say which one.
 Allow only if every domain is obscure/custom/small-org."""
 
@@ -103,6 +104,21 @@ def resolve_ips(target_ips: list[str]) -> list[str]:
         except (socket.herror, socket.gaierror, OSError):
             logger.debug(f"Guardrail: no PTR record for {addr_str}")
     return hostnames
+
+
+def _parse_verdict(json_str) -> dict | None:
+    """The verdict, or None when the answer is malformed. Strict on purpose:
+    `allowed` must be a JSON boolean. A missing key used to default to True and
+    `bool("false")` is True, so a garbled answer read as "allowed"."""
+    if not json_str:
+        return None
+    try:
+        result = json.loads(json_str)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(result, dict) or not isinstance(result.get("allowed"), bool):
+        return None
+    return {"allowed": result["allowed"], "reason": str(result.get("reason", "No reason provided"))}
 
 
 async def check_target_allowed(
@@ -238,14 +254,12 @@ async def _invoke_guardrail(llm: Any, user_prompt: str) -> dict[str, Any]:
         text = normalize_content(response.content)
         json_str = extract_json(text)
 
-        if json_str:
-            result = json.loads(json_str)
-            allowed = result.get("allowed", True)
-            reason = result.get("reason", "No reason provided")
-            logger.info(f"Guardrail result: allowed={allowed}, reason={reason}")
-            return {"allowed": bool(allowed), "reason": str(reason)}
+        verdict = _parse_verdict(json_str)
+        if verdict is not None:
+            logger.info(f"Guardrail result: allowed={verdict['allowed']}, reason={verdict['reason']}")
+            return verdict
 
-        logger.warning(f"Guardrail attempt {attempt + 1}: no JSON in response")
+        logger.warning(f"Guardrail attempt {attempt + 1}: no well-formed verdict in response")
 
     # All retries exhausted — raise so callers can decide fail-open vs fail-closed.
     # Preserve the last transient exception (if any) in both the message and
@@ -256,5 +270,5 @@ async def _invoke_guardrail(llm: Any, user_prompt: str) -> dict[str, Any]:
             f"Guardrail LLM check failed after 3 attempts. Last error: {last_transient}"
         ) from last_transient
     raise RuntimeError(
-        "Guardrail LLM check failed after 3 attempts (no parseable JSON in any response)"
+        "Guardrail LLM check failed after 3 attempts (no parseable JSON verdict in any response)"
     )

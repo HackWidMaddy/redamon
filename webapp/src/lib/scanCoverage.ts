@@ -12,6 +12,7 @@
  * to stamp `ScanJob.degradedSources`, and for the delta/report views.
  */
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { type ScopeFields, resolveScopeGroups } from '@/lib/scopeGroups'
 
 /** A single parsed coverage gap. Only `source` is relied on here. */
 export interface CoverageGap {
@@ -46,6 +47,39 @@ export function parseCoverageGaps(raw: unknown): CoverageGap[] | null {
 }
 
 /**
+ * The project's current scan roots, lower-cased, for the coverage filters
+ * below; null when there is nothing to filter by (IP mode, no target).
+ */
+export const SCOPE_SELECT = {
+  ipMode: true, domainBatchMode: true, domainBatchHosts: true, targetDomain: true, subdomainList: true,
+} as const
+
+export function currentScanRoots(project: ScopeFields): Set<string> | null {
+  const roots = resolveScopeGroups(project).groups.map(g => g.scanRoot.toLowerCase())
+  return roots.length ? new Set(roots) : null
+}
+
+/**
+ * Is this coverage entry about a current scan root (§4.11.7)? The org Domain
+ * keeps a removed root's entries until the next full recon clears the graph.
+ * A gap carries its `root`; a gap with none (written before roots were tagged)
+ * is kept. `null` roots keep everything.
+ */
+export function gapInScope(gap: CoverageGap, roots: ReadonlySet<string> | null): boolean {
+  if (!roots || typeof gap.root !== 'string' || !gap.root) return true
+  return roots.has(gap.root.toLowerCase())
+}
+
+/** Is a skipped `host:port` under a current scan root? Its root is the longest
+ *  scan root it equals or sits under; none means a removed root's host. */
+export function skippedHostInScope(hostPort: string, roots: ReadonlySet<string> | null): boolean {
+  if (!roots) return true
+  const host = hostPort.replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase()
+  for (const r of roots) if (host === r || host.endsWith(`.${r}`)) return true
+  return false
+}
+
+/**
  * The number of distinct degraded finding sources across every covered `Domain`
  * of a project's latest run, or `null` when coverage is unknown.
  *
@@ -53,7 +87,9 @@ export function parseCoverageGaps(raw: unknown): CoverageGap[] | null {
  * the feature, or wrote nothing), or when any gaps value fails to parse. Returns
  * `0` when coverage was recorded and clean. Never throws.
  */
-export async function readDegradedSourceCount(projectId: string): Promise<number | null> {
+export async function readDegradedSourceCount(
+  projectId: string, roots: ReadonlySet<string> | null = null,
+): Promise<number | null> {
   let session
   try {
     session = getGraphSession()
@@ -72,7 +108,7 @@ export async function readDegradedSourceCount(projectId: string): Promise<number
     for (const record of res.records) {
       const gaps = parseCoverageGaps(record.get('gaps'))
       if (gaps === null) return null // fail closed on any unparseable record
-      for (const gap of gaps) sources.add(gap.source)
+      for (const gap of gaps) if (gapInScope(gap, roots)) sources.add(gap.source)
     }
     return sources.size
   } catch {

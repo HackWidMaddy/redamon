@@ -7,6 +7,7 @@
 A fake driver captures what the mixins send; tests/test_recon_coverage_graph_live.py
 runs the same queries against a real Neo4j.
 """
+import json
 import os
 import re
 import sys
@@ -152,33 +153,136 @@ class TestPruneKeepHosts(unittest.TestCase):
         self.assertNotIn("keep_patterns", revive[0])
 
 
+class _TxSession(_Session):
+    """A session whose execute_write runs the unit of work on itself, as the
+    driver does, recording that the statements ran inside it."""
+
+    def __init__(self, calls, rows):
+        super().__init__(calls, None)
+        self.rows = rows
+        self.in_write = False
+
+    def execute_write(self, work):
+        self.in_write = True
+        try:
+            return work(self)
+        finally:
+            self.in_write = False
+
+    def run(self, query, **params):
+        self.calls.append((query, params, self.in_write))
+        return _Result(self.rows[0] if "RETURN elementId(d)" in query else self.rows[1])
+
+
+class _TxDriver(_Driver):
+    def __init__(self, stored, written=None):
+        super().__init__(None)
+        self.rows = (stored, written if written is not None else {"n": 1})
+
+    def session(self):
+        return _TxSession(self.calls, self.rows)
+
+
+class _TxClient(BaseMixin, DomainMixin):
+    def __init__(self, stored, written=None):
+        self.driver = _TxDriver(stored, written)
+
+
 class TestUpdateGraphCoverage(unittest.TestCase):
+    """§4.11.4: the record lands on the scan root's ORG Domain; the groups of
+    one org merge into it within a run, keyed on the run's start."""
+
     RECORD = {"at": "2026-01-01T00:00:00+00:00", "gaps_json": "[]",
               "skipped_hosts": [], "nuclei_truncated": False}
+    STORED = {"eid": "4:x:1", "run": None, "gaps": None, "skipped": None,
+              "truncated": None, "roots": None}
 
-    def test_it_matches_the_tenant_triple_and_sets_the_four_properties(self):
-        client = _Client({"n": 1})
-        self.assertEqual(client.update_graph_coverage("u1", "p1", "example.com", self.RECORD), 1)
-        (query, params), = client.driver.calls
-        self.assertIn("MATCH (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})", query)
-        self.assertNotIn("MERGE", query)
-        for prop in ("recon_coverage_at", "recon_coverage_gaps", "recon_skipped_hosts",
-                     "recon_nuclei_truncated"):
-            self.assertIn(f"d.{prop}", query)
-        self.assertEqual((params["name"], params["user_id"], params["project_id"]),
+    def test_it_locks_the_org_domain_before_reading_in_one_unit_of_work(self):
+        client = _TxClient(self.STORED)
+        rec = dict(self.RECORD, org_domain="Example.com")
+        self.assertEqual(client.update_graph_coverage("u1", "p1", "api.example.com", rec, "RUN1"), 1)
+        (lock_q, lock_p, lock_tx), (write_q, write_p, write_tx) = client.driver.calls
+        self.assertTrue(lock_tx and write_tx)
+        self.assertIn("MATCH (d:Domain {user_id: $user_id, project_id: $project_id})", lock_q)
+        self.assertIn("toLower(d.name) = $org", lock_q)
+        self.assertLess(lock_q.index("SET d._scope_lock = true REMOVE d._scope_lock"),
+                        lock_q.index("RETURN"))
+        self.assertEqual((lock_p["org"], lock_p["user_id"], lock_p["project_id"]),
                          ("example.com", "u1", "p1"))
+        self.assertNotIn("MERGE", lock_q + write_q)
+        for prop in ("recon_coverage_at", "recon_coverage_gaps", "recon_skipped_hosts",
+                     "recon_nuclei_truncated", "recon_coverage_roots", "recon_coverage_run"):
+            self.assertIn(f"d.{prop}", write_q)
+        self.assertEqual(write_p["roots"], ["api.example.com"])
+        self.assertEqual(write_p["run"], "RUN1")
 
-    def test_zero_matched_is_reported_as_zero(self):
-        client = _Client({"n": 0})
+    def test_without_an_org_the_scan_root_is_its_own_domain(self):
+        client = _TxClient(self.STORED)
+        client.update_graph_coverage("u1", "p1", "ip-targets.p1", self.RECORD)
+        (_, lock_p, _), _ = client.driver.calls
+        self.assertEqual(lock_p["org"], "ip-targets.p1")
+
+    def test_zero_matched_is_reported_as_zero_and_nothing_is_written(self):
+        client = _TxClient(None)
         self.assertEqual(client.update_graph_coverage("u1", "p1", "example.com", self.RECORD), 0)
+        self.assertEqual(len(client.driver.calls), 1)
 
     def test_a_missing_gaps_value_is_an_empty_array(self):
-        client = _Client({"n": 1})
+        client = _TxClient(self.STORED)
         client.update_graph_coverage("u1", "p1", "example.com", {"at": self.RECORD["at"]})
-        (_, params), = client.driver.calls
+        _, (_, params, _) = client.driver.calls
         self.assertEqual(params["gaps_json"], "[]")
         self.assertEqual(params["skipped_hosts"], [])
         self.assertIs(params["nuclei_truncated"], False)
+
+
+class TestMergeCoverage(unittest.TestCase):
+    """The pure merge the unit of work calls (it may be retried)."""
+
+    def _merge(self, stored, record, root, run):
+        from graph_db.mixins.recon.domain_mixin import merge_coverage
+        return merge_coverage(stored, record, root, run)
+
+    def test_the_first_group_of_a_run_overwrites(self):
+        stored = {"run": "OLD", "gaps": '[{"source": "x", "root": "old.test"}]',
+                  "skipped": ["old.test:443"], "truncated": True, "roots": ["old.test"]}
+        out = self._merge(stored, {"gaps_json": '[{"source": "shodan"}]', "skipped_hosts": ["a.ex.com:80"],
+                                   "nuclei_truncated": False}, "a.ex.com", "NEW")
+        self.assertEqual(json.loads(out["gaps_json"]), [{"source": "shodan", "root": "a.ex.com"}])
+        self.assertEqual(out["skipped_hosts"], ["a.ex.com:80"])
+        self.assertIs(out["nuclei_truncated"], False)
+        self.assertEqual(out["roots"], ["a.ex.com"])
+
+    def test_a_later_group_of_the_same_run_merges(self):
+        stored = {"run": "R", "gaps": '[{"source": "shodan", "root": "a.ex.com"}]',
+                  "skipped": ["a.ex.com:80"], "truncated": True, "roots": ["a.ex.com"]}
+        out = self._merge(stored, {"gaps_json": '[{"source": "shodan", "root": "ex.com"}]',
+                                   "skipped_hosts": ["a.ex.com:80", "ex.com:443"],
+                                   "nuclei_truncated": False}, "ex.com", "R")
+        self.assertEqual(json.loads(out["gaps_json"]), [{"source": "shodan", "root": "a.ex.com"},
+                                                       {"source": "shodan", "root": "ex.com"}])
+        self.assertEqual(out["skipped_hosts"], ["a.ex.com:80", "ex.com:443"])
+        self.assertIs(out["nuclei_truncated"], True)
+        self.assertEqual(out["roots"], ["a.ex.com", "ex.com"])
+
+    def test_no_run_marker_always_overwrites(self):
+        stored = {"run": None, "gaps": "[]", "skipped": ["x:1"], "truncated": True, "roots": ["a"]}
+        out = self._merge(stored, {"gaps_json": "[]"}, "b", None)
+        self.assertEqual(out["roots"], ["b"])
+        self.assertEqual(out["skipped_hosts"], [])
+
+    def test_the_merge_never_reads_the_clock(self):
+        # run_timestamp() changes on every call; keying on it made every group
+        # overwrite the last (§4.11.4).
+        import ast
+        import inspect
+        import textwrap
+        from graph_db.mixins.recon import domain_mixin
+        for fn in (domain_mixin.merge_coverage, domain_mixin.DomainMixin.update_graph_coverage):
+            calls = {getattr(n.func, "id", getattr(n.func, "attr", None))
+                     for n in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(fn))))
+                     if isinstance(n, ast.Call)}
+            self.assertNotIn("run_timestamp", calls, fn.__name__)
 
 
 if __name__ == "__main__":

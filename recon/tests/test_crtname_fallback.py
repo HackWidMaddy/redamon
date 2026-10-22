@@ -28,6 +28,9 @@ from recon.main_recon_modules import origin_discovery as od
 
 # The bodies crt.name really sends when it refuses a name.
 NOT_AN_APEX = "invalid apex: not an apex (eTLD+1 is example.com)\n"
+# A private-section org (our list's alice.github.io) that crt.name, on the ICANN
+# section, refuses: the one case where the parent it names is still asked.
+NOT_AN_APEX_PRIVATE = "invalid apex: not an apex (eTLD+1 is github.io)\n"
 PUBLIC_SUFFIX = 'invalid apex: publicsuffix: cannot derive eTLD+1 for domain "co.uk"\n'
 TOO_LARGE = "apex too large: example.com has too many records to serve via this endpoint\n"
 
@@ -364,54 +367,72 @@ class TestAnAnswerTooLargeToUse:
         assert net.asked("crtname") == ["example.com", "example.com"]
 
     def test_only_the_head_of_a_refusal_is_read(self):
-        refusal = _Resp(400, NOT_AN_APEX.encode() + b"x" * 500_000, headers=TEXT)
+        refusal = _Resp(400, NOT_AN_APEX_PRIVATE.encode() + b"x" * 500_000, headers=TEXT)
 
         def answer(name):
-            return refusal if name == "app.example.com" else _crtname_ok("api.app.example.com")
+            return refusal if name == "alice.github.io" else _crtname_ok("x.alice.github.io")
 
         net = _Net(crtname=answer)
         with net.patch():
-            out = dr.query_crtname("app.example.com", settings={})
-        assert out == {"api.app.example.com": {"crt.name"}}
+            out = dr.query_crtname("alice.github.io", settings={})
+        assert out == {"x.alice.github.io": {"crt.name"}}
         assert refusal.read <= 512
         assert refusal.closed
 
 
 class TestARootThatIsASubdomain:
-    def _answer(self, name):
-        if name == "app.example.com":
-            return _Resp(400, NOT_AN_APEX, headers=TEXT)
-        return _crtname_ok("app.example.com", "api.app.example.com", "mail.example.com", "example.com")
+    """crt.name searches registrable domains: a scan root below its org asks the
+    org, once per run, and keeps the names under the root (§4.9, REC-22)."""
 
-    def test_the_parent_crtname_names_is_asked_and_only_the_roots_names_are_kept(self):
+    def _answer(self, name):
+        if name == "example.com":
+            return _crtname_ok("app.example.com", "api.app.example.com", "mail.example.com", "example.com")
+        return _Resp(400, NOT_AN_APEX, headers=TEXT)
+
+    def test_the_org_is_asked_and_only_the_roots_names_are_kept(self):
         net = _Net(crtname=self._answer)
         with net.patch():
             out = dr.query_crtname("app.example.com", settings={})
-        assert net.asked("crtname") == ["app.example.com", "example.com"]
+        # One request: the refused one for the root itself is never spent.
+        assert net.asked("crtname") == ["example.com"]
         # mail.example.com and example.com are siblings/parents of the root: out
         # of scope, and they must not come back to be filed as external domains.
         assert sorted(out) == ["api.app.example.com", "app.example.com"]
 
-    def test_the_answer_is_cached_under_the_root_that_was_asked(self):
+    def test_two_roots_of_one_org_share_one_request(self):
         net = _Net(crtname=self._answer)
         with net.patch():
             first = dr.query_crtname("app.example.com", settings={})
-            second = dr.query_crtname("app.example.com", settings={})
-        assert first == second
-        assert len(net.asked("crtname")) == 2   # the refusal and its retry, once
+            again = dr.query_crtname("app.example.com", settings={})
+            sibling = dr.query_crtname("mail.example.com", settings={})
+        assert first == again
+        assert sorted(sibling) == ["mail.example.com"]
+        assert net.asked("crtname") == ["example.com"]
+
+    def test_a_private_section_org_crtname_refuses_is_asked_through_its_parent(self):
+        def answer(name):
+            if name == "alice.github.io":
+                return _Resp(400, NOT_AN_APEX_PRIVATE, headers=TEXT)
+            return _crtname_ok("x.alice.github.io", "bob.github.io")
+
+        net = _Net(crtname=answer)
+        with net.patch():
+            out = dr.query_crtname("alice.github.io", settings={})
+        assert net.asked("crtname") == ["alice.github.io", "github.io"]
+        assert sorted(out) == ["x.alice.github.io"]
 
     def test_a_named_parent_that_is_not_a_parent_is_not_asked(self):
         net = _Net(crtname=_Resp(400, "invalid apex: not an apex (eTLD+1 is attacker.test)", headers=TEXT))
         with net.patch():
             out = dr.query_crtname("app.example.com", settings={})
         assert out == {}
-        assert net.asked("crtname") == ["app.example.com"]
+        assert net.asked("crtname") == ["example.com"]
 
     def test_a_bare_tld_is_never_taken_as_the_parent(self):
         net = _Net(crtname=_Resp(400, "invalid apex: not an apex (eTLD+1 is com)", headers=TEXT))
         with net.patch():
             dr.query_crtname("app.example.com", settings={})
-        assert net.asked("crtname") == ["app.example.com"]
+        assert net.asked("crtname") == ["example.com"]
 
     def test_a_refusal_with_no_parent_is_cached_and_never_asked_again(self):
         # A public suffix (origin discovery reduces acme.com.co to com.co): the
@@ -422,12 +443,12 @@ class TestARootThatIsASubdomain:
             assert dr.query_crtname("co.uk", settings={}) == {}
         assert net.asked("crtname") == ["co.uk"]
 
-    def test_a_parent_that_is_refused_too_is_cached(self):
+    def test_a_refused_org_is_cached(self):
         net = _Net(crtname=lambda name: _Resp(400, NOT_AN_APEX, headers=TEXT))
         with net.patch():
             assert dr.query_crtname("app.example.com", settings={}) == {}
             assert dr.query_crtname("app.example.com", settings={}) == {}
-        assert net.asked("crtname") == ["app.example.com", "example.com"]
+        assert net.asked("crtname") == ["example.com"]
 
     def test_refusals_do_not_pause_the_source(self):
         # A 400 is an answer about the name. Four of them must leave crt.name
@@ -722,14 +743,14 @@ class TestReadingWithoutWaitingForAFullChunk:
             assert list(dr.query_crtname("example.com", settings={})) == ["a.example.com"]
 
     def test_the_refusal_is_read_through_read1_too(self):
-        refusal = _RawOnly(400, NOT_AN_APEX.encode(), headers=TEXT)
+        refusal = _RawOnly(400, NOT_AN_APEX_PRIVATE.encode(), headers=TEXT)
 
         def answer(name):
-            return refusal if name == "app.example.com" else _crtname_ok("api.app.example.com")
+            return refusal if name == "alice.github.io" else _crtname_ok("x.alice.github.io")
 
         net = _Net(crtname=answer)
         with net.patch():
-            assert dr.query_crtname("app.example.com", settings={}) == {"api.app.example.com": {"crt.name"}}
+            assert dr.query_crtname("alice.github.io", settings={}) == {"x.alice.github.io": {"crt.name"}}
         assert refusal.raw.calls == [(512, True)]
 
     def test_a_body_that_is_not_bytes_is_a_failure(self):
@@ -832,16 +853,27 @@ class TestThroughTheRealHttpStack:
         assert started.paths == ["/v1/search?apex=example.com"]
         assert "(41 requests left today)" in capsys.readouterr().out
 
-    def test_a_subdomain_root_is_refused_then_answered_through_its_parent(self, peer):
+    def test_a_subdomain_root_asks_its_org(self, peer):
         def respond(handler, apex):
-            if apex == "app.example.com":
-                _send(handler, 400, NOT_AN_APEX.encode())
-            else:
+            if apex == "example.com":
                 _send(handler, 200, b"api.app.example.com\nmail.example.com\n")
+            else:
+                _send(handler, 400, NOT_AN_APEX.encode())
 
         started = peer(respond)
         assert dr.query_crtname("app.example.com", settings={}) == {"api.app.example.com": {"crt.name"}}
-        assert started.paths == ["/v1/search?apex=app.example.com", "/v1/search?apex=example.com"]
+        assert started.paths == ["/v1/search?apex=example.com"]
+
+    def test_a_refused_private_org_is_answered_through_its_parent(self, peer):
+        def respond(handler, apex):
+            if apex == "alice.github.io":
+                _send(handler, 400, NOT_AN_APEX_PRIVATE.encode())
+            else:
+                _send(handler, 200, b"x.alice.github.io\nbob.github.io\n")
+
+        started = peer(respond)
+        assert dr.query_crtname("alice.github.io", settings={}) == {"x.alice.github.io": {"crt.name"}}
+        assert started.paths == ["/v1/search?apex=alice.github.io", "/v1/search?apex=github.io"]
 
     def test_an_empty_answer_and_a_too_large_refusal_are_both_cached(self, peer):
         def respond(handler, apex):

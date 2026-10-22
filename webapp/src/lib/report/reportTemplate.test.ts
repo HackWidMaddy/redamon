@@ -719,9 +719,10 @@ describe('Appendix Tools Table', () => {
 })
 
 // Strategy row 4: the Scope section of a Domain-batch report.
-// A batch project has NO targetDomain: its scope is the derived group roots. The
+// A batch project has NO targetDomain: its scope is its scope groups. The
 // template read targetDomain directly, so the client-facing deliverable stated
-// its scope as "N/A" and its mode as plain "Domain".
+// its scope as "N/A" and its mode as plain "Domain". These fixtures carry only
+// the legacy group record (an older snapshot), which is the fallback path.
 describe('Scope section: Domain batch', () => {
   const batchData = (groups: unknown) => makeReportData({
     project: {
@@ -746,8 +747,7 @@ describe('Scope section: Domain batch', () => {
 
   test('the scope row is not N/A', () => {
     const html = generateReportHtml(batchData(GROUPS), null)
-    expect(html).toContain('Target Domains (batch)')
-    expect(html).not.toContain('<td>Target Domains (batch)</td><td>N/A</td>')
+    expect(html).toContain('<td>Target scope (batch)</td><td>3 scope groups across 3 domains</td>')
   })
 
   test('the scan mode reads Domain batch', () => {
@@ -756,8 +756,7 @@ describe('Scope section: Domain batch', () => {
 
   test('a batch with no groups degrades to N/A rather than throwing', () => {
     const html = generateReportHtml(batchData([]), null)
-    expect(html).toContain('Target Domains (batch)')
-    expect(html).toContain('N/A')
+    expect(html).toContain('<td>Target scope (batch)</td><td>N/A</td>')
   })
 
   test('a null group list does not throw', () => {
@@ -775,6 +774,43 @@ describe('Scope section: Domain batch', () => {
     const html = generateReportHtml(batchData([{ rootDomain: '<img src=x>.com' }]), null)
     expect(html).not.toContain('<img src=x>.com')
     expect(html).toContain('&lt;img')
+  })
+})
+
+// WEB-24: one row per scope group, derived from the host list (D-12), and the
+// cover names the scope, never "N/A", for a batch.
+describe('Scope section: scope groups', () => {
+  const project = (fields: Record<string, unknown>) => makeReportData({
+    project: {
+      id: 'p1', name: 'Scoped', targetDomain: '', userId: 'u1',
+      createdAt: new Date(), updatedAt: new Date(), ...fields,
+    } as never,
+  })
+
+  test('each group is a row stating whether it was enumerated or listed', () => {
+    const html = generateReportHtml(project({
+      domainBatchMode: true,
+      domainBatchHosts: ['*.example.org', 'example.org', 'www.acme.co.uk', 'shop.acme.co.uk'],
+      // A stale legacy record grouped under the bare suffix must not be reported.
+      domainBatchGroups: [{ rootDomain: 'co.uk', prefixes: ['*'] }],
+    }), null)
+    expect(html).toContain('<td>Scope group 1</td><td>*.example.org (enumerated, +root)</td>')
+    expect(html).toContain('<td>Scope group 2</td><td>acme.co.uk: www, shop (listed)</td>')
+    expect(html).not.toContain('*.co.uk')
+  })
+
+  test('the cover names the scope of a batch', () => {
+    const html = generateReportHtml(project({
+      domainBatchMode: true, domainBatchHosts: ['*.example.org', 'www.acme.co.uk'],
+    }), null)
+    const cover = html.slice(0, html.indexOf('id="scope"'))
+    expect(cover).toContain('2 scope groups across 2 domains (1 enumerated)')
+  })
+
+  test('a single domain keeps its target row and states its one group', () => {
+    const html = generateReportHtml(project({ targetDomain: 'example.com', subdomainList: ['www.', 'eu.api.'] }), null)
+    expect(html).toContain('<td>Target Domain</td><td>example.com</td>')
+    expect(html).toContain('<td>Scope</td><td>example.com: www, eu.api (listed)</td>')
   })
 })
 

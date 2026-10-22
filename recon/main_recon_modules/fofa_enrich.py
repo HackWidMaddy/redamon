@@ -338,12 +338,27 @@ def run_fofa_enrichment(combined_result: dict, settings: dict[str, Any]) -> dict
             if not domain:
                 print("[!][FOFA] No domain in scope — skipping")
             else:
-                print(f"[+][FOFA] Domain mode — {domain}")
-                q = f'domain="{domain}"'
-                _, total_hint, _ = _fofa_fetch_pages(
-                    q, keys, per_request_size, max_results,
-                    before_next_page=lambda: time.sleep(1), sink=aggregated)
-                time.sleep(1)
+                # FOFA indexes registrable domains: `domain=` on a deeper scan
+                # root returns nothing. The org, once per run.
+                from recon.helpers.org_work import once_per_org, org_of
+
+                def _org_rows(d):
+                    print(f"[+][FOFA] Domain mode — {d}")
+                    rows: list[dict] = []
+                    try:
+                        _, hint, answered = _fofa_fetch_pages(
+                            f'domain="{d}"', keys, per_request_size, max_results,
+                            before_next_page=lambda: time.sleep(1), sink=rows)
+                    except Exception:
+                        aggregated.extend(rows)    # the error path keeps what arrived
+                        raise
+                    time.sleep(1)
+                    return {"rows": rows, "total": hint, "answered": answered}
+
+                answer, _ = once_per_org("fofa_domain", org_of(combined_result), _org_rows,
+                                         answered=lambda a: a["answered"], label="FOFA")
+                aggregated.extend(answer["rows"])
+                total_hint = answer["total"]
 
         fofa_data["results"] = aggregated[:max_results]
         fofa_data["total"] = total_hint if total_hint else len(fofa_data["results"])

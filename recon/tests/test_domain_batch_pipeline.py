@@ -135,6 +135,11 @@ class TestMergeBatchOutputs:
 
 # --------------------------------------------------------------------- the loop
 
+def _scope_group(root, mode='exact', include_root=True, exact=()):
+    return {'scanRoot': root, 'orgDomain': root, 'mode': mode,
+            'includeRoot': include_root, 'exactHosts': list(exact)}
+
+
 @pytest.fixture
 def recon_main(monkeypatch):
     """Import recon.main with settings stubbed, so importing it does not try to
@@ -156,12 +161,12 @@ def recon_main(monkeypatch):
 
 class TestBatchLoop:
     def _groups(self, *roots):
-        return [{'rootDomain': r, 'prefixes': ['.']} for r in roots]
+        return [_scope_group(r) for r in roots]
 
     def test_runs_every_group_in_the_given_order(self, recon_main, tmp_path):
         seen = []
         with mock.patch.object(recon_main, 'run_domain_group',
-                               side_effect=lambda d, p, start_time=None: seen.append(d) or 0), \
+                               side_effect=lambda g, start_time=None: seen.append(g['scanRoot']) or 0), \
              mock.patch.object(recon_main, 'OUTPUT_DIR', tmp_path), \
              mock.patch.object(recon_main, 'merge_batch_outputs'):
             rc = recon_main.run_domain_batch(
@@ -173,9 +178,9 @@ class TestBatchLoop:
     def test_a_failing_group_does_not_abort_the_rest(self, recon_main, tmp_path):
         seen = []
 
-        def _run(domain, prefixes, start_time=None):
-            seen.append(domain)
-            return 1 if domain == 'b.com' else 0
+        def _run(group, start_time=None):
+            seen.append(group['scanRoot'])
+            return 1 if group['scanRoot'] == 'b.com' else 0
 
         with mock.patch.object(recon_main, 'run_domain_group', side_effect=_run), \
              mock.patch.object(recon_main, 'OUTPUT_DIR', tmp_path), \
@@ -189,9 +194,9 @@ class TestBatchLoop:
     def test_a_raising_group_does_not_abort_the_rest(self, recon_main, tmp_path):
         seen = []
 
-        def _run(domain, prefixes, start_time=None):
-            seen.append(domain)
-            if domain == 'a.com':
+        def _run(group, start_time=None):
+            seen.append(group['scanRoot'])
+            if group['scanRoot'] == 'a.com':
                 raise RuntimeError('DNS exploded')
             return 0
 
@@ -211,20 +216,6 @@ class TestBatchLoop:
             rc = recon_main.run_domain_batch(
                 self._groups('a.com', 'b.com'), recon_main.datetime.now())
         assert rc == 1
-
-    def test_a_group_with_no_prefixes_is_skipped_not_scanned(self, recon_main, tmp_path):
-        # An empty prefix list would fall through to FULL DISCOVERY for that
-        # domain, which is exactly what batch mode promises not to do.
-        seen = []
-        with mock.patch.object(recon_main, 'run_domain_group',
-                               side_effect=lambda d, p, start_time=None: seen.append(d) or 0), \
-             mock.patch.object(recon_main, 'OUTPUT_DIR', tmp_path), \
-             mock.patch.object(recon_main, 'merge_batch_outputs'):
-            recon_main.run_domain_batch(
-                [{'rootDomain': 'a.com', 'prefixes': []},
-                 {'rootDomain': 'b.com', 'prefixes': ['.']}],
-                recon_main.datetime.now())
-        assert seen == ['b.com']
 
     def test_merges_after_every_group_not_only_at_the_end(self, recon_main, tmp_path):
         with mock.patch.object(recon_main, 'run_domain_group', return_value=0), \
@@ -255,16 +246,13 @@ class TestGraphClearHappensOncePerRun:
              mock.patch.object(recon_main, 'merge_batch_outputs'), \
              mock.patch.object(recon_main, '_clear_recon_graph') as clear:
             recon_main.run_domain_batch(
-                [{'rootDomain': 'a.com', 'prefixes': ['.']},
-                 {'rootDomain': 'b.com', 'prefixes': ['.']}],
-                recon_main.datetime.now())
+                [_scope_group('a.com'), _scope_group('b.com')], recon_main.datetime.now())
         clear.assert_not_called()
 
     def test_main_clears_once_then_delegates_to_the_batch(self, recon_main):
         with mock.patch.object(recon_main, '_clear_recon_graph') as clear, \
              mock.patch.object(recon_main, 'run_domain_batch', return_value=0) as batch, \
-             mock.patch.object(recon_main, '_batch_groups',
-                               return_value=[{'rootDomain': 'a.com', 'prefixes': ['.']}]), \
+             mock.patch.object(recon_main, '_batch_groups', return_value=[_scope_group('a.com')]), \
              mock.patch.object(recon_main, '_check_roe_time_window', return_value=(True, '')), \
              mock.patch.object(recon_main, 'IP_MODE', False):
             assert recon_main.main() == 0
@@ -275,16 +263,41 @@ class TestGraphClearHappensOncePerRun:
     def test_a_single_domain_project_still_runs_one_group(self, recon_main):
         with mock.patch.object(recon_main, '_clear_recon_graph'), \
              mock.patch.object(recon_main, '_batch_groups', return_value=[]), \
+             mock.patch.object(recon_main, 'DOMAIN_BATCH_MODE', False), \
              mock.patch.object(recon_main, '_check_roe_time_window', return_value=(True, '')), \
              mock.patch.object(recon_main, 'IP_MODE', False), \
-             mock.patch.object(recon_main, 'TARGET_DOMAIN', 'solo.com'), \
-             mock.patch.object(recon_main, 'SUBDOMAIN_LIST', ['www.']), \
+             mock.patch.dict(recon_main._settings, {'DOMAIN_BATCH_MODE': False, 'SCOPE_GROUPS': [
+                 _scope_group('solo.com', mode='exact', include_root=False, exact=['www.solo.com'])]}), \
              mock.patch.object(recon_main, 'run_domain_group', return_value=0) as run:
             assert recon_main.main() == 0
 
         run.assert_called_once()
-        assert run.call_args[0][0] == 'solo.com'
-        assert run.call_args[0][1] == ['www.']
+        assert run.call_args[0][0]['scanRoot'] == 'solo.com'
+        assert run.call_args[0][0]['exactHosts'] == ['www.solo.com']
+
+    def test_a_single_domain_project_with_no_target_refuses(self, recon_main):
+        with mock.patch.object(recon_main, '_clear_recon_graph'), \
+             mock.patch.object(recon_main, '_batch_groups', return_value=[]), \
+             mock.patch.object(recon_main, 'DOMAIN_BATCH_MODE', False), \
+             mock.patch.object(recon_main, '_check_roe_time_window', return_value=(True, '')), \
+             mock.patch.object(recon_main, 'IP_MODE', False), \
+             mock.patch.dict(recon_main._settings, {'DOMAIN_BATCH_MODE': False, 'TARGET_DOMAIN': '',
+                                                    'SCOPE_GROUPS': []}), \
+             mock.patch.object(recon_main, 'run_domain_group', return_value=0) as run:
+            assert recon_main.main() == 1
+        run.assert_not_called()
+
+    def test_a_batch_with_no_group_refuses_before_anything_is_cleared(self, recon_main):
+        # It used to fall through to a single-domain run with an empty target.
+        with mock.patch.object(recon_main, '_clear_recon_graph') as clear, \
+             mock.patch.object(recon_main, '_batch_groups', return_value=[]), \
+             mock.patch.object(recon_main, '_check_roe_time_window', return_value=(True, '')), \
+             mock.patch.object(recon_main, 'IP_MODE', False), \
+             mock.patch.object(recon_main, 'DOMAIN_BATCH_MODE', True), \
+             mock.patch.object(recon_main, 'run_domain_group', return_value=0) as run:
+            assert recon_main.main() == 1
+        clear.assert_not_called()
+        run.assert_not_called()
 
     def test_the_roe_time_window_blocks_before_anything_is_cleared(self, recon_main):
         # Blocking AFTER the clear would destroy the graph for a scan that never ran.

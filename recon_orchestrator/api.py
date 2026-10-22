@@ -1157,39 +1157,45 @@ async def start_recon(project_id: str, request: ReconStartRequest):
 
     # Guardrail / RoE pre-flight: fetch project settings and verify. Fails
     # CLOSED — a fetch failure refuses the start (503) rather than proceeding
-    # unverified (mcp_plan.md P0-1).
-    if request.webapp_api_url:
-        project = _fetch_project_for_preflight(project_id)
+    # unverified (mcp_plan.md P0-1). Unconditional: the fetch goes to the trusted
+    # webapp base, never to the client's webapp_api_url, so an empty value in the
+    # request is no reason to skip the one check that cannot be switched off.
+    project = _fetch_project_for_preflight(project_id)
 
-        # Hard guardrail: deterministic, non-disableable — always blocks
-        # government/public domains.
-        if not project.get('ipMode', False):
-            from hard_guardrail import is_hard_blocked
-            from batch_scope import guardrail_targets
-            # Domain batch has NO targetDomain: its targets are the derived
-            # group roots. Checking targetDomain alone would hand every batch
-            # a free pass through the one control that cannot be switched off,
-            # so check whatever this project actually scans.
-            targets = guardrail_targets(project)
-            if project.get('domainBatchMode', False) and not targets:
-                # Fail CLOSED: batch mode with nothing to check means the
-                # groups are missing or malformed, not that there is
-                # nothing to guard.
-                raise HTTPException(
-                    status_code=400,
-                    detail="Domain batch project has no valid domain groups. "
-                           "Re-save the project's hostname list before scanning.",
-                )
+    # Hard guardrail: deterministic, non-disableable — always blocks
+    # government/public domains.
+    if not project.get('ipMode', False):
+        from hard_guardrail import first_hard_blocked
+        from batch_scope import guardrail_targets
+        # Domain batch has NO targetDomain: its targets are the listed hosts and
+        # the derived group roots. Checking targetDomain alone would hand every
+        # batch a free pass through the one control that cannot be switched off,
+        # so check whatever this project actually scans.
+        targets = guardrail_targets(project)
+        from batch_scope import scope_groups
+        if 'scopeGroups' in project and not scope_groups(project):
+            # The webapp derived no valid group: the stored scope is refused by
+            # the current rules (a public suffix, a malformed entry).
+            raise HTTPException(
+                status_code=400,
+                detail="This project's saved scope is not valid under the current rules. "
+                       "Edit the target and save it before scanning.",
+            )
+        if project.get('domainBatchMode', False) and not targets:
+            # Fail CLOSED: batch mode with nothing to check means the
+            # groups are missing or malformed, not that there is
+            # nothing to guard.
+            raise HTTPException(
+                status_code=400,
+                detail="Domain batch project has no valid domain groups. "
+                       "Re-save the project's hostname list before scanning.",
+            )
 
-            for target in targets:
-                blocked, reason = is_hard_blocked(target)
-                if blocked:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Hard guardrail: {reason}"
-                    )
+        hit = first_hard_blocked(targets)
+        if hit:
+            raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
 
-        _check_roe_time_window(project)
+    _check_roe_time_window(project)
 
     try:
         state = await container_manager.start_recon(
@@ -1329,6 +1335,7 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
 
     from batch_scope import (
         PartialScopeError,
+        filter_partial_user_input,
         narrow_partial_roots,
         partial_project_roots,
         validate_partial_overrides,
@@ -1346,16 +1353,31 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
     except PartialScopeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-    # Hard guardrail on EVERY root, as for a full recon. IPs are not hard-blocked
-    # (hard_guardrail.is_hard_blocked), and IP mode's root is a synthetic name.
+    # Hard guardrail on every host and root of the project, as for a full recon:
+    # a partial run reaches hosts beyond the roots it is narrowed to. IPs are not
+    # hard-blocked (hard_guardrail.is_hard_blocked), and IP mode's root is a
+    # synthetic name.
     if not project.get('ipMode', False):
-        from hard_guardrail import is_hard_blocked
-        for root in roots:
-            blocked, reason = is_hard_blocked(root)
-            if blocked:
-                raise HTTPException(status_code=403, detail=f"Hard guardrail: {reason}")
+        from hard_guardrail import first_hard_blocked
+        from batch_scope import guardrail_targets
+        names = guardrail_targets(project)
+        hit = first_hard_blocked(names + [r for r in roots if r not in names])
+        if hit:
+            raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
 
     _check_roe_time_window(project)
+
+    # What the operator typed passes the same scope rule and guardrail the modal
+    # applies, because a queued job or a direct API call never saw the modal.
+    user_inputs, user_targets, refused = filter_partial_user_input(
+        project, roots, request.user_inputs, request.user_targets)
+    if refused:
+        logger.warning(f"[{project_id}] partial {request.tool_id}: dropped out-of-scope input: {refused[:20]}")
+    typed = bool(request.user_inputs) or any(
+        (request.user_targets or {}).get(k) for k in ('subdomains', 'urls', 'ips'))
+    kept = bool(user_inputs) or any((user_targets or {}).get(k) for k in ('subdomains', 'urls', 'ips'))
+    if typed and not kept and not request.include_graph_targets:
+        raise HTTPException(status_code=400, detail=f"No typed target is in this project's scope: {refused[:10]}")
 
     # Settings, and with them each root's group scope, are fetched by the recon
     # container itself via get_settings() (PROJECT_ID + WEBAPP_API_URL env vars,
@@ -1366,8 +1388,8 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
         "domains": roots,
         # Read by the tools not yet migrated to scope_roots().
         "domain": roots[0],
-        "user_inputs": request.user_inputs,
-        "user_targets": request.user_targets,
+        "user_inputs": user_inputs,
+        "user_targets": user_targets,
         "include_graph_targets": request.include_graph_targets,
         "settings_overrides": overrides,
         "user_id": request.user_id,
@@ -1461,68 +1483,6 @@ async def stream_partial_logs(project_id: str, run_id: str):
         }
 
     return EventSourceResponse(event_generator())
-
-
-@app.get("/recon/{project_id}/graph-inputs/{tool_id}")
-async def get_graph_inputs(project_id: str, tool_id: str, user_id: str = ""):
-    """
-    Get existing graph inputs for a partial recon tool.
-
-    Queries Neo4j for relevant data (e.g., Domain node for SubdomainDiscovery).
-    Note: The neo4j Python driver is not installed in the orchestrator image.
-    This endpoint uses a raw Bolt connection via the neo4j library in graph_db
-    (which is volume-mounted read-only). If that fails, it falls back to
-    project settings from the webapp API.
-    """
-    if not container_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-
-    result = {"domain": None, "existing_subdomains_count": 0, "source": "settings"}
-
-    # Try querying Neo4j directly using the graph_db module (volume-mounted)
-    # This may fail if the neo4j Python package is not installed in the orchestrator
-    try:
-        import sys
-        from pathlib import Path
-        graph_parent = Path("/app")
-        if str(graph_parent) not in sys.path:
-            sys.path.insert(0, str(graph_parent))
-
-        from graph_db import Neo4jClient
-        with Neo4jClient() as client:
-            if client.verify_connection():
-                graph_result = client.get_graph_inputs_for_tool(tool_id, user_id, project_id)
-                # A Domain-batch project has SEVERAL Domain nodes. `domain` is
-                # populated only when there is exactly one, so returning on
-                # `domains` here hands the caller the full list to choose from
-                # instead of silently scanning an arbitrary one.
-                if graph_result.get("domain") or graph_result.get("domains"):
-                    return graph_result
-    except ImportError:
-        logger.info("neo4j package not available in orchestrator, falling back to webapp API")
-    except Exception as e:
-        logger.warning(f"Neo4j query failed for graph-inputs: {e}")
-
-    # Fallback: get domain from project settings via webapp API
-    webapp_url = os.environ.get("WEBAPP_API_URL", "")
-    if not webapp_url:
-        webapp_url = "http://localhost:3000"
-
-    try:
-        import urllib.request
-        import json as json_mod
-        url = f"{webapp_url}/api/projects/{project_id}"
-        req = urllib.request.Request(url)
-        req.add_header("X-Internal-Key", os.environ.get("INTERNAL_API_KEY", ""))
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            if resp.status == 200:
-                project = json_mod.loads(resp.read().decode())
-                result["domain"] = project.get("targetDomain", "")
-                result["source"] = "settings"
-    except Exception as e:
-        logger.warning(f"Could not fetch project settings for graph-inputs: {e}")
-
-    return result
 
 
 @app.get("/recon/running")

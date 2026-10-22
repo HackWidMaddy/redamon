@@ -7,6 +7,8 @@ import { trufflehogDisplayFields } from '@/lib/trufflehogDisplay'
 import { copyText } from '@/lib/copyText'
 import { GraphData, GraphNode } from '../../types'
 import { badgeColors, buildNodeContext, getNodeColor, getNodeUrl, nodeLabel } from '../../utils'
+import { domainScopeRoots, scanRootBadge } from '../../utils/scopeRootsForNode'
+import type { ScopeGroup } from '@/lib/scopeGroups'
 import { renderPropertyValue } from '../../utils/renderPropertyValue'
 import { ClusterNodeList } from './ClusterNodeList'
 import { NodeAgentModal } from './NodeAgentModal'
@@ -45,6 +47,9 @@ interface NodeDrawerProps {
   graphData?: GraphData | null
   projectName?: string
   targetDomain?: string
+  /** The project's current scope groups; undefined on a saved version, whose
+   *  stored scan roots are then shown without the current/removed split. */
+  scopeGroups?: ScopeGroup[]
   // Start a fresh agent session seeded with the node context + the request.
   onStartAgentSession?: (request: string, context: string, nodeLabel: string) => void
 }
@@ -60,6 +65,7 @@ export function NodeDrawer({
   graphData,
   projectName,
   targetDomain,
+  scopeGroups,
   onStartAgentSession,
 }: NodeDrawerProps) {
   const toast = useToast()
@@ -129,7 +135,7 @@ export function NodeDrawer({
 
   const handleCopyContext = async () => {
     if (!displayNode) return
-    const context = buildNodeContext(displayNode, graphData, { projectName, targetDomain })
+    const context = buildNodeContext(displayNode, graphData, { projectName, targetDomain, scopeGroups })
     try {
       await copyText(context)
       setCopied(true)
@@ -142,7 +148,7 @@ export function NodeDrawer({
 
   const handleAgentSubmit = (request: string) => {
     if (!displayNode) return
-    const context = buildNodeContext(displayNode, graphData, { projectName, targetDomain })
+    const context = buildNodeContext(displayNode, graphData, { projectName, targetDomain, scopeGroups })
     setShowAgentModal(false)
     onStartAgentSession?.(request, context, nodeLabel(displayNode))
   }
@@ -228,8 +234,15 @@ export function NodeDrawer({
                 className={styles.propertyBadge}
                 style={badgeColors(getNodeColor(displayNode))}
               >
-                {displayNode.type}
+                {displayNode.type === 'Domain' && !displayNode.properties?.ip_mode
+                  ? 'Domain (organisation)' : displayNode.type}
               </span>
+              {(() => {
+                const badge = scanRootBadge(displayNode, scopeGroups)
+                return badge && (
+                  <span className={styles.propertyBadge} data-testid="scan-root-badge">{badge}</span>
+                )
+              })()}
             </div>
             <div className={styles.propertyRow}>
               <span className={styles.propertyKey}>ID</span>
@@ -246,6 +259,22 @@ export function NodeDrawer({
                 })()}
               </span>
             </div>
+            {(() => {
+              const roots = domainScopeRoots(displayNode, scopeGroups)
+              return roots && (
+                <div className={styles.propertyRow} data-testid="domain-scan-roots">
+                  <span className={styles.propertyKey}>Scan roots under this domain</span>
+                  <span className={styles.propertyValue}>
+                    {roots.current.map(label => <div key={label}>{label}</div>)}
+                    {roots.removed.length > 0 && (
+                      <div style={{ color: 'var(--text-muted)' }}>
+                        {roots.removed.join(', ')}: removed from scope, cleared by the next full recon
+                      </div>
+                    )}
+                  </span>
+                </div>
+              )
+            })()}
           </div>
 
           {/* A Secret Multiscanner finding's asset/location/extra_data are generic on the

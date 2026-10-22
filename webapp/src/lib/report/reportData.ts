@@ -8,6 +8,7 @@ import { getGraphSession } from '@/app/api/graph/neo4j'
 import { RISK_TOP_N, projectRisk } from '@/lib/projectRisk'
 import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
 import { DECLARED_ONLY } from '@/lib/declaredOnly'
+import { type CoverageGap, currentScanRoots, gapInScope } from '@/lib/scanCoverage'
 import type { Project, Remediation } from '@prisma/client'
 import { corroborateAttackFindings } from './aiAttackFindings'
 import type { AiAttackFindingRecord, RawAttackRow } from './aiAttackFindings'
@@ -562,7 +563,8 @@ async function queryTriageRisks(session: any, projectId: string) {
  */
 async function queryCoverageLimitations(
   session: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-  pid: string
+  pid: string,
+  roots: ReadonlySet<string> | null = null,
 ): Promise<{ source: string; reason: string }[]> {
   try {
     const res = await session.run(
@@ -582,6 +584,8 @@ async function queryCoverageLimitations(
         if (!g || typeof g !== 'object') continue
         const source = (g as { source?: unknown }).source
         if (typeof source !== 'string' || !source || source.length > 64) continue
+        // A scan root removed since the run is not a limitation of this scope.
+        if (!gapInScope(g as CoverageGap, roots)) continue
         const reason = (g as { reason?: unknown }).reason
         if (!bySource.has(source)) {
           bySource.set(source, typeof reason === 'string' ? reason.slice(0, 200) : '')
@@ -683,7 +687,7 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
   const triageRisks = await withSession(s => queryTriageRisks(s, projectId))
     .catch(() => [])
 
-  const coverageLimitations = await withSession(s => queryCoverageLimitations(s, projectId))
+  const coverageLimitations = await withSession(s => queryCoverageLimitations(s, projectId, currentScanRoots(project)))
     .catch(() => [])
 
   const roeProvenance = await queryRoeProvenance(projectId, project)
@@ -1501,8 +1505,11 @@ async function queryTrufflehog(session: any, pid: string) {
             count(DISTINCT a) AS assets`,
     { pid }
   )
+  // DISTINCT: a project has one Domain per org, and a scan reached through two
+  // of them would be listed, and its findings counted, twice.
   const bySourceRes = await session.run(
-    `MATCH (d:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
+    `MATCH (:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
+     WITH DISTINCT ts
      OPTIONAL MATCH (ts)-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
        WHERE ${notMuted('tf')}
      RETURN ts.source AS source, ts.target AS target, ts.status AS status,
@@ -1513,8 +1520,9 @@ async function queryTrufflehog(session: any, pid: string) {
     { pid }
   )
   const findingsRes = await session.run(
-    `MATCH (d:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->()-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
+    `MATCH (:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->()-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
     WHERE ${notMuted('tf')}
+     WITH DISTINCT a, tf
      RETURN tf.detector_name AS detectorName, tf.verified AS verified,
             tf.validation_status AS validationStatus, tf.source AS source,
             tf.finding_kind AS findingKind,

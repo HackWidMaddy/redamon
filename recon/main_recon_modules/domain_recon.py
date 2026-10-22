@@ -507,6 +507,12 @@ def _query_crtname(domain, settings: dict) -> dict:
         print("[-][crt.name] Not a domain name crt.name can search - skipping")
         return {}
 
+    # crt.name searches registrable domains: asking for a deeper scan root
+    # spends a refused request first. Ask the org once per run, and keep the
+    # names under this root.
+    from recon.helpers.public_suffix import org_domain
+    scan_root, root = root, (org_domain(root) or root)
+
     from recon.helpers import circuit_breaker as cb
     cache = cb.run_cache("crtname")
     with _crtname_lock:
@@ -527,6 +533,9 @@ def _query_crtname(domain, settings: dict) -> dict:
             if names is None:
                 return {}
             cache.put(root, names)
+
+    if scan_root != root:
+        names = [n for n in names if n == scan_root or n.endswith("." + scan_root)]
 
     # The first names as served, not the first alphabetically: origin discovery
     # reads the first 500, and a sorted list would hand it only the names that
@@ -1019,6 +1028,29 @@ def dns_lookup(hostname: str, max_retries: int = 3, parallel: bool = True) -> di
     }
 
 
+def _ownership_txt(record_name: str, max_retries: int = 3):
+    """The TXT records at `record_name`, as ``(records, failed)``.
+
+    ``(None, False)`` is a definite "no record" (NXDOMAIN, no answer);
+    ``(None, True)`` means the lookup itself failed. dns_lookup_single answers
+    None for both, which is fine for discovery and wrong for ownership.
+    """
+    if resolver_breaker.is_open():
+        return None, True
+    definitive = _dns_definitive_errors()
+    for attempt in range(max_retries):
+        try:
+            return [rr.to_text() for rr in dns.resolver.resolve(record_name, "TXT")], False
+        except definitive:
+            return None, False
+        except Exception:  # noqa: BLE001 - every other failure is the resolver's
+            if resolver_breaker.note_transient():
+                return None, True
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+    return None, True
+
+
 def verify_domain_ownership(domain: str, token: str, txt_prefix: str = "_redamon-verify") -> dict:
     """
     Verify domain ownership via DNS TXT record.
@@ -1037,6 +1069,8 @@ def verify_domain_ownership(domain: str, token: str, txt_prefix: str = "_redamon
         - expected_value: The value we're looking for
         - found_values: List of TXT values found (if any)
         - error: Error message if verification failed
+        - resolver_failed: True when the lookup itself failed, so the answer is
+          not "no record" and must never be cached or read as one
     """
     record_name = f"{txt_prefix}.{domain}"
     expected_value = f"redamon-verify={token}"
@@ -1046,20 +1080,22 @@ def verify_domain_ownership(domain: str, token: str, txt_prefix: str = "_redamon
         "record_name": record_name,
         "expected_value": expected_value,
         "found_values": [],
-        "error": None
+        "error": None,
+        "resolver_failed": False,
     }
 
     print(f"[*][DNS] Verifying domain ownership: {record_name}")
 
     try:
-        # Query TXT records
-        txt_records = dns_lookup_single(record_name, "TXT")
+        txt_records, failed = _ownership_txt(record_name)
 
         if txt_records is None:
-            # A resolver that is down reads as "no TXT record", which would
-            # abort verification with the wrong instruction. Say so instead.
-            if resolver_breaker.is_open():
+            # A resolver that is down must not read as "no TXT record": that
+            # would abort with the wrong instruction, and a caller caching the
+            # answer would keep it for the whole run.
+            if failed:
                 result["error"] = "DNS resolver down - cannot verify ownership (retry later)"
+                result["resolver_failed"] = True
             else:
                 result["error"] = f"No TXT record found at {record_name}"
             return result
@@ -1081,6 +1117,7 @@ def verify_domain_ownership(domain: str, token: str, txt_prefix: str = "_redamon
 
     except Exception as e:
         result["error"] = f"DNS lookup failed: {str(e)}"
+        result["resolver_failed"] = True
 
     return result
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
 import { getSession, isInternalRequest } from '@/lib/session'
 
@@ -39,6 +40,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             id: true,
             name: true,
             targetDomain: true,
+            ipMode: true,
+            targetIps: true,
+            subdomainList: true,
+            domainBatchMode: true,
+            domainBatchHosts: true,
             createdAt: true,
             updatedAt: true
           }
@@ -53,7 +59,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    return NextResponse.json(user)
+    // A batch has no targetDomain: each project row carries its scope label.
+    return NextResponse.json({
+      ...user,
+      projects: user.projects.map(({ ipMode, targetIps, subdomainList, domainBatchMode, domainBatchHosts, ...p }) => ({
+        ...p,
+        targetLabel: projectTargetLabel({ ...p, ipMode, targetIps, subdomainList, domainBatchMode, domainBatchHosts }),
+      })),
+    })
   } catch (error) {
     console.error('Failed to fetch user:', error)
     return NextResponse.json(

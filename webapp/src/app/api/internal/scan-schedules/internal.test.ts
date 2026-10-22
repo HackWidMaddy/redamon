@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   start: vi.fn(),
   createJob: vi.fn(),
   enqueue: vi.fn(),
+  audit: vi.fn(),
 }))
 
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => h.isInternal(...a) }))
@@ -38,6 +39,7 @@ vi.mock('@/lib/prisma', () => ({
 }))
 vi.mock('@/lib/startFullScan', () => ({ startFullScan: (...a: unknown[]) => h.start(...a) }))
 vi.mock('@/lib/enqueueJob', () => ({ enqueueJob: (...a: unknown[]) => h.enqueue(...a) }))
+vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
 vi.mock('@/lib/scanTimeline', async orig => ({
   ...(await orig<typeof import('@/lib/scanTimeline')>()),
   createScanJob: (...a: unknown[]) => h.createJob(...a),
@@ -200,6 +202,43 @@ describe('POST /run', () => {
     expect(res.status).toBe(200)
     expect(h.enqueue).not.toHaveBeenCalled()
     expect(h.createJob).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', scheduleId: 's1' }))
+  })
+
+  // WEB-31: a schedule fires headless, so a saved scope the rules now refuse
+  // would fail on every tick. It is paused, with an audit row saying why.
+  test('a scope_invalid refusal records a failed run, pauses the schedule and audits the pause', async () => {
+    const invalidEntries = [{ entry: '*.com.vn', reason: 'wildcard_on_suffix' }]
+    h.start.mockResolvedValue({
+      ok: false, status: 422, code: 'scope_invalid', invalidEntries,
+      error: 'The saved scope is no longer valid. Not accepted: *.com.vn (a wildcard on a public suffix). Edit the target list before scanning.',
+    })
+    const res = await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: false, paused: true, code: 'scope_invalid' })
+    expect(h.enqueue).not.toHaveBeenCalled()
+    expect(h.createJob).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed', scheduleId: 's1', ramReason: expect.stringContaining('*.com.vn'),
+    }))
+    expect(h.updateSchedule).toHaveBeenCalledWith({ where: { id: 's1' }, data: { enabled: false } })
+    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'schedule.paused', targetId: 's1', source: 'system',
+      after: { reason: 'scope_invalid', projectId: 'p1', invalidEntries },
+    }))
+  })
+
+  test('a temporary refusal keeps the schedule enabled', async () => {
+    h.start.mockResolvedValue({ ok: false, status: 429, error: 'no memory', limit: { limitType: 'ram' } })
+    await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))
+    expect(h.updateSchedule.mock.calls.map(c => c[0].data)).not.toContainEqual(expect.objectContaining({ enabled: false }))
+    expect(h.audit).not.toHaveBeenCalled()
+  })
+
+  test('another permanent refusal records the run but does not pause', async () => {
+    h.start.mockResolvedValue({ ok: false, status: 422, error: 'no authorization record' })
+    const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
+    expect(body.paused).toBeUndefined()
+    expect(h.updateSchedule).toHaveBeenCalledTimes(1)
+    expect(h.audit).not.toHaveBeenCalled()
   })
 
   test('a disabled schedule is not run', async () => {

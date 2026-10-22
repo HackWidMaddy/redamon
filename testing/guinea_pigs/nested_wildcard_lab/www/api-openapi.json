@@ -1,0 +1,17 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "nwlab api", "version": "1.0.0"},
+  "servers": [{"url": "https://api.nwlab.test"}],
+  "paths": {
+    "/v1/users": {
+      "get": {"operationId": "listUsers", "responses": {"200": {"description": "ok"}}}
+    },
+    "/v1/users/{id}": {
+      "get": {
+        "operationId": "getUser",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}

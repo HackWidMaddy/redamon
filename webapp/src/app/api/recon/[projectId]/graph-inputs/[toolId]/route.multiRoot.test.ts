@@ -154,9 +154,12 @@ describe('vuln tools count only the run roots', () => {
   test('OriginDiscovery counts fronted hosts under the run roots only', async () => {
     await call('OriginDiscovery')
     const cypher = toolCall()?.[0] ?? ''
-    expect(cypher).toContain('(fd:Domain {user_id: $uid, project_id: $pid})-[:HAS_SUBDOMAIN]->(fs:Subdomain)')
-    expect(cypher).toContain('fd.name IN $domains')
-    expect(cypher).not.toMatch(/MATCH \(fs:Subdomain \{/)
+    // The fronted hosts are the run's own subdomains, `s`, never every
+    // Subdomain of the project.
+    expect(cypher).toContain('d.name IN $domains')
+    expect(cypher).toContain('(d)-[:HAS_SUBDOMAIN]->(s:Subdomain)')
+    expect(cypher).toMatch(/count\(DISTINCT CASE WHEN EXISTS \{ \(s\)-\[:RESOLVES_TO\]/)
+    expect(cypher).not.toMatch(/MATCH \(s:Subdomain \{/)
   })
 })
 
@@ -177,5 +180,67 @@ describe.each([...PARTIAL_RECON_SUPPORTED_TOOLS])('every supported tool: %s', (t
     expect(cypher).not.toMatch(/WITH\s+d\s*,/)
     expect(cypher).not.toContain('d.name AS domain')
     if (cypher.includes(':Domain')) expect(cypher).toMatch(/\bIN \$domains\b/)
+  })
+})
+
+describe('old-model Domain nodes (§4.11.6)', () => {
+  test('are returned as legacy_graph, from the derived scope groups', async () => {
+    mockFindUnique.mockResolvedValue({
+      userId: 'u1', targetDomain: '', ipMode: false, domainBatchMode: true,
+      domainBatchHosts: ['*.alpha.test', 'www.beta.test'], domainBatchGroups: null,
+    })
+    mockRun.mockImplementation(async (cypher: string) => {
+      if (cypher.includes('AS hasData')) return { records: graphDomains.map(record) }
+      if (cypher.includes('AS legacy')) return { records: [record({ legacy: ['www.beta.test'] })] }
+      return { records: [record({ subdomains: [], subCount: 0, ipCount: 0, portCount: 0 })] }
+    })
+    const body = await (await call('Tlsx')).json()
+    expect(body.legacy_graph).toEqual(['www.beta.test'])
+    const legacyCall = mockRun.mock.calls.find(([c]) => String(c).includes('AS legacy'))!
+    expect(legacyCall[1]).toMatchObject({ uid: 'u1', pid: 'p1', expected: ['alpha.test', 'beta.test'] })
+  })
+
+  test('a project whose scope is not derivable asks nothing and reports none', async () => {
+    const body = await (await call('Tlsx')).json()
+    expect(body.legacy_graph).toEqual([])
+    expect(mockRun.mock.calls.some(([c]) => String(c).includes('AS legacy'))).toBe(false)
+  })
+})
+
+describe('with scope groups, the graph is counted by the positive scope test (§4.6, §4.11.7)', () => {
+  const SCOPED = {
+    userId: 'u1', targetDomain: '', ipMode: false, domainBatchMode: true, domainBatchGroups: null,
+    domainBatchHosts: ['*.alpha.test', 'alpha.test', 'www.beta.test', 'api.beta.test'],
+  }
+
+  test('hosts are matched tenant-scoped, by the listed hosts and the enumerated roots', async () => {
+    mockFindUnique.mockResolvedValue(SCOPED)
+    const body = await (await call('Naabu')).json()
+    expect(body.domains).toEqual(['alpha.test', 'beta.test'])
+    const [cypher, params] = toolCall()!
+    expect(cypher).toContain('OPTIONAL MATCH (s:Subdomain {user_id: $uid, project_id: $pid})')
+    expect(cypher).toContain('toLower(s.name) IN $listed')
+    expect(cypher).not.toContain('IN $domains')
+    expect(params).toMatchObject({
+      uid: 'u1', pid: 'p1',
+      listed: ['alpha.test', 'www.beta.test', 'api.beta.test'],
+      enumRoots: ['alpha.test'],
+      allRoots: ['alpha.test', 'beta.test'],
+    })
+  })
+
+  test('a Domain node no current org hangs off is stale; an org without data is empty', async () => {
+    mockFindUnique.mockResolvedValue(SCOPED)
+    const body = await (await call('Naabu')).json()
+    expect(body.stale_domains).toEqual(['gamma.test', 'old.test'])
+    expect(body.empty_domains).toEqual([])
+  })
+
+  test('BaseURLs are in scope by the same test, not by "under no other Domain"', async () => {
+    mockFindUnique.mockResolvedValue(SCOPED)
+    await call('Katana')
+    const cypher = toolCall()?.[0] ?? ''
+    expect(cypher).toContain('IN $listed')
+    expect(cypher).not.toContain('NOT EXISTS')
   })
 })

@@ -348,14 +348,46 @@ class TestStableVulnId(unittest.TestCase):
         self.assertEqual(a, again)
 
 
-class TestRegistrableDomain(unittest.TestCase):
-    def test_multi_label_public_suffix(self):
-        # F3: www.acme.co.uk must resolve to acme.co.uk, not co.uk
-        self.assertEqual(od._registrable_domain("www.acme.co.uk"), "acme.co.uk")
-        self.assertEqual(od._registrable_domain("shop.acme.com.au"), "acme.com.au")
-        self.assertEqual(od._registrable_domain("a.b.example.com"), "example.com")
-        self.assertEqual(od._registrable_domain("example.com"), "example.com")
-        self.assertEqual(od._registrable_domain("acme.co.uk"), "acme.co.uk")
+class TestOrgDomain(unittest.TestCase):
+    def test_the_domain_keyed_sources_query_the_org(self):
+        # F3: www.acme.co.uk must resolve to acme.co.uk, not co.uk. The org comes
+        # from the Public Suffix List, so any multi-label suffix works, not only
+        # the ones a hand-kept list happened to name.
+        for host, org in [("www.acme.co.uk", "acme.co.uk"), ("shop.acme.com.au", "acme.com.au"),
+                          ("a.b.example.com", "example.com"), ("x.acme.bet.br", "acme.bet.br")]:
+            seen = []
+            ctx = MagicMock()
+            ctx.settings = {"ORIGIN_DISCOVERY_KEYLESS": True, "ORIGIN_DISCOVERY_SCANNERS": False,
+                            "ORIGIN_DISCOVERY_PASSIVE_DNS": False}
+            ctx.cached.side_effect = lambda kind, key, fn: seen.append((kind, key)) or []
+            with patch.object(od, "_favicon_hash_for_host", return_value=None):
+                od._gather_candidates(host, {}, ctx, {})
+            self.assertEqual({k for _, k in seen}, {org}, host)
+
+    def test_an_ip_literal_runs_no_domain_keyed_source(self):
+        # A last-two-labels rule made 104.16.1.1 the domain "1.1".
+        ctx = MagicMock()
+        ctx.settings = {"ORIGIN_DISCOVERY_KEYLESS": True, "ORIGIN_DISCOVERY_SCANNERS": True,
+                        "ORIGIN_DISCOVERY_PASSIVE_DNS": True}
+        ctx.cached.side_effect = AssertionError("a domain-keyed source ran")
+        with patch.object(od, "_favicon_hash_for_host", return_value=None), \
+             patch.object(od, "_discover_via_shodan", return_value=[]), \
+             patch.object(od, "_discover_via_censys", return_value=[]), \
+             patch.object(od, "_discover_via_fofa", return_value=[]), \
+             patch.object(od, "_discover_via_zoomeye", return_value=[]), \
+             patch.object(od, "_discover_via_otx") as otx, \
+             patch.object(od, "_discover_via_virustotal") as vt, \
+             patch.object(od, "_discover_via_securitytrails") as st, \
+             patch.object(od, "_discover_via_viewdns") as vd:
+            meta = {}
+            od._gather_candidates("104.16.1.1", {}, ctx, meta)
+        for m in (otx, vt, st, vd):
+            m.assert_not_called()
+        self.assertNotIn("errors", meta)
+
+    def test_the_curated_suffix_list_is_gone(self):
+        self.assertFalse(hasattr(od, "_MULTI_LABEL_SUFFIXES"))
+        self.assertFalse(hasattr(od, "_registrable_domain"))
 
 
 class TestNoRedirectFollow(unittest.TestCase):

@@ -211,3 +211,40 @@ describe('B-4: the soft guardrail on a batch scope edit can actually block', () 
     expect(res.status).toBe(200)
   })
 })
+
+describe('the soft guardrail also runs on a single-domain target change and a mode flip', () => {
+  const SINGLE = {
+    ...STORED, domainBatchMode: false, ipMode: false, targetDomain: 'example.com',
+    subdomainList: [], targetIps: [], domainBatchHosts: [], domainBatchGroups: null,
+    targetGuardrailEnabled: true,
+  }
+
+  test('a new single-domain target is sent to the agent and can be refused', async () => {
+    mockFindUnique.mockImplementation(async () => ({ ...SINGLE }))
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ allowed: false, reason: 'not an owned asset' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const res = await put({ targetDomain: 'other.example.com' })
+    expect(res.status).toBe(403)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).target_domain).toBe('other.example.com')
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('entering IP mode sends the addresses', async () => {
+    mockFindUnique.mockImplementation(async () => ({ ...SINGLE }))
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ allowed: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const res = await put({ ipMode: true, targetDomain: '', targetIps: ['192.0.2.10'] })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).target_ips).toEqual(['192.0.2.10'])
+  })
+
+  test('an unchanged target never calls the agent', async () => {
+    mockFindUnique.mockImplementation(async () => ({ ...SINGLE }))
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    expect((await put({ targetDomain: 'example.com', katanaDepth: 3 })).status).toBe(200)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})

@@ -4030,10 +4030,10 @@ class TestRunJsRecon(unittest.TestCase):
             "user_targets": {"urls": ["https://shop.partner.test/app.js"], "url_attach_to": None},
         })
         written = mocks["neo4j_client"].update_graph_from_js_recon.call_args.kwargs["recon_data"]
-        # The typed URL is kept (as web_crawling keeps it) and so is its host;
-        # without a top-level list the scope collapses to the apex alone.
-        self.assertEqual(written["subdomains"],
-                         ["example.com", "shop.partner.test", "www.example.com"])
+        # The typed URL is kept (the run's start filters typed input), but a host
+        # outside the scope never joins the writer's scope (PAR-10). Without a
+        # top-level list the scope would collapse to the apex alone.
+        self.assertEqual(written["subdomains"], ["example.com", "www.example.com"])
 
     def test_ip_mode_scope_is_the_target_ip_not_the_placeholder_subdomain(self):
         mocks = self._run_with_mocks(
@@ -4064,7 +4064,9 @@ class TestScopePartialUrls(unittest.TestCase):
             user_urls=["https://elsewhere.test/c.js", "https://example.com/a.js"],
         )
         self.assertEqual(urls, ["https://example.com/a.js", "https://elsewhere.test/c.js"])
-        self.assertEqual(hosts, ["elsewhere.test", "example.com"])
+        # A typed URL's host joins the writer's scope only when the scope admits
+        # it (PAR-10); the run's start already dropped the unscoped URL itself.
+        self.assertEqual(hosts, ["example.com"])
 
     def test_apex_needs_include_root_domain(self):
         urls, hosts = self._scope(["https://example.com/a.js", "https://api.example.com/b.js"],
@@ -4437,7 +4439,8 @@ class TestShodanMainDispatcher(unittest.TestCase):
             import partial_recon as pr
             importlib.reload(pr)
             with patch.object(pr, 'run_shodan') as mock_run, \
-                 patch.object(pr, 'get_settings', return_value=dict(_EXAMPLE_PROJECT_SETTINGS)):
+                 patch.object(pr, 'get_settings', return_value=dict(_EXAMPLE_PROJECT_SETTINGS)),\
+                 patch.object(pr, '_legacy_graph_refusal', return_value=None):
                 pr.main()
                 mock_run.assert_called_once()
                 passed = mock_run.call_args[0][0]
@@ -5226,7 +5229,8 @@ class TestUncoverMainDispatcher(unittest.TestCase):
             import partial_recon as pr
             importlib.reload(pr)
             with patch.object(pr, 'run_uncover') as mock_run, \
-                 patch.object(pr, 'get_settings', return_value=dict(_EXAMPLE_PROJECT_SETTINGS)):
+                 patch.object(pr, 'get_settings', return_value=dict(_EXAMPLE_PROJECT_SETTINGS)),\
+                 patch.object(pr, '_legacy_graph_refusal', return_value=None):
                 pr.main()
                 mock_run.assert_called_once()
                 passed = mock_run.call_args[0][0]
@@ -5520,6 +5524,7 @@ class TestRunVhostSni(unittest.TestCase):
                 importlib.reload(pr)
                 with patch.object(pr, "run_vhost_sni_partial") as mock_runner, \
                      patch.object(pr, "_cleanup_orphan_user_inputs"), \
+                     patch.object(pr, "_legacy_graph_refusal", return_value=None), \
                      patch.object(pr, "get_settings", return_value=dict(_EXAMPLE_PROJECT_SETTINGS)):
                     pr.main()
                 mock_runner.assert_called_once()
@@ -5541,6 +5546,7 @@ class TestRunVhostSni(unittest.TestCase):
                 importlib.reload(pr)
                 with patch.object(pr, "run_vhost_sni_partial") as mock_runner, \
                      patch.object(pr, "_cleanup_orphan_user_inputs"), \
+                     patch.object(pr, "_legacy_graph_refusal", return_value=None), \
                      patch.object(pr, "get_settings", return_value=dict(_EXAMPLE_PROJECT_SETTINGS)):
                     with self.assertRaises(SystemExit) as cm:
                         pr.main()

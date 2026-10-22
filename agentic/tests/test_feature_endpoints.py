@@ -1,5 +1,5 @@
-"""The three "Models by feature" agent endpoints: /roe/parse,
-/api/report/summarize and /command-whisperer.
+"""The four "Models by feature" agent endpoints: /roe/parse,
+/api/report/summarize, /command-whisperer and /skill-metadata/generate.
 
 Each runs the CALLER's saved model on the CALLER's keys, so each must:
 - refuse the scanner token (it would spend any user's keys) - master key only;
@@ -85,6 +85,9 @@ ENDPOINTS = [
     ("/api/report/summarize", {"data": {"metrics": {}}}, REPORT_JSON),
     ("/command-whisperer", {"prompt": "list files", "session_type": "shell",
                             "project_id": "p1"}, "ls -la"),
+    ("/skill-metadata/generate",
+     {"items": [{"key": "a", "content": "# T\n\nbody", "want_name": True, "want_description": True}]},
+     '{"name": "N", "description": "D"}'),
 ]
 
 

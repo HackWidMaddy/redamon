@@ -5,7 +5,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from recon.partial_recon_modules.helpers import _resolve_hostname, root_for_host, scope_roots
+from recon.partial_recon_modules.helpers import _resolve_hostname, attach_org, root_for_host, scope_roots
 
 
 def _create_user_subdomains_in_graph(domain, subdomains: list, user_id: str, project_id: str) -> None:
@@ -29,13 +29,14 @@ def _create_user_subdomains_in_graph(domain, subdomains: list, user_id: str, pro
                 # Create Subdomain node attached to its root's Domain
                 session.run(
                     """
-                    MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                    MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE toLower(d.name) = toLower($domain)
                     MERGE (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                     ON CREATE SET s.source = 'partial_recon_user_input',
                                   s.updated_at = datetime()
+                    MERGE (s)-[:BELONGS_TO]->(d)
                     MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                     """,
-                    domain=root, sub=sub, uid=user_id, pid=project_id,
+                    domain=attach_org(root), sub=sub, uid=user_id, pid=project_id,
                 )
                 # Create IP nodes and RESOLVES_TO relationships
                 for bucket in ("ipv4", "ipv6"):

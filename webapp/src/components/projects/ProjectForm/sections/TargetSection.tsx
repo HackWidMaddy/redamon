@@ -9,10 +9,16 @@ import aiStyles from '../AiPipelinePanel.module.css'
 import { useHasJevProvider } from '@/hooks/useHasJevProvider'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
-import { isHardBlockedDomain } from '@/lib/hard-guardrail'
+import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { classifyIpTargets } from '@/lib/ip-target-utils'
-import { validateDomainBatch, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS, ROOT_DOMAIN_PREFIX } from '@/lib/domainBatch'
+import {
+  validateDomainBatch, INVALID_REASON_TEXT, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS, NESTED_WILDCARDS_ENABLED, normalizeHost,
+} from '@/lib/domainBatch'
+import {
+  GRAPH_DOMAIN_IS_ORG, type ScopeFields, isScopeWidening, resolveScopeGroups, scopeGuardrailNames,
+} from '@/lib/scopeGroups'
 import { deriveRoeEnabled } from '@/lib/engagement'
+import { isValidDomain } from '@/lib/validation'
 import { FileImportButton } from '../FileImportButton'
 import { ModelPicker } from '@/components/shared/ModelPicker'
 import { useProject } from '@/providers/ProjectProvider'
@@ -24,6 +30,10 @@ interface TargetSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
   mode?: 'create' | 'edit'
+  /** Edit mode: the scope as last saved, to tell a widening apart. */
+  savedScope?: ScopeFields
+  /** Edit mode: whose schedules a widening would reach. */
+  projectId?: string
 }
 
 // Helper to convert stored format (with dots) to display format (without dots)
@@ -70,7 +80,13 @@ function parseHostList(text: string): string[] {
 
 type TargetMode = 'domain' | 'ip' | 'batch'
 
-export function TargetSection({ data, updateField, mode = 'create' }: TargetSectionProps) {
+/** Where the ownership TXT record may sit for a group (plan §4.8): the scan
+ *  root, then its registrable domain when that differs. Recon accepts either. */
+function ownershipRecordNames(g: { scanRoot: string; orgDomain: string }, prefix: string): string[] {
+  return [`${prefix}.${g.scanRoot}`, ...(g.orgDomain !== g.scanRoot ? [`${prefix}.${g.orgDomain}`] : [])]
+}
+
+export function TargetSection({ data, updateField, mode = 'create', savedScope, projectId }: TargetSectionProps) {
   const jevStatus = useHasJevProvider()
   const isLocked = mode === 'edit'
   const [isOpen, setIsOpen] = useState(true)
@@ -142,22 +158,63 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
     () => (batchMode ? validateDomainBatch(batchHosts) : null),
     [batchMode, batchHosts]
   )
-  // Every group root gets the same non-disableable check the single domain gets.
+  // Every listed host and every group root gets the same non-disableable check
+  // the single domain gets, and the message names the host that was listed.
   const batchBlocked = useMemo(() => {
     if (!batchResult) return null
-    for (const g of batchResult.groups) {
-      const check = isHardBlockedDomain(g.rootDomain)
-      if (check.blocked) return { domain: g.rootDomain, reason: check.reason }
-    }
-    return null
-  }, [batchResult])
+    const hit = firstHardBlocked(scopeGuardrailNames({ domainBatchMode: true, domainBatchHosts: batchHosts }))
+    return hit ? { domain: hit.name, reason: hit.reason } : null
+  }, [batchResult, batchHosts])
 
   // Nothing caps how many domains may be enumerated, so the count is what the
   // operator is shown instead - here, and again in the start-scan confirmation.
   const wildcardGroupCount = useMemo(
-    () => (batchResult?.groups ?? []).filter(g => g.wildcard).length,
+    () => (batchResult?.groups ?? []).filter(g => g.mode === 'enumerate').length,
     [batchResult]
   )
+  const batchOrgCount = useMemo(
+    () => new Set((batchResult?.groups ?? []).map(g => g.orgDomain)).size,
+    [batchResult]
+  )
+
+  // A single domain is one scope group; deriving it here, with the helper every
+  // reader uses, lets the copy name the actual target and its domain.
+  const singleScope = useMemo(
+    () => (targetMode === 'domain'
+      ? resolveScopeGroups({ targetDomain: data.targetDomain, subdomainList: data.subdomainList })
+      : null),
+    [targetMode, data.targetDomain, data.subdomainList]
+  )
+  const singleGroup = singleScope?.groups[0] ?? null
+
+  // A save that widens the scope (D-21: a host the saved scope did not admit) is
+  // what every enabled schedule will scan from its next run. Warn, never pause:
+  // the operator may want exactly that (Q-15).
+  const [enabledSchedules, setEnabledSchedules] = useState(0)
+  useEffect(() => {
+    if (mode !== 'edit' || !projectId) return
+    let alive = true
+    fetch(`/api/projects/${projectId}/schedules`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(body => {
+        const list: { enabled?: boolean }[] = Array.isArray(body?.schedules) ? body.schedules : []
+        if (alive) setEnabledSchedules(list.filter(s => s.enabled).length)
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [mode, projectId])
+  const widensScheduledScope = useMemo(() => {
+    if (!savedScope || enabledSchedules === 0 || ipMode) return false
+    const next = batchMode ? batchResult?.groups ?? [] : singleScope?.groups ?? []
+    return next.length > 0 && isScopeWidening(resolveScopeGroups(savedScope).groups, next)
+  }, [savedScope, enabledSchedules, ipMode, batchMode, batchResult, singleScope])
+  const ownershipPrefix = (data.ownershipTxtPrefix || '').trim() || '_redamon-verify'
+  // A half-typed name ("exam") is not yet a hostname, and calling it a public
+  // suffix would be wrong: only a well-formed name gets the refusal reason.
+  const targetInvalid = singleScope?.invalid.find(i => i.reason === 'ip_literal'
+    || (i.reason !== 'invalid_prefix' && isValidDomain(i.entry.replace(/^\*\.?/, '')))) ?? null
+  const prefixInvalid = singleScope?.invalid.filter(i => i.reason === 'invalid_prefix') ?? []
+  const targetName = singleGroup?.scanRoot || 'the target'
 
   // Check if root domain is included in the list
   const includesRootDomain = useMemo(() => data.subdomainList.includes('.'), [data.subdomainList])
@@ -177,10 +234,14 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
   )
   const hasLocalIps = ipTargetClass === 'private' || ipTargetClass === 'mixed'
 
-  // Hard guardrail: deterministic check for government/public domains (non-disableable)
+  // Hard guardrail: deterministic check for government/public domains (non-disableable),
+  // on the target AND every prefix host it makes: `isa.` under `org.jm` is blocked
+  // although the target is not, and the submit check already refuses it.
   const hardBlockResult = useMemo(
-    () => (!ipMode && data.targetDomain ? isHardBlockedDomain(data.targetDomain) : { blocked: false, reason: '' }),
-    [ipMode, data.targetDomain]
+    () => (ipMode ? null : firstHardBlocked(scopeGuardrailNames({
+      targetDomain: data.targetDomain, subdomainList: data.subdomainList,
+    }))),
+    [ipMode, data.targetDomain, data.subdomainList]
   )
 
   const handlePrefixesChange = (value: string) => {
@@ -249,15 +310,16 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
     updateField('domainBatchHosts', parseHostList(text))
   }
 
-  // "Also scan the domain itself" for ONE wildcard group. Root inclusion is per
-  // domain, so this cannot be a single switch: a list may hold `*.a.com` with
+  // "Also scan the wildcard's own name" for ONE wildcard group. Root inclusion is
+  // per group, so this cannot be a single switch: a list may hold `*.a.com` with
   // its root in scope and `*.b.com` without. It stays pure sugar over the host
-  // list - the bare root line IS how a batch already asks for the apex - so
-  // there is no extra state to persist and the textarea keeps showing the truth.
-  const handleGroupRootToggle = (rootDomain: string, checked: boolean) => {
+  // list - the bare scan-root line IS how a batch asks for it - so there is no
+  // extra state to persist and the textarea keeps showing the truth. Lines are
+  // compared normalised: a pasted `https://a.com/` is the same line and must go too.
+  const handleGroupRootToggle = (scanRoot: string, checked: boolean) => {
     setBatchHostDraft(null)
-    const withoutRoot = batchHosts.filter(h => h.trim().toLowerCase() !== rootDomain)
-    updateField('domainBatchHosts', checked ? [...withoutRoot, rootDomain] : withoutRoot)
+    const withoutRoot = batchHosts.filter(h => normalizeHost(h) !== scanRoot)
+    updateField('domainBatchHosts', checked ? [...withoutRoot, scanRoot] : withoutRoot)
   }
 
   return (
@@ -306,7 +368,7 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                   mode: 'batch' as TargetMode,
                   icon: <Layers size={20} />,
                   title: 'Domain batch',
-                  subtitle: 'A list of hostnames, grouped by domain and scanned in turn',
+                  subtitle: 'A list of hostnames, grouped into scope groups and scanned in turn',
                 },
               ]).map((opt) => {
                 const active = opt.mode === targetMode
@@ -335,15 +397,20 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
             <p className={styles.toggleDescription} style={{ marginTop: 'var(--space-3)' }}>
               {batchMode ? (
                 <>
-                  Paste or upload a list of hostnames. They are grouped by domain
-                  (<strong>the last two labels</strong>, so a.b.example.com belongs to
-                  example.com) and each group is scanned in turn by a <strong>single</strong>{' '}
-                  recon run, writing to the graph as it finishes each one. Only the hostnames
-                  you list are scanned &mdash; <strong>except wildcards</strong>. Write{' '}
-                  <code>*.example.com</code> (or <code>*example.com</code>) to run the full
-                  subdomain enumeration for example.com, exactly as a Single Domain project
-                  does; every other line is still scanned literally. Tick{' '}
-                  <strong>Root</strong> on a wildcard row to scan the domain itself as well.
+                  Paste or upload a list of hostnames. Each belongs to its{' '}
+                  <strong>registrable domain</strong>, read from the Public Suffix List (so
+                  a.b.example.com belongs to example.com and www.acme.co.uk to acme.co.uk),
+                  and the list is split into <strong>scope groups</strong> that a{' '}
+                  <strong>single</strong> recon run scans in turn, writing to the graph as it
+                  finishes each one. A plain line is scanned exactly as written &mdash;{' '}
+                  <strong>except under a wildcard</strong>. Write <code>*.example.com</code>{' '}
+                  (or <code>*example.com</code>) to run the full subdomain enumeration under
+                  that name, exactly as a Single Domain project does
+                  {NESTED_WILDCARDS_ENABLED
+                    ? <>, at any depth (<code>*.api.example.com</code> works too)</>
+                    : <>; for now a wildcard names a registrable domain</>}
+                  . A plain line under a wildcard is seeded into its group. Tick{' '}
+                  <strong>Root</strong> on a wildcard row to also scan the wildcard&apos;s own name.
                 </>
               ) : ipMode ? (
                 <>
@@ -390,27 +457,37 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
             {targetMode === 'domain' && (
               <div className={styles.fieldGroup}>
                 <label className={`${styles.fieldLabel} ${styles.fieldLabelRequired}`}>
-                  Target Domain
+                  Target domain or hostname
                 </label>
                 <input
                   type="text"
                   className="textInput"
                   value={data.targetDomain}
                   onChange={(e) => updateField('targetDomain', e.target.value)}
-                  placeholder="example.com"
+                  placeholder="example.com or api.example.com"
                   disabled={isLocked}
                   title={isLocked ? 'Target domain cannot be changed after creation. Create a new project instead.' : undefined}
                 />
+                {targetInvalid ? (
+                  <span className={styles.fieldHint}>
+                    {targetInvalid.entry}: {INVALID_REASON_TEXT[targetInvalid.reason]}
+                  </span>
+                ) : singleGroup && (
+                  <span className={styles.fieldHint}>
+                    {GRAPH_DOMAIN_IS_ORG ? 'Graph domain' : 'Registrable domain'}: {singleGroup.orgDomain}
+                    {' '}&middot; scan root: {singleGroup.scanRoot}
+                  </span>
+                )}
               </div>
             )}
           </div>
 
           {/* Hard guardrail warning for government/public domains */}
-          {hardBlockResult.blocked && (
+          {hardBlockResult && (
             <div className={`${styles.callout} ${styles.calloutDanger}`}>
               <ShieldAlert size={16} />
               <span>
-                <strong>Target permanently blocked:</strong> Government, military, educational, and international
+                <strong>Target permanently blocked: {hardBlockResult.name}.</strong> Government, military, educational, and international
                 organization websites (.gov, .mil, .edu, .int, etc.) are always blocked and cannot be used as targets,
                 regardless of guardrail settings. This restriction cannot be disabled.
               </span>
@@ -444,8 +521,9 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
               <p className={styles.fieldHint}>
                 One per line, or comma separated. {batchHosts.length} hostname
                 {batchHosts.length === 1 ? '' : 's'} (max {MAX_BATCH_HOSTS}), grouped into{' '}
-                {batchResult?.groups.length ?? 0} domain
-                {(batchResult?.groups.length ?? 0) === 1 ? '' : 's'} (max {MAX_BATCH_GROUPS}).
+                {batchResult?.groups.length ?? 0} scope group
+                {(batchResult?.groups.length ?? 0) === 1 ? '' : 's'} across {batchOrgCount} domain
+                {batchOrgCount === 1 ? '' : 's'} (max {MAX_BATCH_GROUPS} groups).
               </p>
 
               {batchResult && batchResult.groups.length > 0 && (
@@ -455,38 +533,71 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                       <thead>
                         <tr style={{ textAlign: 'left' }}>
                           <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>#</th>
-                          <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Domain</th>
+                          <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Scan root</th>
+                          <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Domain (org)</th>
+                          <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Mode</th>
                           <th style={{ padding: '6px 8px' }}>Hosts</th>
                           <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Root</th>
+                          {data.verifyDomainOwnership && (
+                            <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Ownership TXT</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody>
-                        {batchResult.groups.map((g, i) => (
-                          <tr key={g.rootDomain}>
+                        {batchResult.groups.map((g, i) => {
+                          const firstOfOrg = batchResult.groups.findIndex(o => o.orgDomain === g.orgDomain)
+                          return (
+                          <tr key={g.scanRoot}>
                             <td className={styles.previewTableMuted} style={{ padding: '6px 8px' }}>{i + 1}</td>
-                            <td style={{ padding: '6px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{g.rootDomain}</td>
-                            <td className={styles.previewTableMuted} style={{ padding: '6px 8px' }}>
-                              {g.wildcard && (
-                                <span className={styles.enumBadge}>FULL ENUMERATION</span>
-                              )}
-                              {g.hosts.join(', ')}
+                            <td style={{ padding: '6px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                              {g.mode === 'enumerate' ? `*.${g.scanRoot}` : g.scanRoot}
+                            </td>
+                            <td
+                              className={firstOfOrg < i ? styles.previewTableMuted : undefined}
+                              style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}
+                            >
+                              {g.orgDomain}{firstOfOrg < i && ` (shared with #${firstOfOrg + 1})`}
                             </td>
                             <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                              {g.wildcard ? (
+                              {g.mode === 'enumerate'
+                                ? <span className={styles.enumBadge}>FULL ENUMERATION</span>
+                                : <span className={styles.previewTableMuted}>EXACT</span>}
+                            </td>
+                            <td className={styles.previewTableMuted} style={{ padding: '6px 8px' }}>
+                              {g.mode === 'enumerate' ? (
+                                <>
+                                  everything found under {g.scanRoot}
+                                  {g.exactHosts.map(h => <div key={h}>{h} seeded</div>)}
+                                  {g.notes.map(n => (
+                                    <div key={n.entry}><code>{n.entry}</code> covered by <code>{n.coveredBy}</code></div>
+                                  ))}
+                                </>
+                              ) : g.entries.join(', ')}
+                            </td>
+                            <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
+                              {g.mode === 'enumerate' ? (
                                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
                                   <input
                                     type="checkbox"
-                                    checked={g.prefixes.includes(ROOT_DOMAIN_PREFIX)}
-                                    onChange={(e) => handleGroupRootToggle(g.rootDomain, e.target.checked)}
-                                    aria-label={`Also scan ${g.rootDomain} itself`}
+                                    checked={g.includeRoot}
+                                    onChange={(e) => handleGroupRootToggle(g.scanRoot, e.target.checked)}
+                                    aria-label={`Also scan ${g.scanRoot} itself`}
                                   />
                                 </label>
                               ) : (
                                 <span className={styles.previewTableMuted}>&ndash;</span>
                               )}
                             </td>
+                            {data.verifyDomainOwnership && (
+                              <td className={styles.previewTableMuted} style={{ padding: '6px 8px' }}>
+                                {ownershipRecordNames(g, ownershipPrefix).map((name, k) => (
+                                  <div key={name}>{k > 0 && 'or '}<code>{name}</code></div>
+                                ))}
+                              </td>
+                            )}
                           </tr>
-                        ))}
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -498,14 +609,14 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                       <AlertTriangle size={16} />
                       <span>
                         <strong>
-                          {wildcardGroupCount} domain{wildcardGroupCount === 1 ? '' : 's'} will be
+                          {wildcardGroupCount} scope group{wildcardGroupCount === 1 ? '' : 's'} will be
                           fully enumerated.
                         </strong>{' '}
                         Subdomain discovery runs for {wildcardGroupCount === 1 ? 'it' : 'each of them'}{' '}
                         (crt.sh, Subfinder, Amass, Knockpy, puredns) and the whole pipeline then runs
                         over everything found, so this scan may take <strong>many hours</strong> and
-                        will grow the graph substantially. The hostname and domain limits count the
-                        list you typed, not what enumeration discovers.
+                        will grow the graph substantially. The hostname and scope-group limits count
+                        the list you typed, not what enumeration discovers.
                       </span>
                     </div>
                   )}
@@ -516,13 +627,13 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                 <div className={`${styles.callout} ${styles.calloutDanger}`}>
                   <AlertTriangle size={16} />
                   <span>
-                    <strong>Not valid hostnames:</strong> {batchResult.invalid.join(', ')}. Each
-                    entry needs at least two labels (example.com) and may only
-                    contain letters, digits, dots and hyphens. A wildcard is written{' '}
-                    <code>*.example.com</code> or <code>*example.com</code> and must name a
-                    registrable domain &mdash; not a deeper name like{' '}
-                    <code>*.sub.example.com</code>, and not a public suffix like{' '}
-                    <code>*.co.uk</code>. Remove or correct them to continue.
+                    <strong>Not accepted:</strong>
+                    <ul style={{ margin: '4px 0', paddingLeft: '18px' }}>
+                      {batchResult.invalid.map(i => (
+                        <li key={i.entry}><code>{i.entry}</code>: {INVALID_REASON_TEXT[i.reason]}</li>
+                      ))}
+                    </ul>
+                    Remove or correct {batchResult.invalid.length === 1 ? 'it' : 'them'} to continue.
                   </span>
                 </div>
               )}
@@ -534,7 +645,7 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                     <strong>Target permanently blocked: {batchBlocked.domain}.</strong> Government,
                     military, educational and international organization domains are always
                     blocked and cannot be scanned, regardless of guardrail settings. Remove that
-                    hostname to continue.
+                    entry to continue.
                   </span>
                 </div>
               )}
@@ -617,6 +728,21 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
             />
           </div>
 
+          {widensScheduledScope && (
+            <div className={`${styles.callout} ${styles.calloutWarning}`} role="status">
+              <AlertTriangle size={16} />
+              <span>
+                <strong>
+                  {enabledSchedules} scheduled scan{enabledSchedules === 1 ? '' : 's'} will run the
+                  wider scope.
+                </strong>{' '}
+                This change adds hosts the saved scope did not cover, and every enabled schedule
+                scans them from its next run. Pause a schedule in the Scans tab if that is not
+                intended.
+              </span>
+            </div>
+          )}
+
           {/* Domain-mode only fields */}
           {/* Domain and batch modes share the AI + ownership settings below, but
               Subdomain Prefixes and Include Root Domain belong to a SINGLE target:
@@ -632,7 +758,7 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                     className="textInput"
                     value={displayPrefixes}
                     onChange={(e) => handlePrefixesChange(e.target.value)}
-                    placeholder="www, api, admin (comma-separated)"
+                    placeholder="www, api, eu.api (comma-separated)"
                     disabled={isLocked}
                     title={isLocked ? 'Subdomain list cannot be changed after creation. Create a new project instead.' : undefined}
                   />
@@ -646,14 +772,23 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                 <span className={styles.fieldHint}>
                   {isLocked
                     ? 'Target domain and subdomains are locked after project creation to keep graph data consistent. To change them, create a new project.'
-                    : 'Leave empty to discover all subdomains. Enter prefixes without dots (e.g., "www, api, admin").'}
+                    : `Leave empty to discover every subdomain of ${targetName}. Enter each prefix without ${targetName}; it may have several labels (e.g., "www, api, eu.api").`}
                 </span>
+                {prefixInvalid.length > 0 && (
+                  <div className={`${styles.callout} ${styles.calloutDanger}`}>
+                    <AlertTriangle size={16} />
+                    <span>
+                      <strong>Not accepted:</strong>{' '}
+                      {prefixInvalid.map(i => `${i.entry.replace(/\.$/, '')} (${INVALID_REASON_TEXT[i.reason]})`).join('; ')}
+                    </span>
+                  </div>
+                )}
                 {!isLocked && displayPrefixes.trim().length === 0 && (
                   <div className={`${styles.callout} ${styles.calloutWarning}`}>
                     <AlertTriangle size={16} />
                     <span>
                       <strong>Heads up:</strong> Leaving Subdomain Prefixes empty starts full
-                      subdomain enumeration across the entire domain. This will take
+                      subdomain enumeration of everything under {targetName}. This will take
                       <strong> much, much longer </strong>
                       than scanning a specific set of prefixes.
                     </span>
@@ -677,11 +812,11 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                 <div>
                   <span className={styles.toggleLabel}>Include Root Domain</span>
                   <p className={styles.toggleDescription}>
-                    Also scan the root domain (e.g., example.com without subdomain)
+                    Also scan {targetName} itself, not only the names under it.
                     {forceIncludeRootDomain && (
                       <>
                         {' '}
-                        <strong>Locked ON: Subdomain Discovery is disabled and no prefixes are set, so the root domain is the only valid target.</strong>
+                        <strong>Locked ON: Subdomain Discovery is disabled and no prefixes are set, so {targetName} is the only valid target.</strong>
                       </>
                     )}
                   </p>
@@ -924,7 +1059,19 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                 <div>
                   <span className={styles.toggleLabel}>Verify Domain Ownership</span>
                   <p className={styles.toggleDescription}>
-                    Require DNS TXT record verification before scanning
+                    Require a DNS TXT record <code>redamon-verify=&lt;token&gt;</code> before
+                    scanning. Each scan root accepts it at <code>{ownershipPrefix}.&lt;scan root&gt;</code>{' '}
+                    or at <code>{ownershipPrefix}.&lt;registrable domain&gt;</code>
+                    {!batchMode && singleGroup && (
+                      <>
+                        {' '}(here{' '}
+                        {ownershipRecordNames(singleGroup, ownershipPrefix).map((name, k) => (
+                          <span key={name}>{k > 0 && ' or '}<code>{name}</code></span>
+                        ))}
+                        )
+                      </>
+                    )}
+                    .
                   </p>
                 </div>
                 <Toggle

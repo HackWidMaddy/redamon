@@ -20,6 +20,8 @@ interface ImportResult {
   projectId: string
   projectName: string
   stats: ImportStats
+  /** What the import changed or dropped from the bundle (dropped hosts, skill toggles, Jev fallbacks). */
+  warnings?: string[]
 }
 
 interface ImportModalProps {
@@ -192,6 +194,11 @@ export function ImportModal({ isOpen, userId, onClose, onSuccess }: ImportModalP
               <span>Relationships: {result.stats.neo4jRelationships}</span>
               <span>Artifacts: {result.stats.artifacts}</span>
             </div>
+            {result.warnings && result.warnings.length > 0 && (
+              <ul style={{ fontSize: 'var(--text-xs)', color: 'var(--status-warning-text)', margin: 0, paddingLeft: 'var(--space-4)' }}>
+                {result.warnings.map(w => <li key={w}>{w}</li>)}
+              </ul>
+            )}
             <div className={styles.modalActions}>
               <button className="primaryButton" onClick={handleClose}>
                 Done

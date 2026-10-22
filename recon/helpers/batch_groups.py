@@ -33,7 +33,38 @@ def group_discovery_enabled(settings: dict, batch_groups: list,
         return False
     if not batch_groups:
         return True              # single-domain: the toggle is the whole answer
+    if 'mode' in target_info:
+        return target_info['mode'] == 'enumerate'
     return bool(target_info.get('wildcard_mode', False))
+
+
+def target_info_from_group(group: dict) -> dict:
+    """One SCOPE_GROUPS entry as the target info the pipeline runs on.
+
+    Carries the group's own fields plus the keys parse_target returns, so a
+    reader of either shape works. Unlike parse_target, the mode is the group's
+    and not inferred from the prefixes: an EXACT group listing only its root is
+    still filtered, never an enumeration.
+    """
+    root = group['scanRoot']
+    exact = list(group.get('exactHosts') or [])
+    include_root = bool(group.get('includeRoot'))
+    enumerate_ = group['mode'] == 'enumerate'
+    return {
+        "scan_root": root,
+        "org_domain": group.get('orgDomain') or root,
+        "mode": group['mode'],
+        "include_root": include_root,
+        "exact_hosts": exact,
+        "target": root,
+        "root_domain": root,
+        "filtered_mode": not enumerate_,
+        "subdomain_list": (['*'] if enumerate_ else []) + (['.'] if include_root else [])
+                          + [f"{h[:-len(root) - 1]}." for h in exact],
+        "full_subdomains": ([root] if include_root else []) + exact,
+        "include_root_domain": include_root,
+        "wildcard_mode": enumerate_,
+    }
 
 
 def parse_target(target: str, subdomain_list: list = None) -> dict:
@@ -42,7 +73,6 @@ def parse_target(target: str, subdomain_list: list = None) -> dict:
 
     Args:
         target: Root domain (e.g., "example.com", "vulnweb.com")
-                TARGET_DOMAIN in params.py must always be a root domain.
         subdomain_list: List of subdomain prefixes to filter (e.g., ["testphp.", "www."])
                        Empty list = full discovery mode (scan all subdomains)
                        Special prefix "." = include root domain directly (no subdomain)
@@ -124,3 +154,27 @@ def parse_target(target: str, subdomain_list: list = None) -> dict:
         "include_root_domain": include_root_domain,
         "wildcard_mode": wildcard_mode
     }
+
+
+def settings_scope_groups(settings: dict) -> list:
+    """SCOPE_GROUPS, or when it is empty, the groups the settings loader would
+    derive from the legacy keys.
+
+    The loader never leaves SCOPE_GROUPS empty while those keys hold a scope (an
+    empty batch refuses the run), so this changes nothing for a loaded project;
+    it covers a dict built by hand from DEFAULT_SETTINGS, whose SCOPE_GROUPS is [].
+    """
+    groups = [g for g in settings.get("SCOPE_GROUPS") or [] if isinstance(g, dict)]
+    if groups:
+        return groups
+    if settings.get("IP_MODE"):
+        return []
+    from recon.project_settings import (
+        _parse_domain_batch_groups, _scope_groups_from_legacy, _single_domain_group,
+        _single_domain_target,
+    )
+    if settings.get("DOMAIN_BATCH_MODE"):
+        return _scope_groups_from_legacy(
+            _parse_domain_batch_groups(settings.get("DOMAIN_BATCH_GROUPS")))
+    target = _single_domain_target(settings.get("TARGET_DOMAIN"))
+    return [_single_domain_group(target, list(settings.get("SUBDOMAIN_LIST") or []))] if target else []

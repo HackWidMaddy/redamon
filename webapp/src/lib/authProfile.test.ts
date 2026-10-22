@@ -99,6 +99,22 @@ describe('normalizeScopeHosts', () => {
   test('dedupes, lowercases, drops trailing dot and blanks', () => {
     expect(normalizeScopeHosts(['A.test.', 'a.test', ' ', '::1']).hosts).toEqual(['a.test', '::1'])
   })
+
+  test('a wildcard on a public suffix is refused, naming the entry (WEB-33)', () => {
+    for (const entry of ['*.co.uk', '*.com', '*.github.io']) {
+      expect(normalizeScopeHosts(['www.example.com', entry]), entry).toEqual({
+        hosts: [], error: expect.stringContaining(`"${entry}" is a wildcard on the public suffix`),
+      })
+    }
+    // A wildcard on a registrable domain, and a bare suffix host, are fine.
+    expect(normalizeScopeHosts(['*.acme.co.uk', '*.alice.github.io', '10.0.0.0/8']).error).toBeNull()
+  })
+
+  test('a permanently blocked name is refused, wildcard or not, naming the entry', () => {
+    expect(normalizeScopeHosts(['www.example.com', '*.agency.gov.uk']).error)
+      .toMatch(/^Scope host "\*\.agency\.gov\.uk" is permanently blocked: /)
+    expect(normalizeScopeHosts(['portal.nhs.uk']).error).toMatch(/"portal\.nhs\.uk" is permanently blocked/)
+  })
 })
 
 test('maskAuthValue mirrors recon mask_auth_value', () => {

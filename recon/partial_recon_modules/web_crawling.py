@@ -8,6 +8,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.helpers import (
+    typed_host_ok,
+    root_orgs,
     _is_host_in_scope,
     _is_valid_hostname,
     _is_valid_url,
@@ -18,6 +20,7 @@ from recon.partial_recon_modules.helpers import (
     scope_roots,
 )
 from recon.partial_recon_modules.graph_builders import (
+    graph_scope_subdomains,
     _build_http_probe_data_from_graph,
     declared_only_unsafe,
     graph_target_hosts,
@@ -266,6 +269,7 @@ def run_katana(config: dict) -> None:
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             for url in user_urls:
                                 parsed = _urlparse(url)
@@ -534,6 +538,7 @@ def run_hakrawler(config: dict) -> None:
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             for url in user_urls:
                                 parsed = _urlparse(url)
@@ -880,6 +885,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             for url in user_urls:
                                 parsed = _urlparse(url)
@@ -1222,6 +1228,7 @@ def run_ffuf(config: dict) -> None:
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             for url in user_urls:
                                 parsed = _urlparse(url)
@@ -1298,7 +1305,7 @@ def run_gau(config: dict) -> None:
         for entry in user_targets.get("subdomains", []):
             entry = entry.strip().lower()
             if entry and _is_valid_hostname(entry):
-                if host_in_roots(entry, roots):
+                if typed_host_ok(entry, roots, config.get("domain_groups")):
                     user_subdomains.append(entry)
                 else:
                     print(f"[!][Partial Recon] Skipping subdomain outside scope: {entry}")
@@ -1728,18 +1735,8 @@ def run_jsluice(config: dict) -> None:
                 if graph_client.verify_connection():
                     driver = graph_client.driver
                     with driver.session() as session:
-                        result = session.run(
-                            """
-                            MATCH (d:Domain {user_id: $uid, project_id: $pid})
-                                  -[:HAS_SUBDOMAIN]->(s:Subdomain)
-                            WHERE d.name IN $domains
-                            RETURN collect(DISTINCT s.name) AS subdomains
-                            """,
-                            domains=roots, uid=user_id, pid=project_id,
-                        )
-                        record = result.single()
-                        if record:
-                            recon_data["subdomains"] = record["subdomains"] or []
+                        recon_data["subdomains"] = graph_scope_subdomains(
+                            session, user_id, project_id, roots, config.get("domain_groups"))
         except Exception:
             pass
 
@@ -1817,6 +1814,7 @@ def run_jsluice(config: dict) -> None:
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             for url in user_urls:
                                 parsed = _urlparse(url)

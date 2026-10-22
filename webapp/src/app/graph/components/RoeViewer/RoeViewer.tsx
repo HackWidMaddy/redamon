@@ -15,6 +15,7 @@ import { downloadRoeFile, reviewRemove } from '@/components/roe/roeClient'
 import { clearRoeEntry, setRoeEntry, useRoeEntry, useRoeMounted } from '@/components/roe/roeParseStore'
 import { roeAppliedSummary } from '@/components/roe/roeAppliedSummary'
 import styles from './RoeViewer.module.css'
+import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
 
 /**
  * The read-only engagement panel, split the way the model is.
@@ -71,6 +72,7 @@ interface RoeViewerProps {
     engagementIdentityHeader?: string
     targetDomain?: string
     targetIps?: string[]
+    scopeGroups?: ScopeGroup[]
     [key: string]: unknown
   }
 }
@@ -351,7 +353,16 @@ export function RoeViewer({ projectId, project }: RoeViewerProps) {
 
         {/* Scope */}
         <Section title="Scope" icon={<Globe size={15} />}>
-          {project.targetDomain && <div className={styles.row}><span>Domain</span><strong>{project.targetDomain}</strong></div>}
+          {Array.isArray(project.scopeGroups) && project.scopeGroups.length > 0 ? (
+            project.scopeGroups.map(g => (
+              <div key={g.scanRoot} className={styles.row}>
+                <span>{g.mode === 'enumerate' ? 'Enumerated' : 'Listed'}</span>
+                <strong>{groupLabel(g)}{g.orgDomain !== g.scanRoot ? ` · domain ${g.orgDomain}` : ''}</strong>
+              </div>
+            ))
+          ) : project.targetDomain && (
+            <div className={styles.row}><span>Domain</span><strong>{project.targetDomain}</strong></div>
+          )}
           {project.targetIps && project.targetIps.length > 0 && (
             <div className={styles.row}><span>IP Ranges</span><strong>{project.targetIps.join(', ')}</strong></div>
           )}

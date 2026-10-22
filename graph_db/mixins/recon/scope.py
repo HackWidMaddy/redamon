@@ -25,6 +25,10 @@ def _normalize_host(value: str) -> str:
     return host.split(":")[0]
 
 
+# A name no scanner reports: the scope of a run with nothing in it.
+_NO_HOST = "\x00"
+
+
 def build_host_scope(recon_data: dict) -> set:
     """Hosts the graph is allowed to create nodes for, or an empty set for "no filter".
 
@@ -41,10 +45,18 @@ def build_host_scope(recon_data: dict) -> set:
     scope |= {_normalize_host(ip) for ip in metadata.get("expanded_ips") or []}
     scope.discard("")
 
-    # Bare-domain scan with no subdomains discovered: the apexes are the scope.
+    # Bare-domain scan with no subdomains discovered: the apexes are the scope,
+    # each only when its group made it a target.
     if not scope:
-        scope = {_normalize_host(r) for r in scope_roots(recon_data)}
+        groups = scope_groups_by_root(recon_data)
+        roots = scope_roots(recon_data)
+        scope = {_normalize_host(r) for r in roots
+                 if groups.get(_clean(r), {}).get("include_root", True)}
         scope.discard("")
+        if roots and not scope:
+            # Roots that are no target, and nothing found under them: an empty
+            # set would read as "no filter" and admit every host.
+            scope = {_NO_HOST}
     return scope
 
 
@@ -102,7 +114,8 @@ def root_for_host(value: str, roots: list, ip_mode: bool = False):
 
     In IP mode every host belongs to the one synthetic root
     (ip-targets.<project_id>): its Subdomains are dashed IPs, not names under it.
-    The root is returned as stored, since it is matched against Domain.name.
+    The root is returned as stored. A writer decides scope with
+    scan_root_for_host and attaches with org_for_scan_root instead.
     """
     host = _normalize_host(value).strip(".")
     if not host or not roots:
@@ -117,20 +130,115 @@ def root_for_host(value: str, roots: list, ip_mode: bool = False):
     return best
 
 
-def roots_are_ip_mode(session, roots: list, user_id: str, project_id: str) -> bool:
-    """Whether these roots are IP mode's synthetic root, read from Domain.ip_mode.
+# ---------------------------------------------------------------------------
+# Scope versus attach (§4.11.2). A Domain node is the ORGANISATION (registrable
+# domain); a scan root is where a group of the project points. One decides
+# whether a host belongs to the project, the other where it is linked.
+# ---------------------------------------------------------------------------
 
-    One tenant-keyed lookup per write batch, rather than a flag every caller
-    would have to remember to stamp on recon_data.
+IN_SCOPE, SKIPPED, OUT_OF_SCOPE = "in", "skipped", "out"
+
+
+def _clean(name) -> str:
+    return str(name or "").strip().strip(".").lower()
+
+
+# The project's scope groups for this process (one partial run = one process),
+# for a writer handed a recon dict that carries none. Partial recon builds many
+# recon dicts across its modules; a missed stamp would attach a deeper scan
+# root's hosts to a Domain(<scan root>) that no longer exists. The full
+# pipeline stamps every dict, so it never reaches this default.
+_RUN_SCOPE_GROUPS: list = []
+
+
+def set_run_scope_groups(groups: list) -> None:
+    """The project's scope groups (snake keys) for a writer handed a recon dict without them (a partial run)."""
+    _RUN_SCOPE_GROUPS[:] = [g for g in groups or [] if isinstance(g, dict)]
+
+
+def scope_groups_by_root(recon_data: dict) -> dict:
+    """The scope groups (snake keys) by scan root: recon_data["scope_groups"],
+    else this run's default (set_run_scope_groups).
+
+    Neither in a legacy recon file or IP mode, where every caller falls back
+    to the scan root itself, which is exactly the old model.
     """
-    if not roots:
-        return False
-    record = session.run(
-        """
-        MATCH (d:Domain {user_id: $uid, project_id: $pid})
-        WHERE d.name IN $roots AND d.ip_mode = true
-        RETURN count(d) > 0 AS ip_mode
-        """,
-        uid=user_id, pid=project_id, roots=list(roots),
-    ).single()
-    return bool(record and record["ip_mode"])
+    groups = {}
+    for g in (recon_data or {}).get("scope_groups") or _RUN_SCOPE_GROUPS:
+        if isinstance(g, dict):
+            root = _clean(g.get("scan_root"))
+            if root:
+                groups.setdefault(root, g)
+    return groups
+
+
+def classify_host(value: str, recon_data: dict):
+    """``(IN_SCOPE, scan_root)``, ``(SKIPPED, scan_root)`` or ``(OUT_OF_SCOPE, None)``.
+
+    The longest scan root the host equals or sits under decides, and the match
+    STOPS there: a host equal to a scan root whose group leaves Root off is
+    SKIPPED (no node, and no ExternalDomain either: it is the project's own
+    root), never re-admitted through a shorter root. A host under no scan
+    root is OUT_OF_SCOPE, i.e. an ExternalDomain, even when it shares an org
+    with a group (D-6).
+    """
+    roots = attach_roots(recon_data)
+    root = root_for_host(value, roots)
+    if root is None:
+        return OUT_OF_SCOPE, None
+    host = _normalize_host(value).strip(".")
+    if host == _clean(root):
+        group = scope_groups_by_root(recon_data).get(_clean(root))
+        if group is not None and not group.get("include_root"):
+            return SKIPPED, root
+    return IN_SCOPE, root
+
+
+def scan_root_for_host(value: str, recon_data: dict):
+    """The scan root a host belongs to (the scope decision), or None when it
+    is out of scope or is a scan root that is no target (see classify_host)."""
+    kind, root = classify_host(value, recon_data)
+    return root if kind == IN_SCOPE else None
+
+
+def org_for_scan_root(scan_root: str, recon_data: dict) -> str:
+    """The Domain a scan root's hosts attach to: its group's org.
+
+    Falls back to the scan root itself (a legacy recon file, IP mode), so an
+    old file attaches exactly as it always did.
+    """
+    group = scope_groups_by_root(recon_data).get(_clean(scan_root))
+    org = _clean(group.get("org_domain")) if group else ""
+    return org or scan_root
+
+
+def org_for_host(value: str, recon_data: dict):
+    """The org Domain an in-scope host attaches to, or None."""
+    root = scan_root_for_host(value, recon_data)
+    return org_for_scan_root(root, recon_data) if root else None
+
+
+def project_orgs(recon_data: dict) -> list:
+    """Every org Domain of the project's scan roots, in order, deduplicated."""
+    out = []
+    for root in attach_roots(recon_data):
+        org = org_for_scan_root(root, recon_data)
+        if org and org not in out:
+            out.append(org)
+    return out
+
+
+def attach_for_host(value: str, recon_data: dict):
+    """``(kind, org)`` for a writer: ``(IN_SCOPE, <org Domain>)``,
+    ``(SKIPPED, None)`` (a scan root that is no target: write nothing) or
+    ``(OUT_OF_SCOPE, None)`` (an ExternalDomain)."""
+    kind, root = classify_host(value, recon_data)
+    return kind, (org_for_scan_root(root, recon_data) if kind == IN_SCOPE else None)
+
+
+def home_domain(recon_data: dict) -> str:
+    """The org Domain of the run's own scan root (recon_data["domain"]): where
+    an ExternalDomain it found is DISCOVERED_BY, and where an org-level report
+    of this group attaches."""
+    domain = (recon_data or {}).get("domain") or ""
+    return org_for_scan_root(domain, recon_data) if domain else domain

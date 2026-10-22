@@ -77,10 +77,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     maven \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PHP + Composer (for PHP projects)
+# Install PHP + Composer (for PHP projects). The version gate fails the build
+# instead of baking in a PHP below the PHP2Shell fix (CVE-2026-109618 /
+# CVE-2026-109619). The floor is per branch: a host with an older cached
+# python:3.11-slim builds on bookworm, which ships PHP 8.2, not trixie's 8.4.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     php-cli php-xml php-mbstring php-curl php-zip \
     && rm -rf /var/lib/apt/lists/* \
+    && php -r '$fix = ["8.2" => "8.2.35", "8.3" => "8.3.36", "8.4" => "8.4.27"][PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION] ?? "8.5.12"; if (version_compare(PHP_VERSION, $fix, "<")) { fwrite(STDERR, "PHP " . PHP_VERSION . " predates the PHP2Shell fix ($fix)\n"); exit(1); }' \
     && retry curl -sS --retry 5 --retry-delay 5 --retry-all-errors \
         -o /tmp/composer-setup.php https://getcomposer.org/installer \
     && php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer \

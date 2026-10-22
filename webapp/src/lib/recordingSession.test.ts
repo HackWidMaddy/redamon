@@ -1,10 +1,11 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi } from 'vitest'
 import {
   deriveProfileFromMaterial,
   materialIsEmpty,
   summarizeMaterial,
   mergeMaterial,
   defaultRecordingScope,
+  refreshActiveRecordingScope,
 } from './recordingSession'
 
 describe('deriveProfileFromMaterial', () => {
@@ -85,21 +86,37 @@ describe('mergeMaterial', () => {
 })
 
 describe('defaultRecordingScope', () => {
-  test('domain + subdomains, RoE excluded', () => {
+  test('listed subdomains record only those hosts (+ the root with "."), RoE excluded', () => {
     const scope = defaultRecordingScope({
       targetDomain: 'target.test', subdomainList: ['app.', 'pay.', '.'],
       roeExcludedHosts: ['pay.target.test'],
     })
-    expect(scope).toContain('target.test')
-    expect(scope).toContain('app.target.test')
-    expect(scope).not.toContain('pay.target.test')
+    // A listed project never authorised *.target.test (§4.6 EXACT).
+    expect(scope).toEqual(['app.target.test', 'target.test'])
   })
 
-  test('covers subdomains via the wildcard, so a login at app.* is recorded', () => {
+  test('an enumerated domain covers subdomains via the wildcard, so a login at app.* is recorded', () => {
     // Apex-only scope meant the proxy tagged nothing when the operator logged in
     // at a subdomain, and the modal then reported "no login detected".
-    expect(defaultRecordingScope({ targetDomain: 'target.test' }))
-      .toEqual(['target.test', '*.target.test'])
+    expect(defaultRecordingScope({ targetDomain: 'target.test' })).toEqual(['*.target.test'])
+    expect(defaultRecordingScope({ targetDomain: 'target.test', subdomainList: ['.'] }))
+      .toEqual(['*.target.test', 'target.test'])
+  })
+
+  test('a Domain batch records its groups (it recorded nothing before)', () => {
+    expect(defaultRecordingScope({
+      domainBatchMode: true, targetDomain: '',
+      domainBatchHosts: ['*.example.org', 'example.org', 'www.acme.test'],
+      roeExcludedHosts: ['example.org'],
+    })).toEqual(['www.acme.test'])
+    expect(defaultRecordingScope({
+      domainBatchMode: true, domainBatchHosts: ['*.example.org', 'www.acme.test'],
+    })).toEqual(['*.example.org', 'www.acme.test'])
+  })
+
+  test('a refused entry never widens the recording', () => {
+    expect(defaultRecordingScope({ domainBatchMode: true, domainBatchHosts: ['*.github.io', 'www.example.com'] }))
+      .toEqual(['www.example.com'])
   })
 
   test('ip mode uses target IPs', () => {
@@ -108,5 +125,35 @@ describe('defaultRecordingScope', () => {
 
   test('empty project → empty scope (fail-safe)', () => {
     expect(defaultRecordingScope({})).toEqual([])
+  })
+})
+
+describe('refreshActiveRecordingScope', () => {
+  const project = { domainBatchMode: true, domainBatchHosts: ['*.example.com'] }
+  const store = (session: { id: string } | null) => ({
+    recordingSession: { findFirst: vi.fn().mockResolvedValue(session), update: vi.fn().mockResolvedValue({}) },
+  })
+
+  test('re-derives the active recording of that project', async () => {
+    const db = store({ id: 'rec-1' })
+    expect(await refreshActiveRecordingScope(db as never, 'p1', project)).toBe(true)
+    expect(db.recordingSession.findFirst.mock.calls[0][0].where).toMatchObject({ projectId: 'p1', state: 'active' })
+    expect(db.recordingSession.update).toHaveBeenCalledWith({
+      where: { id: 'rec-1' }, data: { scopeHosts: ['*.example.com'] },
+    })
+  })
+
+  test('no active recording, nothing written', async () => {
+    const db = store(null)
+    expect(await refreshActiveRecordingScope(db as never, 'p1', project)).toBe(false)
+    expect(db.recordingSession.update).not.toHaveBeenCalled()
+  })
+
+  test('a failing store never throws into the caller', async () => {
+    const db = store({ id: 'rec-1' })
+    db.recordingSession.update.mockRejectedValue(new Error('db down'))
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await refreshActiveRecordingScope(db as never, 'p1', project)).toBe(false)
+    err.mockRestore()
   })
 })

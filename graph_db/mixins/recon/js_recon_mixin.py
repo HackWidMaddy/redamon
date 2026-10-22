@@ -8,7 +8,7 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
-from graph_db.mixins.recon.scope import build_host_scope, host_in_scope
+from graph_db.mixins.recon.scope import build_host_scope, home_domain, host_in_scope
 
 # merge_discovered_hostnames (recon/helpers/target_helpers.py) tags each name it
 # admits into dns.subdomains with one of these, after its apex allow-list, RoE,
@@ -151,7 +151,8 @@ class JsReconMixin:
         }
 
         scan_ts = js_recon_data.get("scan_metadata", {}).get("scan_timestamp", "")
-        domain_name = recon_data.get('domain', '')
+        # The org Domain of the scan root this run covered (a Domain node is the org).
+        domain_name = home_domain(recon_data)
 
         def _is_uploaded(source_url: str) -> bool:
             return source_url.startswith('upload://')

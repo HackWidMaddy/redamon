@@ -25,12 +25,17 @@ import { PartialReconModal } from './PartialReconModal'
 const ROOTS = ['alpha.test', 'beta.test', 'gamma.test']
 
 let graphInputs: Record<string, unknown> | 'error' = {}
+// The saved project's scopeGroups (GET /api/projects/[id]); none = an older webapp.
+let projectRow: Record<string, unknown> = {}
 
 function stubFetch() {
   vi.stubGlobal('fetch', vi.fn((url: string) => {
     if (url.includes('/graph-inputs/')) {
       if (graphInputs === 'error') return Promise.reject(new Error('network down'))
       return Promise.resolve({ ok: true, json: () => Promise.resolve(graphInputs) } as Response)
+    }
+    if (url === '/api/projects/p1') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(projectRow) } as Response)
     }
     return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response)
   }))
@@ -62,6 +67,7 @@ async function runButton() {
 
 afterEach(cleanup)
 beforeEach(() => {
+  projectRow = {}
   graphInputs = {
     domain: 'alpha.test', domains: ROOTS, stale_domains: [], empty_domains: [],
     existing_subdomains: ['www.alpha.test', 'api.beta.test'], existing_subdomains_count: 2,
@@ -75,7 +81,7 @@ describe('custom inputs are validated against every root', () => {
     renderModal('Naabu')
     await screen.findByTestId('partial-recon-roots')
     fireEvent.change(textareas()[0], { target: { value: 'www.beta.test' } })
-    expect(screen.queryByText(/is not a subdomain of/)).toBeNull()
+    expect(screen.queryByText(/out of scope for this run/)).toBeNull()
     expect((await runButton()).disabled).toBe(false)
   })
 
@@ -83,7 +89,7 @@ describe('custom inputs are validated against every root', () => {
     renderModal('Naabu')
     await screen.findByTestId('partial-recon-roots')
     fireEvent.change(textareas()[0], { target: { value: 'www.other.test' } })
-    expect(await screen.findByText(/www\.other\.test is not a subdomain of any of alpha\.test/)).toBeTruthy()
+    expect(await screen.findByText(/www\.other\.test is out of scope for this run \(under alpha\.test, beta\.test, gamma\.test\)/)).toBeTruthy()
     expect((await runButton()).disabled).toBe(true)
   })
 
@@ -93,6 +99,44 @@ describe('custom inputs are validated against every root', () => {
     const fields = textareas()
     fireEvent.change(fields[fields.length - 1], { target: { value: 'https://shop.gamma.test/cart' } })
     expect(screen.queryByText(/out of scope/)).toBeNull()
+  })
+})
+
+describe('the saved scope groups decide (§4.6, the rule the server applies)', () => {
+  const group = (scanRoot: string, mode: 'exact' | 'enumerate', includeRoot: boolean, exactHosts: string[] = []) =>
+    ({ scanRoot, orgDomain: scanRoot, mode, includeRoot, exactHosts, entries: [], notes: [] })
+
+  beforeEach(() => {
+    projectRow = { scopeGroups: [
+      group('alpha.test', 'exact', false, ['www.alpha.test']),
+      group('beta.test', 'enumerate', false),
+      group('gamma.test', 'enumerate', true),
+    ] }
+  })
+
+  async function typeHost(host: string) {
+    renderModal('Naabu')
+    await screen.findByTestId('partial-recon-roots')
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/projects/p1'))
+    fireEvent.change(textareas()[0], { target: { value: host } })
+  }
+
+  test('a listed group admits only its hosts', async () => {
+    await typeHost('mail.alpha.test')
+    expect(await screen.findByText(/mail\.alpha\.test is out of scope for this run \(alpha\.test: www \(listed\)/)).toBeTruthy()
+  })
+
+  test('an enumerated root is no target without Root', async () => {
+    await typeHost('beta.test')
+    expect(await screen.findByText(/beta\.test is out of scope for this run/)).toBeTruthy()
+  })
+
+  test('hosts the groups admit pass', async () => {
+    for (const host of ['www.alpha.test', 'x.beta.test', 'gamma.test']) {
+      cleanup()
+      await typeHost(host)
+      expect(screen.queryByText(/out of scope for this run/)).toBeNull()
+    }
   })
 })
 
@@ -120,7 +164,7 @@ describe('what Run sends', () => {
   test('no roots, no run', async () => {
     graphInputs = { domain: null, domains: [], existing_subdomains_count: 0, source: 'graph' }
     renderModal('Shodan')
-    expect(await screen.findByText(/No domain/)).toBeTruthy()
+    expect(await screen.findByText(/No scan root/)).toBeTruthy()
     expect((await runButton()).disabled).toBe(true)
   })
 })
@@ -148,7 +192,7 @@ describe('the notes and the summary', () => {
     graphInputs = { ...(graphInputs as object), stale_domains: ['old.test'] }
     renderModal('Tlsx')
     const note = await screen.findByTestId('partial-recon-stale')
-    expect(note.textContent).toMatch(/old\.test.*not in this project any more, not scanned; the next full recon removes it/)
+    expect(note.textContent).toMatch(/old\.test.*no longer a scan root of this project, not scanned; the next full recon removes it/)
   })
 
   test('roots without recon data are named', async () => {
@@ -196,13 +240,13 @@ describe('SubdomainDiscovery picks among the roots allowed to enumerate', () => 
     fireEvent.click(list.querySelectorAll('input[type=checkbox]')[1])
     fireEvent.click(list.querySelectorAll('input[type=checkbox]')[2])
     await waitFor(async () => expect((await runButton()).disabled).toBe(true))
-    expect(screen.getByText(/Tick at least one domain/)).toBeTruthy()
+    expect(screen.getByText(/Tick at least one scan root/)).toBeTruthy()
   })
 
   test('a batch with no wildcard says why nothing can run', async () => {
     graphInputs = { ...(graphInputs as object), discovery_domains: [] }
     renderModal('SubdomainDiscovery')
-    expect(await screen.findByText(/No domain in this project may be enumerated/)).toBeTruthy()
+    expect(await screen.findByText(/No scan root in this project may be enumerated/)).toBeTruthy()
     expect((await runButton()).disabled).toBe(true)
   })
 
@@ -223,5 +267,23 @@ describe('settings overrides', () => {
     const sent = Object.keys(onConfirm.mock.calls[0][0].settings_overrides ?? {})
     expect(sent.length).toBeGreaterThan(0)
     for (const key of sent) expect(PARTIAL_RECON_OVERRIDE_KEYS).toContain(key)
+  })
+})
+
+describe('an old-model graph (§4.11.6)', () => {
+  test('shows the banner, names the old Domain nodes, and disables Run', async () => {
+    graphInputs = { ...(graphInputs as Record<string, unknown>), legacy_graph: ['co.uk'] }
+    renderModal('Naabu')
+    const banner = await screen.findByTestId('partial-recon-legacy-graph')
+    expect(banner.textContent).toMatch(/built before the current scope model/)
+    expect(banner.textContent).toContain('co.uk')
+    expect(banner.textContent).toMatch(/Run a full recon first/)
+    expect((await runButton()).disabled).toBe(true)
+  })
+
+  test('a current graph shows no banner and leaves Run enabled', async () => {
+    renderModal('Naabu')
+    await waitFor(async () => expect((await runButton()).disabled).toBe(false))
+    expect(screen.queryByTestId('partial-recon-legacy-graph')).toBeNull()
   })
 })

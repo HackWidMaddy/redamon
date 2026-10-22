@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { projectTargetLabel } from '@/lib/projectSummary'
 import { guardProject } from '@/lib/access'
 import prisma from '@/lib/prisma'
 
@@ -30,7 +31,10 @@ export async function GET(request: NextRequest) {
     // Project info
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { name: true, targetDomain: true, ipMode: true, scanModules: true, createdAt: true, updatedAt: true },
+      select: {
+        name: true, targetDomain: true, ipMode: true, scanModules: true, createdAt: true, updatedAt: true,
+        targetIps: true, subdomainList: true, domainBatchMode: true, domainBatchHosts: true,
+      },
     })
     if (!project) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
@@ -97,6 +101,7 @@ export async function GET(request: NextRequest) {
       project: {
         name: project.name,
         targetDomain: project.targetDomain,
+        targetLabel: projectTargetLabel(project),
         ipMode: project.ipMode,
         scanModules: project.scanModules,
         createdAt: project.createdAt.toISOString(),

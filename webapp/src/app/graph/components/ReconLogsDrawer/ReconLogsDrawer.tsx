@@ -47,10 +47,11 @@ export function ReconLogsDrawer({
   groupNumber = null,
   totalGroups = null,
 }: ReconLogsDrawerProps) {
-  // Prefix every status line with the batch group, so a phase counter restarting
-  // reads as "next domain" rather than "the scan went backwards".
+  // Prefix every status line with the batch's scope group, so a phase counter
+  // restarting reads as "next scan root" rather than "the scan went backwards".
+  // The orchestrator's marker carries the group's scan root (one token).
   const groupPrefix = groupNumber && totalGroups
-    ? `Group ${groupNumber}/${totalGroups}${currentGroup ? ` (${currentGroup})` : ''} - `
+    ? `Scope group ${groupNumber}/${totalGroups}${currentGroup ? ` (scan root ${currentGroup})` : ''} - `
     : ''
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)

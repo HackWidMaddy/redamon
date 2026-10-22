@@ -16,6 +16,8 @@ import { currentAuthorization, loadEngagement } from '@/lib/engagement'
 import { settingsFingerprint } from '@/lib/jobQueue'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { applyRetentionSafe } from '@/lib/scanRetention'
+import type { InvalidEntry } from '@/lib/domainBatch'
+import { scopeStartProblem } from '@/lib/scopeGroups'
 import {
   prepareVersionsForFullScan,
   rollbackPreparedVersions,
@@ -98,6 +100,13 @@ export interface StartFullScanFailure {
    * before retrying. Absent means the orchestrator gave a definitive answer.
    */
   startOutcome?: 'unknown'
+  /**
+   * 'scope_invalid' when the saved scope holds entries the current rules refuse
+   * (a public-suffix update can do that to a stored list). Permanent and 422,
+   * never 409: the queue requeues a 409 forever as "busy".
+   */
+  code?: 'scope_invalid'
+  invalidEntries?: InvalidEntry[]
 }
 
 export type StartFullScanResult = StartFullScanSuccess | StartFullScanFailure
@@ -165,7 +174,7 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
     where: { id: projectId },
     select: {
       id: true, userId: true, targetDomain: true, ipMode: true, targetIps: true,
-      domainBatchMode: true, domainBatchGroups: true,
+      domainBatchMode: true, domainBatchHosts: true, subdomainList: true,
     },
   })
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
@@ -174,20 +183,21 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
     if (!project.targetIps || project.targetIps.length === 0) {
       return { ok: false, status: 400, error: 'Project has no target IPs configured' }
     }
-  } else if (project.domainBatchMode) {
-    // A batch's scope lives in its derived groups, not targetDomain. Fail closed:
-    // an empty group list means the list was never saved, not that there is
-    // nothing to scan, and the orchestrator would refuse the start anyway.
-    const groups = Array.isArray(project.domainBatchGroups) ? project.domainBatchGroups : []
-    if (groups.length === 0) {
+  } else if (!project.domainBatchMode && !project.targetDomain) {
+    return { ok: false, status: 400, error: 'Project has no target domain configured' }
+  } else {
+    // Fail closed: a headless start (a schedule, the queue) has nobody to show
+    // the form to, and the orchestrator would refuse the start anyway.
+    const problem = scopeStartProblem(project)
+    if (problem) {
       return {
         ok: false,
-        status: 400,
-        error: 'Project has no valid domain groups. Re-save its hostname list before scanning.',
+        status: 422,
+        code: 'scope_invalid',
+        invalidEntries: problem.invalid,
+        error: problem.invalid.length > 0 ? `${problem.message} Edit the target list before scanning.` : problem.message,
       }
     }
-  } else if (!project.targetDomain) {
-    return { ok: false, status: 400, error: 'Project has no target domain configured' }
   }
 
   // A third-party engagement must carry a rate ceiling AND the record of what
@@ -200,9 +210,11 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
   // find out from the target.
   const engagement = await loadEngagement(projectId)
   if (engagement.blockers.length > 0) {
+    // 422, not 409: the queue would requeue a 409 forever as "busy", and only a
+    // person adding the ceiling or the record can fix this.
     return {
       ok: false,
-      status: 409,
+      status: 422,
       error:
         'This is a third-party engagement and it is not startable: ' +
         engagement.blockers.join(' ') +

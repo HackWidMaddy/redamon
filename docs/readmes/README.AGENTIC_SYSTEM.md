@@ -617,9 +617,9 @@ The advantage over a single agent doing the same work sequentially is **speed an
 
 ### Skills System (Built-In, User, Chat)
 
-Skills are **reusable expert playbooks** the agent loads into its prompt to specialize its behaviour for a given attack technique. Three families coexist. **Built-in attack skills** (CVE exploit, brute force, SQL injection, XSS, phishing, DoS) are hard-coded prompt blocks that ship with the platform; the attack-path classifier picks one when it analyzes a new objective. **User attack skills** are markdown files under `agentic/skills/` (with categories like `vulnerabilities/`, `network/`, `cloud/`, `tooling/`); they are discovered at startup by `skill_loader.py`, classified by the LLM as `user_skill:<id>`, and injected as `## User Attack Skill` blocks. **Chat skills** are on-demand reference docs under `agentic/community-skills/` that the operator can inject mid-session via `/skill <name>` without changing the agent's classification.
+Skills are **reusable expert playbooks** the agent loads into its prompt to specialize its behaviour for a given attack technique. Three families coexist. **Built-in attack skills** (CVE exploit, brute force, SQL injection, XSS, phishing, DoS) are hard-coded prompt blocks that ship with the platform; the attack-path classifier picks one when it analyzes a new objective. **User attack skills** are Markdown files each user uploads (Global Settings, or a project's Agent Skills), stored as database rows (`UserAttackSkill`) with a name and a description, and fetched with the project settings on every orchestrator entry (`webapp/src/lib/userSkillAgentPayload.ts`); a project turns on at most 20 of them. The classifier picks one as `user_skill:<id>` and its text is injected as a `## User Attack Skill` block. Ready-made ones ship in `agentic/community-skills/` for **Import from Community**. **Chat skills** are on-demand reference docs under `agentic/skills/`, loaded by `skill_loader.py`, that the operator can inject mid-session via `/skill <name>` without changing the agent's classification.
 
-All three families share the same markdown-with-YAML-frontmatter format, so anyone, engineer or pentester, can write a new skill without touching Python. A skill file declares a name and description in frontmatter; the body is plain prose with whatever instructions, payload examples, and command snippets the author wants the agent to internalize. Up to 5 skills can be active simultaneously per session.
+All three are plain Markdown, so anyone, engineer or pentester, can write a new skill without touching Python. A chat skill declares its name and description in YAML frontmatter. A user attack skill may carry the same frontmatter block: the upload dialog reads it to fill the name and description, and it then stays in the stored text, which the agent reads as part of the skill; the router and the skill menu use the database name and description. The body is plain prose with whatever instructions, payload examples, and command snippets the author wants the agent to internalize.
 
 The advantage of the skill system is **extensibility without redeployment**. A red team encountering a new vulnerability class can write a skill markdown in 20 minutes and have the agent specialize for that class on the next session, no code change, no container rebuild, no prompt refactor. The classifier picks the right skill automatically based on the operator's natural-language objective. Full details: [Skills System chapter](#skills-system-built-in-user-chat).
 
@@ -873,12 +873,12 @@ Skills are reusable expert playbooks the agent loads into its prompt. Three fami
 | Family | Source | Affects classification? | Affects tool routing? | Lifecycle |
 |---|---|---|---|---|
 | **Built-in attack skills** | Hard-coded prompt blocks under [agentic/prompts/](../../agentic/prompts/) (CVE exploit, brute force, SQL injection, XSS, phishing, DoS, post-exploitation) | Yes, the classifier picks one | Yes, drives `get_phase_tools()` and the exploitation prompt block | Always available; togglable per project via `ATTACK_SKILL_CONFIG.builtIn` |
-| **User attack skills** | Markdown files under [agentic/skills/](../../agentic/skills/) (categorised: `vulnerabilities/`, `network/`, `cloud/`, `tooling/`, `frameworks/`, `protocols/`, `wireless/`, `social_engineering/`, `mobile/`, `api_security/`, `active_directory/`, `reporting/`, `scan_modes/`, `coordination/`, `technologies/`) | Yes, classified as `user_skill:<id>` | No (uses generic phase tools) | Discovered at startup by [agentic/skill_loader.py](../../agentic/orchestrator_helpers/skill_loader.py); admin-curated; up to `MAX_SKILLS=5` per session |
-| **Chat skills** | Same markdown format under [agentic/community-skills/](../../agentic/community-skills/) (e.g. `xss_exploitation.md`, `sqli_exploitation.md`, `ssrf_exploitation.md`, `api_testing.md`) | No | No | On-demand reference docs, injected via `/skill` or guidance queue mid-session |
+| **User attack skills** | Database rows (`UserAttackSkill`): Markdown each user uploads, one file or a batch, in Global Settings or a project's Agent Skills; ready-made ones in [agentic/community-skills/](../../agentic/community-skills/) for Import from Community | Yes, classified as `user_skill:<id>` | No (uses generic phase tools) | Fetched with the project settings (`webapp/src/lib/userSkillAgentPayload.ts`, read through `get_enabled_user_skills()`); off until a project turns them on, at most 20 per project |
+| **Chat skills** | Markdown with YAML frontmatter under [agentic/skills/](../../agentic/skills/) (categorised: `vulnerabilities/`, `network/`, `cloud/`, `tooling/`, ...) | No | No | Discovered by [skill_loader.py](../../agentic/orchestrator_helpers/skill_loader.py); on-demand reference docs, injected via `/skill` or guidance queue mid-session |
 
 ### Skill File Format
 
-Both user and chat skills are plain Markdown with YAML frontmatter:
+Chat skills are plain Markdown with YAML frontmatter. A user attack skill may carry the same block: the webapp's upload dialog (`webapp/src/lib/skillMetadata.ts`) reads `name` and `description` from it, the name falling back to the first `#` heading; the block stays in the stored text, and nothing reads it again after the upload:
 
 ```markdown
 ---
@@ -889,7 +889,7 @@ description: SSRF discovery, payload crafting, and chained internal-service abus
 # Body content goes here in plain markdown...
 ```
 
-The loader's `_parse_frontmatter` is intentionally minimal (no full YAML parser), only top-level `key: value` pairs are read. The body is the entire markdown after the closing `---`.
+The chat-skill loader's `_parse_frontmatter` is intentionally minimal (no full YAML parser), only top-level `key: value` pairs are read. The body is the entire markdown after the closing `---`.
 
 ### Skill Discovery and Resolution
 
@@ -4181,7 +4181,7 @@ flowchart TB
 
 ### Internal-Endpoint Authentication (STRIDE D3)
 
-The agent's billed-LLM REST endpoints - `/llm/ffuf-extensions`, `/llm/nuclei-tags`, `/llm/waf-classify`, `/llm/nuclei-fp-filter`, `/llm/takeover-classify`, `/guardrail/check-target`, `/roe/parse`, `/models`, `/llm-provider/test` - and the TypeSafe Jev endpoints - `/jev/ffuf-extensions`, `/jev/nuclei-tags`, `/jev/waf-classify`, `/jev/takeover-classify`, `/jev/ffuf-base-paths`, `/jev/page-type`, `/jev/tool-health`, `/jev/crawl-seed-order`, `/jev/serialized-classify` - are gated by `agentic/llm_guard.py` (a FastAPI dependency). The `/jev/*` endpoints share the same per-user budget, and additionally bind the project to its owner before loading the owner's Jev token (`agentic/jev_client.py`):
+The agent's billed-LLM REST endpoints - `/llm/ffuf-extensions`, `/llm/nuclei-tags`, `/llm/waf-classify`, `/llm/nuclei-fp-filter`, `/llm/takeover-classify`, `/guardrail/check-target`, `/roe/parse`, `/skill-metadata/generate`, `/models`, `/llm-provider/test` - and the TypeSafe Jev endpoints - `/jev/ffuf-extensions`, `/jev/nuclei-tags`, `/jev/waf-classify`, `/jev/takeover-classify`, `/jev/ffuf-base-paths`, `/jev/page-type`, `/jev/tool-health`, `/jev/crawl-seed-order`, `/jev/serialized-classify` - are gated by `agentic/llm_guard.py` (a FastAPI dependency). The `/jev/*` endpoints share the same per-user budget, and additionally bind the project to its owner before loading the owner's Jev token (`agentic/jev_client.py`):
 
 - **Auth**: constant-time (`hmac.compare_digest`) `X-Internal-Key`, accepting either `INTERNAL_API_KEY` or the scoped `SCANNER_API_KEY`. Fails **open** with a one-time warning only when neither secret is set (dev), closing as soon as the key exists.
 - **Rate limit**: a stdlib token bucket keyed by `(user_id, source-ip)` (`LLM_GUARD_RATE_CAPACITY`, `LLM_GUARD_RATE_REFILL_PER_SEC`).

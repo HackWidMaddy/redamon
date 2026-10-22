@@ -8,6 +8,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.helpers import (
+    typed_host_ok,
+    root_orgs,
+    attach_org,
     _classify_ip,
     _is_ip_or_cidr,
     _is_valid_hostname,
@@ -61,7 +64,7 @@ def run_httpx(config: dict) -> None:
     if user_targets:
         for entry in user_targets.get("subdomains", []):
             entry = entry.strip().lower()
-            if entry and _is_valid_hostname(entry) and host_in_roots(entry, roots):
+            if entry and _is_valid_hostname(entry) and typed_host_ok(entry, roots, config.get("domain_groups")):
                 user_hostnames.append(entry)
             elif entry and _is_valid_hostname(entry):
                 print(f"[!][Partial Recon] Skipping subdomain outside the project's domains: {entry}")
@@ -115,6 +118,7 @@ def run_httpx(config: dict) -> None:
                         },
                         user_id=user_id,
                         project_id=project_id,
+                        root_orgs=root_orgs(roots),
                     )
                     print(f"[+][Partial Recon] Created UserInput node for IPs: {user_input_id}")
                 else:
@@ -191,12 +195,12 @@ def run_httpx(config: dict) -> None:
                                 )
                                 session.run(
                                     """
-                                    MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                                    MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE toLower(d.name) = toLower($domain)
                                     MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                                     MERGE (s)-[:BELONGS_TO]->(d)
                                     MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                     """,
-                                    domain=root_for_host(hostname, roots), sub=hostname,
+                                    domain=attach_org(root_for_host(hostname, roots)), sub=hostname,
                                     uid=user_id, pid=project_id,
                                 )
                                 for ip_version in ("ipv4", "ipv6"):
@@ -259,6 +263,7 @@ def run_httpx(config: dict) -> None:
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             print(f"[+][Partial Recon] Created fallback UserInput node: {user_input_id}")
                 except Exception:

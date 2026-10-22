@@ -10,7 +10,10 @@ services, technologies, and vulnerabilities in a navigable graph structure.
 
 ## 🎯 Design Principles
 
-1. **Hierarchical Ownership**: All nodes trace back to a Domain with `user_id` and `project_id`
+1. **Hierarchical Ownership**: All nodes trace back to a Domain with `user_id` and `project_id`.
+   A `Domain` is a **registrable domain** (the org, read from the Public Suffix
+   List): one per org however many scan roots a project has under it. A deeper
+   scan root that is a target is a `Subdomain` of its org with `is_scan_root: true`.
 2. **Attack Surface Mapping**: Every potential entry point is modeled (ports, URLs, parameters)
 3. **Technology-Vulnerability Linkage**: Technologies connect to known CVEs for risk assessment
 4. **No Redundancy**: Information stored once, relationships handle connections
@@ -328,6 +331,23 @@ RETURN d, s, ip, p
 MATCH (v:Vulnerability {severity: 'critical'})
 RETURN v
 ```
+
+A query that starts from a target name matches the org `Domain` and filters the
+Subdomains, never `Domain {name: <scan root>}`: a project scoped to
+`*.api.example.com` has `Domain {name: 'example.com'}` and its hosts under it.
+
+```cypher
+MATCH (d:Domain {user_id: $userId, project_id: $projectId, name: 'example.com'})
+      -[:HAS_SUBDOMAIN]->(s:Subdomain)
+WHERE s.name = 'api.example.com' OR s.name ENDS WITH '.api.example.com'
+RETURN s
+```
+
+The org Domain also carries the run's coverage record (`recon_coverage_at`,
+`recon_coverage_gaps`, `recon_skipped_hosts`, `recon_nuclei_truncated`), merged
+across the run's scan roots of that org (`recon_coverage_roots`, keyed by
+`recon_coverage_run`), and `openapi_source_status` entries prefixed with their
+scan root (`<scanRoot>|<id>|<hash>|<code>|<time>`).
 
 ### AWS Deployment Architecture
 

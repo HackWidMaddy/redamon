@@ -176,7 +176,10 @@ class TestUpdateGraphFromUncover(unittest.TestCase):
         stats = client.update_graph_from_uncover(recon, "user1", "proj1")
         self.assertTrue(len(stats["errors"]) > 0)
 
-    def test_no_domain_skips_relationships(self):
+    def test_a_host_under_no_scan_root_gets_no_node(self):
+        # uncover searches by org and certificate, so its hosts are not scope by
+        # themselves (GDB-04): one under no scan root used to become a Subdomain
+        # with no Domain at all.
         client, session = _make_client()
         recon = {
             "domain": "",
@@ -191,8 +194,9 @@ class TestUpdateGraphFromUncover(unittest.TestCase):
             },
         }
         stats = client.update_graph_from_uncover(recon, "user1", "proj1")
-        self.assertEqual(stats["subdomains_created"], 1)
+        self.assertEqual(stats["subdomains_created"], 0)
         self.assertEqual(stats["relationships_created"], 0)
+        self.assertEqual(stats["hosts_out_of_scope"], 1)
 
 
     def test_creates_endpoint_nodes_from_urls(self):

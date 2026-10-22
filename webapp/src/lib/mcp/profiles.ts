@@ -614,7 +614,7 @@ export const PROFILE_ONBOARDING: Record<ProfileId, ProfileOnboarding> = {
       'most serious findings with evidence, and an explicit section on what you could not see and ' +
       'why.',
     gotchas: [
-      'You cannot change what RedAmon points at, and you must not try. The scope was set by a human who confirmed the authorisation to scan this estate.',
+      'Never change what RedAmon points at on your own initiative. The scope was set by a human who confirmed the authorisation to scan this estate; a target list moves only when that human asks for it.',
       'A freshly-started scan takes a long time. Poll the status rather than assuming it finished, and wait for the graph to settle before reading counts.',
       'Absence of findings in a layer that was never scanned is not a clean bill of health. Say which layers you actually have.',
     ],

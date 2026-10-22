@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from graph_db.mixins.recon.scope import attach_roots, root_for_host
+from graph_db.mixins.recon.scope import attach_roots, org_for_scan_root, root_for_host
 
 
 class TakeoverMixin:
@@ -162,7 +162,10 @@ class TakeoverMixin:
                         stats["relationships_created"] += 1
                         attached = True
 
-                    if not attached and hostname in {r.lower() for r in roots}:
+                    # A finding on an org apex hangs off its Domain; one on a
+                    # deeper scan root falls through to that root's Subdomain.
+                    if not attached and hostname in {r.lower() for r in roots} \
+                            and org_for_scan_root(hostname, recon_data).lower() == hostname:
                         rel = session.run(
                             """
                             MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})

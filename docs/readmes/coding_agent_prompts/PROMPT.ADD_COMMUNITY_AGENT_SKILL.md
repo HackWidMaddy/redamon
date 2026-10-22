@@ -14,8 +14,8 @@ Community Agent Skills are the simplest of the three systems because everything 
 agentic/community-skills/<skill_name>.md
          │
          ▼
-  GET /community-skills  (agentic/api.py:2170)   catalog
-  GET /community-skills/<skill_id>  (api.py:2197) full content
+  GET /community-skills  (agentic/api.py:2175)   catalog
+  GET /community-skills/<skill_id>  (api.py:2202) full content
          │
          ▼
   POST /api/users/:id/attack-skills/import-community
@@ -55,7 +55,7 @@ The agentic `GET /community-skills` endpoint auto-discovers files by globbing th
 - **Skills are per-user, not global, and import is by-name only.** Each user who wants this skill must click "Import from Community" in their Global Settings. Already-imported users will NOT auto-pick up new community skills, they need to re-import. Import skips any name the user already has (`import-community/route.ts`), so **editing an existing skill's `.md` does not reach users who already imported it**: re-import leaves their old copy in place. To adopt a rewrite they must delete the old skill first, then re-import. Call this out in the CHANGELOG whenever you change a shipped skill's content.
 - **Skill content is capped at 50 KB.** The validation is at [webapp/src/app/api/users/[id]/attack-skills/route.ts](../../../webapp/src/app/api/users/[id]/attack-skills/route.ts) POST handler (~line 67). Keep your file well under 50,000 characters.
 - **Two different limits.** A user can hold up to 1000 skills (`MAX_SKILLS_PER_USER` in [webapp/src/lib/userSkills.ts](../../../webapp/src/lib/userSkills.ts)), but a project can enable at most 20 of them: the webapp refuses a 21st enabled skill, and the agent's `MAX_ENABLED_USER_SKILLS` in [agentic/project_settings.py](../../../agentic/project_settings.py) cuts the rest.
-- **The first non-heading paragraph becomes the description.** [agentic/api.py:2182](../../../agentic/api.py) extracts the first 200-char stripped non-`#` line as the description shown in the import dialog. Write that line well.
+- **The first non-heading paragraph becomes the description.** [agentic/api.py:2188-2192](../../../agentic/api.py) extracts the first 200-char stripped non-`#` line as the description shown in the import dialog. Write that line well.
 - **No em dashes anywhere.** Use hyphens or rephrase. Enforced project-wide.
 
 ---
@@ -72,7 +72,7 @@ The agentic `GET /community-skills` endpoint auto-discovers files by globbing th
 
 Create [agentic/community-skills/<skill_name>.md](../../../agentic/community-skills/). `<skill_name>` becomes the skill ID visible to the import endpoint (file stem, lowercase_snake, no extension).
 
-The file stem also becomes the default `name` when rendered in the import UI (`md_file.stem.replace("_", " ").title()` at [agentic/api.py:2180](../../../agentic/api.py)). Pick a name that reads well in Title Case: `ssrf_exploitation` -> "Ssrf Exploitation".
+The file stem also becomes the default `name` when rendered in the import UI (`md_file.stem.replace("_", " ").title()` at [agentic/api.py:2186](../../../agentic/api.py)). Pick a name that reads well in Title Case: `ssrf_exploitation` -> "Ssrf Exploitation".
 
 ### Required structure
 
@@ -90,7 +90,7 @@ Canonical template (follow this shape, the wiki at [redamon.wiki/Agent-Skills.md
 
 <Short paragraph: one-line summary. THIS BECOMES THE AUTO-DESCRIPTION
 if the user does not provide one in the import dialog. The API extracts
-the first non-heading stripped line at agentic/api.py:2182.>
+the first non-heading stripped line at agentic/api.py:2188-2192.>
 
 ## When to Classify Here
 
@@ -213,7 +213,7 @@ No rebuild. The file is live as soon as you save it (directory is volume-mounted
 | Skill not in `/community-skills` catalog | File not in `./agentic/community-skills/` (that exact path), or filename is `README.md` (excluded at [api.py:2178](../../../agentic/api.py)), or missing `.md` extension. The directory is volume-mounted so there is no rebuild to miss |
 | "Import from Community" shows `total: 0` | webapp cannot reach `AGENT_API_URL`. Check `docker compose logs webapp` and the `AGENT_API_URL` env var in the webapp service |
 | Import works but classifier never picks the skill | Description is generic or overlaps with a built-in. Edit the description via Global Settings > Agent Skills > pencil icon. Or rewrite the opening paragraph of the .md |
-| Badge shows `SKILL` but workflow not in system prompt | Unlikely; `_resolve_user_skill()` is non-conditional. Check agent logs for errors parsing the `attack_path_type` |
+| Badge shows `SKILL` but workflow not in system prompt | Unlikely; `resolve_user_skill()` is non-conditional. Check agent logs for errors parsing the `attack_path_type` |
 | "Too large" error on import | File exceeds 50 KB. Trim the workflow |
 | "You have 1000 skills, the maximum" error on import | User is at the library cap. They need to delete an existing skill first |
 | Cannot enable the skill in a project | The project already has 20 user skills enabled. Turn one off first |

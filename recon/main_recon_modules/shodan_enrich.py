@@ -447,7 +447,10 @@ def _run_domain_dns(domain: str, api_key: str, key_rotator=None) -> dict:
     if not data:
         return {}
 
+    # The name asked: the writer builds each record's host on it, never on the
+    # group's scan root (a deeper root would turn `mail` into mail.<root>).
     result = {
+        "domain": domain,
         "subdomains": data.get("subdomains", []),
         "records": [],
     }
@@ -673,10 +676,15 @@ def run_shodan_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
             shodan_data["reverse_dns"] = _run_reverse_dns(ips, api_key, shodan_data["hosts"], key_rotator=key_rotator, max_workers=shodan_workers)
             print(f"[+][Shodan] Reverse DNS complete: {len(shodan_data['reverse_dns'])} IPs resolved")
 
-        # 3. Domain DNS (domain mode only, paid Shodan plan — no free fallback)
+        # 3. Domain DNS (domain mode only, paid Shodan plan — no free fallback).
+        # Asked of the org, once per run; the org's other groups reuse it.
         if do_ddns and domain and not is_ip_mode:
-            print(f"[*][Shodan] Running domain DNS for {domain}...")
-            shodan_data["domain_dns"] = _run_domain_dns(domain, api_key, key_rotator=key_rotator)
+            from recon.helpers.org_work import once_per_org, org_of
+            org = org_of(combined_result)
+            print(f"[*][Shodan] Running domain DNS for {org}...")
+            shodan_data["domain_dns"], _ = once_per_org(
+                "shodan_domain_dns", org,
+                lambda o: _run_domain_dns(o, api_key, key_rotator=key_rotator), label="Shodan")
             sub_count = len(shodan_data["domain_dns"].get("subdomains", []))
             print(f"[+][Shodan] Domain DNS complete: {sub_count} subdomains found")
 

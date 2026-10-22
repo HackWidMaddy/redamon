@@ -6,7 +6,7 @@ the schema reserves for this lap (ai_owasp_llm_id, ai_asr, ai_trials, ...).
 Zero new node labels. Findings link to the attacked Endpoint via
 HAS_VULNERABILITY. When the target is custom / off-graph (no Endpoint exists),
 the normalizer materialises the target node chain (BaseURL -> Endpoint, anchored
-to a Subdomain+Domain or IP) marked ``source='ai_attack_target'`` so the finding
+to a Subdomain of an existing Domain, an ExternalDomain, or an IP) marked ``source='ai_attack_target'`` so the finding
 is never a disconnected island -- the same approach partial recon uses for
 user-typed inputs.
 """
@@ -102,8 +102,8 @@ def write_finding(session, finding: Finding, user_id: str, project_id: str,
       1. If the attacked Endpoint already exists -> HAS_VULNERABILITY to it.
       2. Otherwise MATERIALISE the target: create the BaseURL -> Endpoint chain
          (marked ``source='ai_attack_target'``, ``ai_attack_synthetic=true``),
-         anchor it to a host node (Subdomain+Domain for a hostname, IP for a raw
-         IP), and link the finding to the new Endpoint. This mirrors how partial
+         anchor it to a host node (a Subdomain of an existing Domain, an
+         ExternalDomain, or an IP), and link the finding to the new Endpoint. This mirrors how partial
          recon materialises user-typed inputs, so a custom (off-graph) target is
          never a disconnected island.
 
@@ -162,23 +162,17 @@ def _is_ip(host: str) -> bool:
         return False
 
 
-def _registrable(host: str) -> str:
-    """Naive eTLD+1 (no PSL): keep the last two labels, else the host itself.
-    Good enough to give a created Subdomain a Domain anchor to hang off."""
-    parts = host.split(".")
-    return ".".join(parts[-2:]) if len(parts) > 2 else host
-
-
 def _ensure_target_node(session, finding: Finding, vid: str,
                         user_id: str, project_id: str, target=None) -> None:
     """Create the attacked target's node chain and link the finding to it.
 
     Builds ``BaseURL -[:HAS_ENDPOINT]-> Endpoint -[:HAS_VULNERABILITY]-> Vuln``
-    (always connected) and anchors the BaseURL to a host root so it joins the
-    graph rather than floating: a hostname gets ``Domain -[:HAS_SUBDOMAIN]->
-    Subdomain -[:HAS_BASE_URL]-> BaseURL``; a raw IP gets ``IP -[:HAS_VULNERABILITY]
-    -> Vuln`` (the IP, Endpoint and BaseURL share the one Vulnerability node, so
-    the whole thing is a single connected component). Created nodes carry
+    (always connected) and anchors the BaseURL to a host node: a hostname under
+    a Domain recon wrote gets ``Domain -[:HAS_SUBDOMAIN]-> Subdomain
+    -[:HAS_BASE_URL]-> BaseURL``; a hostname under none becomes an
+    ``ExternalDomain``; a raw IP gets ``IP -[:HAS_VULNERABILITY] -> Vuln`` (the IP,
+    Endpoint and BaseURL share the one Vulnerability node, so the whole thing is a
+    single connected component). Created nodes carry
     ``source='ai_attack_target'`` + ``ai_attack_synthetic=true`` so they are
     distinguishable from recon-discovered nodes and never overwrite them.
     """
@@ -231,19 +225,65 @@ def _ensure_target_node(session, finding: Finding, vid: str,
             id=vid, host=host, uid=user_id, pid=project_id,
         )
     else:
+        _anchor_hostname(session, base_url, host.lower(), user_id, project_id)
+
+
+def _anchor_hostname(session, base_url: str, host: str, user_id: str, project_id: str) -> None:
+    """Hang a target's BaseURL off the scope recon already wrote, never off a new Domain.
+
+    The anchor is the longest existing Domain the host is, label by label, under.
+    A Domain made here would be one the scope never named (a custom target's
+    guessed "registrable" part, `co.uk` for `x.acme.co.uk`), and partial recon
+    refuses a project holding one (tests/test_no_stray_domain_merge.py). So:
+    strictly under a Domain -> a Subdomain of it; equal to a Domain name -> the
+    Subdomain recon wrote for it, if any (the root is a target only with Include
+    Root); under none -> an ExternalDomain.
+    """
+    match = session.run(
+        """
+        MATCH (d:Domain {user_id: $uid, project_id: $pid})
+        WHERE coalesce(d.ip_mode, false) = false
+        WITH d, toLower(d.name) AS n
+        WHERE $host = n OR $host ENDS WITH '.' + n
+        RETURN d.name AS domain, $host = n AS apex
+        ORDER BY size(n) DESC LIMIT 1
+        """,
+        host=host, uid=user_id, pid=project_id,
+    ).single()
+
+    if match is None:
+        session.run(
+            """
+            MERGE (ed:ExternalDomain {domain: $host, user_id: $uid, project_id: $pid})
+              ON CREATE SET ed.first_seen_at = datetime()
+            SET ed.sources = coalesce(ed.sources, []) + CASE WHEN NOT 'ai_attack_target'
+                               IN coalesce(ed.sources, []) THEN ['ai_attack_target'] ELSE [] END,
+                ed.updated_at = datetime()
+            """,
+            host=host, uid=user_id, pid=project_id,
+        )
+    elif match["apex"]:
         session.run(
             """
             MATCH (b:BaseURL {url: $baseurl, user_id: $uid, project_id: $pid})
+            MATCH (s:Subdomain {name: $host, user_id: $uid, project_id: $pid})
+            MERGE (s)-[:HAS_BASE_URL]->(b)
+            """,
+            baseurl=base_url, host=host, uid=user_id, pid=project_id,
+        )
+    else:
+        session.run(
+            """
+            MATCH (b:BaseURL {url: $baseurl, user_id: $uid, project_id: $pid})
+            MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
             MERGE (s:Subdomain {name: $host, user_id: $uid, project_id: $pid})
               ON CREATE SET s.source = 'ai_attack_target', s.ai_attack_synthetic = true,
                             s.updated_at = datetime()
             MERGE (s)-[:HAS_BASE_URL]->(b)
-            MERGE (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
-              ON CREATE SET d.source = 'ai_attack_target', d.ai_attack_synthetic = true,
-                            d.updated_at = datetime()
             MERGE (d)-[:HAS_SUBDOMAIN]->(s)
+            MERGE (s)-[:BELONGS_TO]->(d)
             """,
-            baseurl=base_url, host=host, domain=_registrable(host),
+            baseurl=base_url, host=host, domain=match["domain"],
             uid=user_id, pid=project_id,
         )
 

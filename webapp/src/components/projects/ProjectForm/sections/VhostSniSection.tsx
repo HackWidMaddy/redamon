@@ -122,7 +122,7 @@ export function VhostSniSection({ data, updateField, onRun }: VhostSniSectionPro
                   <div>
                     <div className={styles.toggleLabel}>Use default wordlist</div>
                     <div className={styles.toggleDescription}>
-                      ~2,300 curated admin / dev / staging / internal / modern-stack prefixes from <code>recon/wordlists/vhost-common.txt</code>. Each prefix expands as <code>{`{prefix}.{target_apex}`}</code>.
+                      ~2,300 curated admin / dev / staging / internal / modern-stack prefixes from <code>recon/wordlists/vhost-common.txt</code>. Each prefix expands as <code>{`{prefix}.{scan_root}`}</code> under an enumerated scope group; a listed group is tested only against its own hosts.
                     </div>
                   </div>
                   <Toggle
@@ -146,7 +146,7 @@ export function VhostSniSection({ data, updateField, onRun }: VhostSniSectionPro
                   style={{ width: '100%', minHeight: '160px', fontFamily: 'monospace', fontSize: '12px' }}
                 />
                 <div className={styles.fieldHint}>
-                  Bare prefixes (<code>admin</code>) are expanded as <code>{`admin.{target_apex}`}</code>. Full hostnames (containing a dot) are used as-is. Combined with graph candidates and the default wordlist, then deduped.
+                  Bare prefixes (<code>admin</code>) are expanded as <code>{`admin.{scan_root}`}</code>. Full hostnames (containing a dot) are used as-is. Combined with graph candidates and the default wordlist, then deduped.
                 </div>
               </div>
 

@@ -1,0 +1,221 @@
+{
+  "_comment": "The plan's expected differences per release (nested wildcard plan section 14.5), for compare_snapshots.py --allow FILE --phase <B|C|D> --project <R*>. A rule may only encode a row of that table; a difference that needs a new rule is a plan change for the owner, never a reason to widen one. Synthetic lab names only.",
+  "B": {},
+  "C": {
+    "all": [
+      {
+        "set": "recon_key",
+        "change": "added",
+        "match": ":(scope_groups|all_project_roots)$",
+        "why": "C/all: section 4.10 output contract (all_project_roots now in single-domain runs too)"
+      },
+      {
+        "set": "recon_metadata",
+        "change": "added",
+        "match": ":(org_domain|scope_mode|include_root_domain|org_domains|scope_groups)=",
+        "why": "C/all: new metadata keys (include_root_domain newly stamped in IP mode, REC-26)"
+      },
+      {
+        "set": "recon_metadata",
+        "change": "removed",
+        "match": "^recon_<pid>\\.json:(include_root_domain|scope_mode|org_domain|filtered_mode|wildcard_mode|subdomain_filter)=",
+        "why": "C/all: the merged batch file loses one group's scalar scope keys"
+      }
+    ],
+    "R4": [
+      {
+        "set": "base_url",
+        "change": "removed",
+        "match": "^https?://nwlab\\.test(:\\d+)?$",
+        "why": "C/R4: nwlab.test (root not listed) is no longer probed (B-5)"
+      },
+      {
+        "set": "endpoint",
+        "change": "removed",
+        "match": "^https?://nwlab\\.test(:\\d+)? ",
+        "why": "C/R4: no BaseURL for the unlisted apex, so no endpoints"
+      },
+      {
+        "set": "vulnerability",
+        "change": "removed",
+        "match": "\\|nwlab\\.test\\|",
+        "why": "C/R4: the apex is no longer TLS/header/takeover-checked"
+      },
+      {
+        "set": "dns_email_finding",
+        "change": "removed",
+        "match": "^nwlab\\.test\\|tls_",
+        "why": "C/R4: the apex's TLS checks no longer run"
+      }
+    ],
+    "R3": [
+      {
+        "set": "base_url",
+        "change": "removed",
+        "match": "^https?://(?!(www\\.nwlab\\.test|a\\.b\\.c\\.d\\.nwlab\\.test|www\\.nwlab-two\\.test|nwlab-two\\.test)(:\\d+)?$)",
+        "why": "C/R3: SAN/JS/uncover-injected hosts under an EXACT group lose their BaseURL (B-6)"
+      },
+      {
+        "set": "endpoint",
+        "change": "removed",
+        "match": "^https?://(?!(www\\.nwlab\\.test|a\\.b\\.c\\.d\\.nwlab\\.test|www\\.nwlab-two\\.test|nwlab-two\\.test)(:\\d+)? )",
+        "why": "C/R3: their endpoints go with the BaseURL"
+      },
+      {
+        "set": "vulnerability",
+        "change": "removed",
+        "match": "\\|(?!(www\\.nwlab\\.test|a\\.b\\.c\\.d\\.nwlab\\.test|www\\.nwlab-two\\.test|nwlab-two\\.test)\\|)[a-z0-9.-]+\\.nwlab(-two)?\\.test\\|",
+        "why": "C/R3: their findings go too"
+      }
+    ]
+  },
+  "D": {
+    "all": [
+      {
+        "set": "coverage_gap",
+        "change": "any",
+        "match": "\"root\": ",
+        "why": "D/all: gap entries carry the scan root they came from (4.11.4)"
+      }
+    ],
+    "R5": [
+      {
+        "set": "domain",
+        "change": "removed",
+        "match": "^api\\.nwlab\\.test$",
+        "why": "D/R5: Domain(api.nwlab.test) becomes Domain(nwlab.test)"
+      },
+      {
+        "set": "domain",
+        "change": "added",
+        "match": "^nwlab\\.test$",
+        "why": "D/R5: the org Domain"
+      },
+      {
+        "set": "subdomain",
+        "change": "any",
+        "match": "^api\\.nwlab\\.test\\|scan_root=(true|false)$",
+        "why": "D/R5: the scan root is a Subdomain with is_scan_root"
+      },
+      {
+        "set": "subdomain_parent",
+        "change": "any",
+        "match": " -> (api\\.)?nwlab\\.test$",
+        "why": "D/R5: hosts hang under the org Domain"
+      },
+      {
+        "set": "dns_email_finding",
+        "change": "any",
+        "match": "^(api\\.)?nwlab\\.test\\|(spf|dmarc|dnssec)_",
+        "why": "D/R5: SPF/DMARC/DNSSEC attach to the org (ids host-less, D-23)"
+      }
+    ]
+  },
+  "CD": {
+    "all": [
+      {
+        "set": "recon_key",
+        "change": "added",
+        "match": ":(scope_groups|all_project_roots)$",
+        "why": "C/all: section 4.10 output contract (all_project_roots now in single-domain runs too)"
+      },
+      {
+        "set": "recon_metadata",
+        "change": "added",
+        "match": ":(org_domain|scope_mode|include_root_domain|org_domains|scope_groups)=",
+        "why": "C/all: new metadata keys (include_root_domain newly stamped in IP mode, REC-26)"
+      },
+      {
+        "set": "recon_metadata",
+        "change": "removed",
+        "match": "^recon_<pid>\\.json:(include_root_domain|scope_mode|org_domain|filtered_mode|wildcard_mode|subdomain_filter)=",
+        "why": "C/all: the merged batch file loses one group's scalar scope keys"
+      },
+      {
+        "set": "coverage_gap",
+        "change": "any",
+        "match": "\"root\": ",
+        "why": "D/all: gap entries carry the scan root they came from (4.11.4)"
+      }
+    ],
+    "R4": [
+      {
+        "set": "base_url",
+        "change": "removed",
+        "match": "^https?://nwlab\\.test(:\\d+)?$",
+        "why": "C/R4: nwlab.test (root not listed) is no longer probed (B-5)"
+      },
+      {
+        "set": "endpoint",
+        "change": "removed",
+        "match": "^https?://nwlab\\.test(:\\d+)? ",
+        "why": "C/R4: no BaseURL for the unlisted apex, so no endpoints"
+      },
+      {
+        "set": "vulnerability",
+        "change": "removed",
+        "match": "\\|nwlab\\.test\\|",
+        "why": "C/R4: the apex is no longer TLS/header/takeover-checked"
+      },
+      {
+        "set": "dns_email_finding",
+        "change": "removed",
+        "match": "^nwlab\\.test\\|tls_",
+        "why": "C/R4: the apex's TLS checks no longer run"
+      }
+    ],
+    "R3": [
+      {
+        "set": "base_url",
+        "change": "removed",
+        "match": "^https?://(?!(www\\.nwlab\\.test|a\\.b\\.c\\.d\\.nwlab\\.test|www\\.nwlab-two\\.test|nwlab-two\\.test)(:\\d+)?$)",
+        "why": "C/R3: SAN/JS/uncover-injected hosts under an EXACT group lose their BaseURL (B-6)"
+      },
+      {
+        "set": "endpoint",
+        "change": "removed",
+        "match": "^https?://(?!(www\\.nwlab\\.test|a\\.b\\.c\\.d\\.nwlab\\.test|www\\.nwlab-two\\.test|nwlab-two\\.test)(:\\d+)? )",
+        "why": "C/R3: their endpoints go with the BaseURL"
+      },
+      {
+        "set": "vulnerability",
+        "change": "removed",
+        "match": "\\|(?!(www\\.nwlab\\.test|a\\.b\\.c\\.d\\.nwlab\\.test|www\\.nwlab-two\\.test|nwlab-two\\.test)\\|)[a-z0-9.-]+\\.nwlab(-two)?\\.test\\|",
+        "why": "C/R3: their findings go too"
+      }
+    ],
+    "R5": [
+      {
+        "set": "domain",
+        "change": "removed",
+        "match": "^api\\.nwlab\\.test$",
+        "why": "D/R5: Domain(api.nwlab.test) becomes Domain(nwlab.test)"
+      },
+      {
+        "set": "domain",
+        "change": "added",
+        "match": "^nwlab\\.test$",
+        "why": "D/R5: the org Domain"
+      },
+      {
+        "set": "subdomain",
+        "change": "any",
+        "match": "^api\\.nwlab\\.test\\|scan_root=(true|false)$",
+        "why": "D/R5: the scan root is a Subdomain with is_scan_root"
+      },
+      {
+        "set": "subdomain_parent",
+        "change": "any",
+        "match": " -> (api\\.)?nwlab\\.test$",
+        "why": "D/R5: hosts hang under the org Domain"
+      },
+      {
+        "set": "dns_email_finding",
+        "change": "any",
+        "match": "^(api\\.)?nwlab\\.test\\|(spf|dmarc|dnssec)_",
+        "why": "D/R5: SPF/DMARC/DNSSEC attach to the org (ids host-less, D-23)"
+      }
+    ]
+  },
+  "_comment_CD": "C and D shipped together (the owner asked for the short validation): the union of both phases."
+}

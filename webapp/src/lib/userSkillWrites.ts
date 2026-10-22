@@ -1,6 +1,7 @@
 /**
- * Every write of a user's own agent skills goes through here: upload, edit, community
- * import, delete, quarantine and release, and saving a plugin's proposal as a new skill.
+ * Every write of a user's own agent skills goes through here: upload (one skill, or a batch
+ * that is saved whole or not at all), edit, community import, delete, quarantine and release,
+ * and saving a plugin's proposal as a new skill.
  *
  * Each runs in one transaction holding the per-user advisory lock, so the name check and
  * the cap count are exact (two uploads cannot both take the last slot or the same name), and
@@ -16,9 +17,12 @@ import type { Prisma, UserAttackSkill } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import {
-  DESCRIPTION_MAX_CHARS, MAX_CONTENT_SIZE, MAX_SKILLS_PER_USER, UserSkillError,
+  DESCRIPTION_MAX_CHARS, MAX_CONTENT_SIZE, MAX_ENABLED_USER_SKILLS_PER_PROJECT, MAX_SKILLS_PER_BATCH,
+  MAX_SKILLS_PER_USER, UserSkillError, normalizeUserToggleMap, type BatchItemRefusal,
 } from './userSkills'
-import { isNameTaken, nameProblem, normalizeName, suggestVersionName } from './userSkillNames'
+import { checkNames, isNameTaken, nameProblem, normalizeName, suggestVersionName } from './userSkillNames'
+import { cleanSkillText } from './skillMetadata'
+import { FEATURE_MODEL_MAX_LEN } from './llmFeatures'
 import { deleteUserSkillProposalsTx } from './plugins/overrides'
 import { now } from './plugins/clock'
 
@@ -77,6 +81,8 @@ function readDescription(value: unknown): string | null {
   return trimmed || null
 }
 
+const SKILL_LIMIT_MESSAGE = `You have ${MAX_SKILLS_PER_USER} skills, the maximum. Delete one in Global Settings first.`
+
 function readContent(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) throw new UserSkillError(400, 'content_required', 'content is required')
   if (value.length > MAX_CONTENT_SIZE) {
@@ -129,9 +135,7 @@ export async function createUserSkillTx(tx: Tx, input: CreateUserSkillInput): Pr
   const name = await readName(tx, input.userId, input.name)
   const count = await tx.userAttackSkill.count({ where: { userId: input.userId } })
   if (count >= MAX_SKILLS_PER_USER) {
-    throw new UserSkillError(409, 'skill_limit',
-      `You have ${MAX_SKILLS_PER_USER} skills, the maximum. Delete one in Global Settings first.`,
-      { limit: MAX_SKILLS_PER_USER })
+    throw new UserSkillError(409, 'skill_limit', SKILL_LIMIT_MESSAGE, { limit: MAX_SKILLS_PER_USER })
   }
   return tx.userAttackSkill.create({
     data: { userId: input.userId, name, description, content, ...(input.lineage ?? {}) },
@@ -164,6 +168,227 @@ export async function createUserSkill(input: CreateUserSkillInput, actor: AuditA
 
 function pick(skill: UserAttackSkill) {
   return Object.fromEntries(Object.keys(USER_SKILL_SELECT).map((k) => [k, skill[k as keyof UserAttackSkill]]))
+}
+
+const DECLARED_SOURCES = ['frontmatter', 'heading', 'file', 'ai', 'typed'] as const
+type DeclaredSource = (typeof DECLARED_SOURCES)[number]
+
+const declaredSource = (v: unknown): DeclaredSource | null =>
+  (DECLARED_SOURCES as readonly unknown[]).includes(v) ? (v as DeclaredSource) : null
+
+const declaredModel = (v: unknown): string | null =>
+  typeof v === 'string' && v && v.length <= FEATURE_MODEL_MAX_LEN && !/[\p{Cc}\p{Cf}]/u.test(v) ? v : null
+
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+interface BatchRow {
+  name: string
+  description: string | null
+  content: string
+  /** What the dialog says the name and description came from: audited as a claim, never stored. */
+  declared: { nameSource: DeclaredSource | null; descriptionSource: DeclaredSource | null; aiModel: string | null }
+}
+
+/** One item's pure checks, in the order createUserSkillTx applies them; the first problem wins. */
+function readBatchRow(raw: unknown): BatchRow | UserSkillError {
+  const item = isObject(raw) ? raw : {}
+  try {
+    const content = readContent(item.content)
+    // Postgres TEXT refuses 0x00, and Prisma's engine a lone surrogate (half of a UTF-16 pair):
+    // without this the whole batch would be a 500.
+    if (content.includes('\u0000') || /\p{Cs}/u.test(content)) {
+      return new UserSkillError(400, 'content_not_text', 'The file is not text.')
+    }
+    let description: string | null = null
+    if (item.description !== undefined && item.description !== null) {
+      if (typeof item.description !== 'string') {
+        return new UserSkillError(400, 'description_invalid', 'description must be a string')
+      }
+      // One line: the description reaches the router's skill menu raw, where a line break
+      // from an untrusted file could imitate the menu's own structure.
+      description = cleanSkillText(item.description) || null
+      if (description && description.length > DESCRIPTION_MAX_CHARS) {
+        return new UserSkillError(400, 'description_too_long', `description must be ${DESCRIPTION_MAX_CHARS} characters or less`)
+      }
+    }
+    if (typeof item.name !== 'string') return new UserSkillError(400, 'name_invalid', 'name is required')
+    const name = normalizeName(item.name)
+    const problem = nameProblem(name)
+    if (problem) return problem
+    return {
+      name, description, content,
+      declared: {
+        nameSource: declaredSource(item.nameSource),
+        descriptionSource: declaredSource(item.descriptionSource),
+        aiModel: declaredModel(item.aiModel),
+      },
+    }
+  } catch (e) {
+    if (e instanceof UserSkillError) return e
+    throw e
+  }
+}
+
+export interface BatchResult {
+  created: Record<string, unknown>[]
+  enabled: string[]
+  leftOff: string[]
+  /** The project's stored map already broke a toggle rule, so nothing was switched. */
+  enableSkipped?: string
+}
+
+const refusal = (index: number, e: UserSkillError): BatchItemRefusal => ({
+  index, code: e.code, error: e.message,
+  ...(typeof e.extra.suggestion === 'string' ? { suggestion: e.extra.suggestion } : {}),
+})
+
+function batchRefused(items: BatchItemRefusal[], total: number): UserSkillError {
+  const sorted = [...items].sort((a, b) => a.index - b.index)
+  return new UserSkillError(409, 'batch_refused',
+    `${sorted.length} of ${total} skills cannot be saved; nothing was saved.`, { items: sorted })
+}
+
+/**
+ * Create every skill of an upload batch, or none. Every row is validated first, under the
+ * per-user lock (content, description, its name against the stored names and the rows before
+ * it, the cap), so a refusal names every refused row with batch-aware suggestions; only a fully
+ * valid batch is written. With a project, the new skills are switched on in that same
+ * transaction while room under the per-project limit remains, as plugin adoption does.
+ */
+export async function createUserSkillsBatch(
+  input: { userId: string; items: unknown; enableInProjectId?: unknown },
+  actor: AuditActor,
+): Promise<BatchResult> {
+  const { userId, items, enableInProjectId } = input
+  if (!Array.isArray(items) || items.length < 1 || items.length > MAX_SKILLS_PER_BATCH) {
+    throw new UserSkillError(400, 'batch_invalid', `Send 1 to ${MAX_SKILLS_PER_BATCH} skills.`)
+  }
+  if (enableInProjectId !== undefined && enableInProjectId !== null
+    && (typeof enableInProjectId !== 'string' || enableInProjectId.length < 1 || enableInProjectId.length > 64)) {
+    throw new UserSkillError(400, 'batch_invalid', 'enableInProjectId must be a project id.')
+  }
+  const projectId = typeof enableInProjectId === 'string' ? enableInProjectId : null
+
+  // Everything that needs no database runs before the lock: other writers wait for it with
+  // their own short transaction timeouts.
+  const read = items.map(readBatchRow)
+  const refused: BatchItemRefusal[] = []
+  read.forEach((r, i) => { if (r instanceof UserSkillError) refused.push(refusal(i, r)) })
+  const valid = read.flatMap((r, i) => (r instanceof UserSkillError ? [] : [{ index: i, row: r }]))
+
+  const outcome = await prisma.$transaction(async (tx) => {
+    await lockUserSkills(tx, userId)
+    const count = await tx.userAttackSkill.count({ where: { userId } })
+    const checks = await checkNames(tx, userId, valid.map((v) => v.row.name))
+    const writable: typeof valid = []
+    valid.forEach((v, k) => {
+      const check = checks[k]
+      if (check.reason === 'name_taken' || check.reason === 'name_duplicate') {
+        refused.push({
+          index: v.index, code: check.reason,
+          error: check.reason === 'name_taken'
+            ? `You already have a skill named "${check.normalized}".`
+            : `Another file in this upload is also named "${check.normalized}".`,
+          ...(check.suggestion ? { suggestion: check.suggestion } : {}),
+        })
+      } else {
+        writable.push(v)
+      }
+    })
+    const room = MAX_SKILLS_PER_USER - count
+    writable.forEach((v, k) => {
+      if (k >= room) refused.push({ index: v.index, code: 'skill_limit', error: SKILL_LIMIT_MESSAGE })
+    })
+    if (refused.length) throw batchRefused(refused, items.length)
+
+    const created: UserAttackSkill[] = []
+    for (const v of writable) {
+      try {
+        created.push(await createUserSkillTx(tx, { userId, name: v.row.name, description: v.row.description, content: v.row.content }))
+      } catch (e) {
+        // The checks above ran under this same lock, so this is a second line of defence only.
+        if (e instanceof UserSkillError) throw batchRefused([refusal(v.index, e)], items.length)
+        throw e
+      }
+    }
+
+    const toggles = projectId ? await enableInProjectTx(tx, userId, projectId, created.map((s) => s.id)) : null
+    return { created, declared: writable.map((v) => v.row.declared), toggles }
+  }, { timeout: 30_000, maxWait: 5_000 })
+
+  const { created, declared, toggles } = outcome
+  for (const [i, skill] of created.entries()) {
+    await writeAudit({
+      actorId: actor.actorId,
+      action: 'user_attack_skill.create',
+      targetType: USER_SKILL_AUDIT_TARGET,
+      targetId: skill.id,
+      after: withOwner(actor, {
+        ...auditFields(skill), userId, via: 'batch', batchSize: created.length, declared: declared[i],
+      }),
+      source: actor.source,
+    })
+  }
+  if (toggles?.project) {
+    await writeAudit({
+      actorId: actor.actorId,
+      action: 'project.update',
+      targetType: 'project',
+      targetId: toggles.project.id,
+      before: { attackSkillConfig: toggles.project.before ?? null },
+      after: withOwner(actor, { changed: ['attackSkillConfig'], values: { attackSkillConfig: toggles.project.after } }),
+      source: actor.source,
+    })
+  }
+  return {
+    created: created.map(pick),
+    enabled: toggles?.enabled ?? [],
+    leftOff: toggles?.leftOff ?? [],
+    ...(toggles?.skipped ? { enableSkipped: toggles.skipped } : {}),
+  }
+}
+
+/**
+ * Turn `ids` on in the owner's project, in order, while room under the per-project limit
+ * remains; the caller holds the per-user lock. Counted from the stored map, so a stale map in
+ * an open form or drawer can never push the project past the limit.
+ */
+async function enableInProjectTx(tx: Tx, userId: string, projectId: string, ids: string[]) {
+  const row = await tx.project.findFirst({ where: { id: projectId, userId }, select: { id: true, attackSkillConfig: true } })
+  if (!row) throw new UserSkillError(404, 'project_not_found', 'That project is not yours.')
+  const config = isObject(row.attackSkillConfig) ? row.attackSkillConfig : {}
+  const user = isObject(config.user) ? (config.user as Record<string, boolean>) : {}
+  let current: Record<string, boolean>
+  try {
+    current = await normalizeUserToggleMap(tx, userId, user)
+  } catch (e) {
+    // The stored map already breaks a rule (a quarantined skill left on): the skills are what
+    // the person asked for, the toggles an extra, so the project is left as it is.
+    if (e instanceof UserSkillError) return { enabled: [], leftOff: [], skipped: e.code, project: null }
+    throw e
+  }
+  // Counted as normalizeUserToggleMap counts (truthy), or a legacy "true" left room it then refuses.
+  let room = Math.max(0, MAX_ENABLED_USER_SKILLS_PER_PROJECT - Object.values(current).filter(Boolean).length)
+  const next = { ...current }
+  const enabled: string[] = []
+  const leftOff: string[] = []
+  for (const id of ids) {
+    if (room > 0) {
+      next[id] = true
+      enabled.push(id)
+      room--
+    } else {
+      leftOff.push(id)
+    }
+  }
+  if (!enabled.length) return { enabled, leftOff, skipped: null, project: null }
+  // builtIn is kept exactly as stored, absent included: filling it in would change which
+  // built-in skills the agent runs.
+  const after = { ...config, user: await normalizeUserToggleMap(tx, userId, next) }
+  // Through Prisma, never raw SQL: updatedAt moves, so every form holding the old map sees a
+  // stale save instead of writing the switch back.
+  await tx.project.update({ where: { id: row.id }, data: { attackSkillConfig: after as Prisma.InputJsonValue } })
+  return { enabled, leftOff, skipped: null, project: { id: row.id, before: row.attackSkillConfig, after } }
 }
 
 export interface UpdateUserSkillInput {

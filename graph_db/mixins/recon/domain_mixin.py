@@ -8,19 +8,81 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
+from graph_db.mixins.recon.scope import org_for_scan_root
+
+# The first clause of every read-modify-write on an org Domain (GDB-11). Several
+# scan roots share one org Domain and up to twelve partial recons run at once,
+# so the node's write lock is taken BEFORE anything is read, and held to commit.
+# The property never commits (set and removed in the same clause).
+ORG_DOMAIN_LOCK = "SET d._scope_lock = true REMOVE d._scope_lock"
+
+# Run fields the domain writer no longer puts on a Domain: one per-run value on
+# a node several scan roots share means nothing (§4.11.3). scan_timestamp stays.
+RETIRED_DOMAIN_RUN_PROPS = ("target", "filtered_mode", "wildcard_mode", "subdomain_filter",
+                            "modules_executed", "anonymous_mode", "bruteforce_mode", "scan_type")
+
+
+def _merge_unique(existing: list, new: list) -> list:
+    out = list(existing)
+    for item in new:
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def merge_coverage(stored: dict, record: dict, scan_root: str, run_started_at) -> dict:
+    """The coverage record an org Domain keeps after this group stamps it (§4.11.4).
+
+    The first group of a run (recon_coverage_run is not this run's start)
+    overwrites; a later group of the same run merges: gaps and skipped hosts
+    are unioned, nuclei truncation is OR-ed, and recon_coverage_roots lists
+    every scan root that stamped. Pure, because the unit of work that calls it
+    is retried. Each gap entry carries the scan root it came from, so a reader
+    can drop a removed root's entries (§4.11.7).
+    """
+    import json as _json
+    try:
+        gaps = _json.loads(record.get("gaps_json") or "[]")
+    except (TypeError, ValueError):
+        gaps = []
+    gaps = [dict(g, root=g.get("root") or scan_root) if isinstance(g, dict) else g
+            for g in gaps if g is not None]
+    skipped = [h for h in record.get("skipped_hosts") or [] if h]
+    truncated = bool(record.get("nuclei_truncated"))
+    first = run_started_at is None or stored.get("run") != run_started_at
+    if not first:
+        try:
+            old_gaps = _json.loads(stored.get("gaps") or "[]")
+        except (TypeError, ValueError):
+            old_gaps = []
+        gaps = _merge_unique(old_gaps, gaps)
+        skipped = _merge_unique(list(stored.get("skipped") or []), skipped)
+        truncated = truncated or bool(stored.get("truncated"))
+        roots = _merge_unique(list(stored.get("roots") or []), [scan_root])
+    else:
+        roots = [scan_root]
+    return {"gaps_json": _json.dumps(gaps), "skipped_hosts": skipped,
+            "nuclei_truncated": truncated, "roots": roots}
+
 
 class DomainMixin:
-    def ensure_root_domains(self, roots: list, user_id: str, project_id: str) -> int:
-        """MERGE a bare Domain node for every project root; return how many exist.
+    def _org_write(self, work):
+        """Run `work(tx)` as ONE managed write transaction (the driver retries
+        it on a deadlock or a transient error)."""
+        with self.driver.session() as session:
+            return session.execute_write(work)
 
-        A Domain batch clears the graph once and then scans one group at a time,
-        so while group 1 runs the later groups' Domain nodes do not exist yet. A
-        writer attaching a host it found under a sibling root (attach_roots)
-        links it to that root's Domain, and without the node the Subdomain is
-        left unlinked. The webapp seeds these nodes when the project is saved;
-        the clear removes them, so the pipeline restores them before group 1.
-        Only the tenant key and updated_at: the group's own domain write fills
-        in the rest.
+    def ensure_root_domains(self, roots: list, user_id: str, project_id: str) -> int:
+        """MERGE a bare Domain node for every org; return how many exist.
+
+        `roots` are org (registrable) domains: a Domain node is the org, and
+        every scan root's hosts attach to it. A Domain batch clears the graph
+        once and then scans one group at a time, so while group 1 runs the
+        later groups' Domain nodes do not exist yet. A writer attaching a host
+        it found under a sibling root (attach_roots) links it to that root's
+        org Domain, and without the node the Subdomain is left unlinked. Only
+        the tenant key and updated_at: the group's own domain write fills in
+        the rest.
         """
         names = [r.strip() for r in roots or [] if isinstance(r, str) and r.strip()]
         if not names:
@@ -38,36 +100,95 @@ class DomainMixin:
         return record["seeded"] if record else 0
 
     def update_graph_coverage(self, user_id: str, project_id: str, domain: str,
-                              record: dict) -> int:
-        """Stamp on this run's Domain what the run could NOT check; return nodes matched.
+                              record: dict, run_started_at=None) -> int:
+        """Stamp on the org Domain what this group could NOT check; return nodes matched.
 
-        Written for every full-run group, clean or not: `recon_coverage_at` on
+        `domain` is the group's scan root; the record lands on its org Domain,
+        ``record["org_domain"]`` (default: the scan root itself, as in IP mode
+        and a legacy caller), matched case-insensitively. Written for every full-run group, clean or not: `recon_coverage_at` on
         a Domain the run re-created is what separates "known clean" (gaps
         "[]") from "unknown" (a crashed run, a down graph, an older recon).
-        The clear deletes Domain nodes on every full run, so a record never
-        outlives its run and nothing removes it. A MATCH, not a MERGE: the
-        record belongs to the Domain this run wrote, and 0 matched means the
-        write failed, which the caller treats as "coverage unknown".
+        Groups of one org merge into one record (merge_coverage), keyed on
+        `run_started_at`, never on run_timestamp(), which changes on every
+        call; a caller passing none overwrites. A MATCH, not a MERGE: 0 matched
+        means the write failed, which the caller treats as "coverage unknown".
 
-        ``record``: {"at": ISO-8601, "gaps_json": JSON array string,
-        "skipped_hosts": [host:port, ...], "nuclei_truncated": bool}.
+        ``record``: {"at": ISO-8601, "gaps_json": JSON array string (each entry
+        carries "root"), "skipped_hosts": [host:port, ...],
+        "nuclei_truncated": bool, "org_domain": org}.
         """
-        with self.driver.session() as session:
-            result = session.run(
+        org_key = str(record.get("org_domain") or domain or "").strip().lower()
+        scan_root = domain
+        run = str(run_started_at) if run_started_at is not None else None
+
+        def work(tx):
+            stored = tx.run(
+                f"""
+                MATCH (d:Domain {{user_id: $user_id, project_id: $project_id}})
+                WHERE toLower(d.name) = $org
+                {ORG_DOMAIN_LOCK}
+                RETURN elementId(d) AS eid, d.recon_coverage_run AS run,
+                       d.recon_coverage_gaps AS gaps, d.recon_skipped_hosts AS skipped,
+                       d.recon_nuclei_truncated AS truncated, d.recon_coverage_roots AS roots
+                """,
+                org=org_key, user_id=user_id, project_id=project_id,
+            ).single()
+            if stored is None:
+                return 0
+            merged = merge_coverage(dict(stored), record, scan_root, run)
+            written = tx.run(
                 """
-                MATCH (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})
+                MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
+                WHERE elementId(d) = $eid
                 SET d.recon_coverage_at = datetime($at),
                     d.recon_coverage_gaps = $gaps_json,
                     d.recon_skipped_hosts = $skipped_hosts,
-                    d.recon_nuclei_truncated = $nuclei_truncated
+                    d.recon_nuclei_truncated = $nuclei_truncated,
+                    d.recon_coverage_roots = $roots,
+                    d.recon_coverage_run = $run
                 RETURN count(d) AS n
                 """,
-                name=domain, user_id=user_id, project_id=project_id,
-                at=record["at"], gaps_json=record.get("gaps_json") or "[]",
-                skipped_hosts=list(record.get("skipped_hosts") or []),
-                nuclei_truncated=bool(record.get("nuclei_truncated")),
+                eid=stored["eid"], user_id=user_id, project_id=project_id, at=record["at"],
+                gaps_json=merged["gaps_json"], skipped_hosts=merged["skipped_hosts"],
+                nuclei_truncated=merged["nuclei_truncated"], roots=merged["roots"], run=run,
             ).single()
-        return int(result["n"]) if result else 0
+            return int(written["n"]) if written else 0
+
+        return self._org_write(work)
+
+    def legacy_domain_nodes(self, user_id: str, project_id: str,
+                            expected, related) -> list:
+        """Domain nodes an older scope model left holding data; [] when none.
+
+        `expected` is the names the current scope's Domain nodes carry
+        (expectedDomainNames: the scan roots until the org model ships, the
+        orgs after); `related` is the orgs and scan roots. A Domain that is
+        neither expected nor unrelated to the scope (a removed root keeps its
+        ordinary stale semantics) but still holds subdomains or a coverage
+        record is old-model, e.g. `Domain(co.uk)` after the batch regrouped to
+        `acme.co.uk`. A partial run must not attach to it: refuse until a full
+        recon rebuilds the graph. Case-insensitive, because legacy
+        single-domain targets were stored with the case they were typed in.
+        Mirrored by the webapp's graph-inputs route (`legacy_graph`); both read
+        tests/fixtures/legacy_domain_vectors.json.
+        """
+        expected = sorted({str(n).strip().lower() for n in expected or [] if str(n).strip()})
+        related = sorted({str(n).strip().lower() for n in related or [] if str(n).strip()})
+        if not related:
+            return []
+        with self.driver.session() as session:
+            record = session.run(
+                """
+                MATCH (d:Domain {user_id: $uid, project_id: $pid})
+                WITH d, toLower(d.name) AS n
+                WHERE NOT n IN $expected AND coalesce(d.ip_mode, false) = false
+                  AND ANY(r IN $related WHERE n = r OR n ENDS WITH '.' + r OR r ENDS WITH '.' + n)
+                  AND (EXISTS { (d)-[:HAS_SUBDOMAIN]->() } OR d.recon_coverage_at IS NOT NULL)
+                RETURN collect(d.name) AS legacy
+                """,
+                uid=user_id, pid=project_id, expected=expected, related=related,
+            ).single()
+        return sorted(record["legacy"]) if record else []
 
     def update_graph_from_domain_discovery(self, recon_data: dict, user_id: str, project_id: str) -> dict:
         """
@@ -106,34 +227,25 @@ class DomainMixin:
             subdomains = recon_data.get("subdomains", [])
             dns_data = recon_data.get("dns") or {}
 
+            # The group's scan root; its hosts attach to the org Domain. A
+            # legacy file has no org: the scan root is its own Domain, as before.
             root_domain = metadata.get("root_domain", "")
-            target = metadata.get("target", "")
-            filtered_mode = metadata.get("filtered_mode", False)
-            subdomain_filter = metadata.get("subdomain_filter", [])
+            org_domain = (metadata.get("org_domain")
+                          or (org_for_scan_root(root_domain, recon_data) if root_domain else ""))
 
             if not root_domain:
                 stats["errors"].append("No root_domain found in metadata")
                 return stats
 
-            # 1. Create Domain node with WHOIS data
+            # 1. Create the org Domain node with WHOIS data. The per-run fields
+            # (target, filtered_mode, ...) are no longer written: several scan
+            # roots share this node, and the scope lives in scopeGroups.
             try:
                 domain_props = {
-                    "name": root_domain,
+                    "name": org_domain,
                     "user_id": user_id,
                     "project_id": project_id,
                     "scan_timestamp": metadata.get("scan_timestamp"),
-                    "scan_type": metadata.get("scan_type"),
-                    "target": target,
-                    "filtered_mode": filtered_mode,
-                    # Distinguishes "this domain was enumerated" from "this
-                    # domain was scanned literally". Without it, filtered_mode
-                    # False on a batch Domain node is ambiguous with an ordinary
-                    # single-domain run, and a mixed batch writes both values.
-                    "wildcard_mode": metadata.get("wildcard_mode", False),
-                    "subdomain_filter": subdomain_filter,
-                    "modules_executed": metadata.get("modules_executed", []),
-                    "anonymous_mode": metadata.get("anonymous_mode", False),
-                    "bruteforce_mode": metadata.get("bruteforce_mode", False),
                     # WHOIS data
                     "registrar": whois_data.get("registrar"),
                     "registrar_url": whois_data.get("registrar_url"),
@@ -173,8 +285,10 @@ class DomainMixin:
                 elif status:
                     domain_props["status"] = [status.split()[0] if " " in status else status]
 
-                # Remove None values
-                domain_props = {k: v for k, v in domain_props.items() if v is not None}
+                # Drop empty values: a later group of the same org whose WHOIS
+                # came back empty must not blank what an earlier one wrote.
+                domain_props = {k: v for k, v in domain_props.items()
+                                if v is not None and v != [] and v != ""}
 
                 session.run(
                     """
@@ -182,10 +296,10 @@ class DomainMixin:
                     SET d += $props,
                         d.updated_at = datetime()
                     """,
-                    name=root_domain, user_id=user_id, project_id=project_id, props=domain_props
+                    name=org_domain, user_id=user_id, project_id=project_id, props=domain_props
                 )
                 stats["domain_created"] = True
-                print(f"[+][graph-db] Created Domain node: {root_domain}")
+                print(f"[+][graph-db] Created Domain node: {org_domain}")
             except Exception as e:
                 stats["errors"].append(f"Domain creation failed: {e}")
                 print(f"[!][graph-db] Domain creation failed: {e}")
@@ -197,9 +311,10 @@ class DomainMixin:
 
             for subdomain in subdomains:
                 try:
-                    # Get DNS info: use domain_dns if subdomain equals root_domain, else use subdomain_dns
+                    # The scan root's own DNS is in dns.domain (recon keeps it
+                    # only when the root is a target).
                     if subdomain == root_domain:
-                        subdomain_info = domain_dns  # Root domain DNS is in dns.domain
+                        subdomain_info = domain_dns
                     else:
                         subdomain_info = subdomain_dns.get(subdomain, {})
                     has_records = subdomain_info.get("has_records", False)
@@ -208,10 +323,14 @@ class DomainMixin:
                     status = subdomain_status_map.get(subdomain)  # None for unresolved subs
                     # AI surface recon: lap-1 TXT/NS hint set by domain_recon._annotate_ai_service_hint
                     ai_service_hint = subdomain_info.get("ai_service_hint")
+                    # A scan root below its org is a Subdomain of the org, marked
+                    # as the root it is (D-16); the org apex keeps today's shape.
+                    is_scan_root = subdomain == root_domain and root_domain != org_domain
                     session.run(
                         """
                         MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
-                        SET s.has_dns_records = $has_records,
+                        SET s.is_scan_root = CASE WHEN $is_scan_root THEN true ELSE s.is_scan_root END,
+                            s.has_dns_records = $has_records,
                             s.status = coalesce(s.status, $status),
                             s.discovered_at = coalesce(s.discovered_at, datetime()),
                             s.updated_at = datetime(),
@@ -224,7 +343,7 @@ class DomainMixin:
                         """,
                         name=subdomain, user_id=user_id, project_id=project_id,
                         has_records=has_records, status=status,
-                        ai_service_hint=ai_service_hint,
+                        ai_service_hint=ai_service_hint, is_scan_root=is_scan_root,
                     )
                     stats["subdomains_created"] += 1
                     if ai_service_hint:
@@ -239,7 +358,7 @@ class DomainMixin:
                         MERGE (s)-[:BELONGS_TO]->(d)
                         MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                         """,
-                        domain=root_domain, subdomain=subdomain,
+                        domain=org_domain, subdomain=subdomain,
                         user_id=user_id, project_id=project_id
                     )
                     stats["relationships_created"] += 1

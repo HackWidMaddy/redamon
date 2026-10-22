@@ -4,14 +4,17 @@
  * is disabled with the limit tooltip; a quarantined skill cannot be turned on; versions are
  * badged and two members of one family on at once are called out; the Import shortcut
  * enables new skills only up to the limit and says how many it left off; the import alert
- * names each skip reason; a stored config without `user` does not crash.
+ * names each skip reason; a stored config without `user` does not crash. Upload Skill and
+ * Upload Batch in the header never collapse it; in a saved project the batch route switches
+ * the new skills on (no form write), in create mode the form state does; the upload buttons
+ * wait for this user's list.
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor, within, act } from '@testing-library/react'
 import { AlertProvider, ToastProvider } from '@/components/ui'
 import { postUserSkillsChanged } from '@/lib/userSkillsChannel'
 
-vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'alice' }) }))
+vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: h.userId }) }))
 
 import { AttackSkillsSection } from './AttackSkillsSection'
 
@@ -22,10 +25,14 @@ type Skill = {
 }
 
 const h = vi.hoisted(() => ({
+  userId: 'alice' as string | null,
   skills: [] as unknown[],
   refreshed: null as unknown[] | null,
   importAnswer: null as null | (() => Response),
+  listAnswer: null as null | (() => Response | Promise<Response>),
+  batchAnswer: null as null | ((body: Record<string, unknown>) => Response),
   gets: 0,
+  requests: [] as { url: string; method: string; body: Record<string, unknown> | undefined }[],
 }))
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -36,8 +43,22 @@ beforeEach(() => {
   h.gets = 0
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
+    h.requests.push({ url, method, body })
     if (url.includes('/import-community')) return h.importAnswer ? h.importAnswer() : json(200, { imported: 0, skipped: 0, skippedBy: {} })
+    if (url.endsWith('/attack-skills/name-check') && method === 'POST') {
+      return json(200, { results: (body.names as string[]).map((n) => ({ normalized: n, available: true, suggestion: null })) })
+    }
+    if (url.endsWith('/attack-skills/batch') && method === 'POST') {
+      if (h.batchAnswer) return h.batchAnswer(body)
+      const ids = (body.items as unknown[]).map((_, i) => `new${i + 1}`)
+      return json(201, {
+        created: ids.map((id, i) => ({ id, name: (body.items as { name: string }[])[i].name })),
+        enabled: body.enableInProjectId ? ids : [], leftOff: [],
+      })
+    }
     if (/\/api\/users\/alice\/attack-skills$/.test(url) && method === 'GET') {
+      if (h.listAnswer) return h.listAnswer()
       h.gets++
       // The first read is the list; any later read is the refresh after an import.
       return json(200, h.gets > 1 && h.refreshed ? h.refreshed : h.skills)
@@ -49,19 +70,23 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  h.userId = 'alice'
   h.skills = []
   h.refreshed = null
   h.importAnswer = null
+  h.listAnswer = null
+  h.batchAnswer = null
+  h.requests = []
 })
 
-function draw(skills: Skill[], config: unknown = { builtIn: {}, user: {} }) {
+function draw(skills: Skill[], config: unknown = { builtIn: {}, user: {} }, projectId: string | null = null) {
   h.skills = skills
   const updateField = vi.fn()
   const data = { attackSkillConfig: config, hydraEnabled: false } as unknown as FormData
   const utils = render(
     <ToastProvider>
       <AlertProvider>
-        <AttackSkillsSection data={data} updateField={updateField} projectId={null} />
+        <AttackSkillsSection data={data} updateField={updateField} projectId={projectId} />
       </AlertProvider>
     </ToastProvider>,
   )
@@ -294,5 +319,135 @@ describe('other windows', () => {
     act(() => postUserSkillsChanged({ projectId: 'p1' }))
     expect(await screen.findByText('Skill a v2')).toBeInTheDocument()
     expect(h.gets).toBeGreaterThan(before)
+  })
+})
+
+const DESCRIPTION = /Your own agent skills\. Upload \.md files here/
+const button = (name: string) => screen.getByRole('button', { name })
+const mdFiles = (n: number) => Array.from({ length: n }, (_, i) => new File([`# Uploaded ${i + 1}\n\nBody.`], `u${i + 1}.md`, { type: 'text/markdown' }))
+const batches = () => h.requests.filter((r) => r.url.endsWith('/attack-skills/batch'))
+const toggleWrites = (updateField: ReturnType<typeof vi.fn>) => updateField.mock.calls.filter((c) => c[0] === 'attackSkillConfig')
+
+async function uploadBatch(files: File[], { uncheck = false } = {}) {
+  await waitFor(() => expect(button('Upload Batch')).toBeEnabled())
+  await act(async () => { fireEvent.change(screen.getByTestId('skill-upload-batch-input'), { target: { files } }) })
+  const dialog = await screen.findByRole('dialog')
+  if (uncheck) fireEvent.click(within(dialog).getByLabelText(/Turn them on in this project/))
+  const upload = within(dialog).getByRole('button', { name: /^Upload \d+ skills?$/ })
+  await waitFor(() => expect(upload).toBeEnabled())
+  fireEvent.click(upload)
+  await waitFor(() => expect(batches()).toHaveLength(1))
+  return dialog
+}
+
+/** Every post on the user-skills channel while the test runs. */
+function channelPosts() {
+  const seen: unknown[] = []
+  const ch = new BroadcastChannel('redamon:user-skills')
+  ch.onmessage = (e) => seen.push(e.data)
+  return { seen, close: () => ch.close() }
+}
+
+describe('upload from the section', () => {
+  test('Upload Skill and Upload Batch render, and clicking them never collapses the section', async () => {
+    draw([sk('a')])
+    await screen.findByText('Skill a')
+    expect(screen.getByText(DESCRIPTION)).toBeInTheDocument()
+    fireEvent.click(button('Upload Skill'))
+    fireEvent.click(button('Upload Batch'))
+    expect(screen.getByText(DESCRIPTION)).toBeInTheDocument()
+    expect(screen.getByTestId('skill-upload-batch-input')).toHaveProperty('multiple', true)
+    await act(async () => { fireEvent.change(screen.getByTestId('skill-upload-batch-input'), { target: { files: mdFiles(1) } }) })
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByTestId('skill-upload-summary'))
+    fireEvent.click(within(dialog).getByLabelText('Name for u1.md'))
+    expect(screen.getByText(DESCRIPTION)).toBeInTheDocument()
+  })
+
+  test('saved project: the batch carries enableInProjectId, the form is not written, the channel names the project', async () => {
+    const posts = channelPosts()
+    const { updateField } = draw([sk('a')], { builtIn: {}, user: { a: true } }, 'p1')
+    await screen.findByText('Skill a')
+    await uploadBatch(mdFiles(2))
+    expect(batches()[0].body!.enableInProjectId).toBe('p1')
+    expect(await screen.findByText('Uploaded 2 skills; 2 turned on for this project.')).toBeInTheDocument()
+    await waitFor(() => expect(posts.seen).toContainEqual({ projectId: 'p1' }))
+    expect(toggleWrites(updateField)).toEqual([])
+    posts.close()
+  })
+
+  test('create mode: with 18 on, 3 uploaded turn 2 on in the form and the warning names 1 left off', async () => {
+    const before = range(18).map((id) => sk(id))
+    const { updateField } = draw(before, { builtIn: { xss: true }, user: on(range(18)) }, null)
+    await screen.findByText('Skill s18')
+    await uploadBatch(mdFiles(3))
+    expect(batches()[0].body).not.toHaveProperty('enableInProjectId')
+    await waitFor(() => expect(toggleWrites(updateField)).toHaveLength(1))
+    const cfg = lastConfig(updateField)
+    expect(cfg.builtIn).toEqual({ xss: true })
+    expect(cfg.user.new1).toBe(true)
+    expect(cfg.user.new2).toBe(true)
+    expect(cfg.user.new3).toBeUndefined()
+    expect(Object.values(cfg.user).filter((v) => v === true)).toHaveLength(20)
+    expect(await screen.findByText('1 was left off: a project can use at most 20 of your skills.')).toBeInTheDocument()
+    expect(screen.getByText('Uploaded 3 skills; 2 will be turned on when you create the project.')).toBeInTheDocument()
+  })
+
+  test('with "Turn them on" unchecked: no enableInProjectId and no form write', async () => {
+    const { updateField } = draw([sk('a')], { builtIn: {}, user: {} }, 'p1')
+    await screen.findByText('Skill a')
+    await uploadBatch(mdFiles(1), { uncheck: true })
+    expect(batches()[0].body).not.toHaveProperty('enableInProjectId')
+    expect(await screen.findByText('Uploaded 1 skill')).toBeInTheDocument()
+    expect(toggleWrites(updateField)).toEqual([])
+  })
+})
+
+describe('the upload buttons and the list', () => {
+  test('disabled while the list request is pending, enabled once it loads', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    h.listAnswer = async () => { await gate; return json(200, [sk('a')]) }
+    draw([])
+    expect(button('Upload Skill')).toBeDisabled()
+    expect(button('Upload Batch')).toHaveAttribute('title', 'Loading your skills…')
+    await act(async () => { release() })
+    await waitFor(() => expect(button('Upload Skill')).toBeEnabled())
+    expect(button('Upload Batch')).toBeEnabled()
+  })
+
+  test('a failed list keeps them disabled with the reason, in place of the empty state', async () => {
+    h.listAnswer = () => json(500, { error: 'x' })
+    draw([])
+    expect(await screen.findByText('Your skills could not be loaded. Reload the page.')).toBeInTheDocument()
+    expect(screen.queryByText(/No user skills uploaded yet/)).toBeNull()
+    expect(button('Upload Skill')).toBeDisabled()
+    expect(button('Upload Batch')).toHaveAttribute('title', 'Your skills could not be loaded. Reload the page to upload.')
+  })
+
+  test('before the user is known, and until that user\'s list arrives, they stay disabled', async () => {
+    h.userId = null
+    const updateField = vi.fn()
+    const data = { attackSkillConfig: { builtIn: {}, user: {} }, hydraEnabled: false } as unknown as FormData
+    const ui = (
+      <ToastProvider>
+        <AlertProvider>
+          <AttackSkillsSection data={data} updateField={updateField} projectId="p1" />
+        </AlertProvider>
+      </ToastProvider>
+    )
+    const { rerender } = render(ui)
+    expect(button('Upload Skill')).toBeDisabled()
+    expect(screen.queryByText(/No user skills uploaded yet/)).toBeNull()
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    h.listAnswer = async () => { await gate; return json(200, []) }
+    h.userId = 'alice'
+    rerender(ui)
+    await waitFor(() => expect(h.requests.some((r) => r.url === '/api/users/alice/attack-skills')).toBe(true))
+    expect(button('Upload Skill')).toBeDisabled()
+    expect(button('Upload Skill')).toHaveAttribute('title', 'Loading your skills…')
+    await act(async () => { release() })
+    await waitFor(() => expect(button('Upload Skill')).toBeEnabled())
   })
 })

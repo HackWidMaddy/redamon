@@ -380,6 +380,30 @@ describe('recon coverage (circuit breakers)', () => {
     expect(computeReconDelta(graph([]), to).coverage).toBeNull()
   })
 
+  test("a removed scan root's gaps and skipped hosts are not this scope's (§4.11.7)", () => {
+    const to = graph([domain({
+      name: 'example.test',
+      recon_coverage_gaps: JSON.stringify([
+        { source: 'shodan', root: 'api.example.test' },
+        { source: 'nuclei', root: 'old.example.test' },
+        { source: 'urlscan' },
+      ]),
+      recon_skipped_hosts: ['x.api.example.test:443', 'y.old.example.test:443'],
+    })])
+    const delta = computeReconDelta(graph([]), to, {}, new Set(['api.example.test']))
+    expect(delta.coverage).toEqual({ sources: ['shodan', 'urlscan'], skippedHosts: 1, nucleiTruncated: false })
+    // With no scope to compare against nothing is dropped.
+    expect(computeReconDelta(graph([]), to).coverage?.sources).toEqual(['nuclei', 'shodan', 'urlscan'])
+  })
+
+  test('the org Domain run stamps never make it read as changed', () => {
+    const before = graph([domain({ scan_timestamp: 't1', port_scan_timestamp: 't1', recon_coverage_roots: ['a'],
+      recon_coverage_run: 'r1', vuln_scan_timestamp: 't1' })])
+    const after = graph([domain({ scan_timestamp: 't2', port_scan_timestamp: 't2', recon_coverage_roots: ['a', 'b'],
+      recon_coverage_run: 'r2', vuln_scan_timestamp: 't2' })])
+    expect(computeReconDelta(before, after).changedNodes).toHaveLength(0)
+  })
+
   test('the coverage record never makes a Domain read as changed', () => {
     const before = graph([domain({ recon_coverage_gaps: '[]', recon_coverage_at: '2026-01-01' })])
     const after = graph([domain({

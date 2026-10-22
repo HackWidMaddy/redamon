@@ -26,10 +26,13 @@ import rowStyles from './RedZoneTableRow.module.css'
 interface DnsEmailRow {
   nodeId: string | null
   domain: string
-  spfPresent: boolean
-  spfStrict: boolean
+  /** False when the org apex was no target: its records were never read. */
+  apexResolved?: boolean
+  apexNote?: string | null
+  spfPresent: boolean | null
+  spfStrict: boolean | null
   spfRecord: string | null
-  dmarcPresent: boolean
+  dmarcPresent: boolean | null
   dmarcPolicy: string | null
   dnssec: string | null
   dnssecEnabled: boolean
@@ -66,6 +69,11 @@ function PolicyChip({ policy }: { policy: string | null }) {
   else if (policy === 'quarantine') cls = rowStyles.sevMedium
   else if (policy === 'none') cls = rowStyles.sevHigh
   return <span className={`${rowStyles.sevBadge} ${cls}`}>{policy}</span>
+}
+
+/** An org whose apex was no target: its SPF/DMARC records were never read. */
+function ApexNote({ note }: { note: string }) {
+  return <span className={rowStyles.nullCell} data-testid="dns-apex-note">{note}</span>
 }
 
 /** Module-level: the filter profiles are keyed off these, and a fresh array
@@ -169,9 +177,9 @@ export const DnsEmailTable = memo(function DnsEmailTable({ projectId }: Props) {
             <tr key={`${r.domain}-${i}`}>
               <td><NodeIdCell value={r.nodeId} /></td>
               <td><HostCell host={r.domain} /></td>
-              <td><BoolChip value={r.spfPresent} /></td>
+              <td>{r.apexNote ? <ApexNote note={r.apexNote} /> : <BoolChip value={r.spfPresent} />}</td>
               <td><BoolChip value={r.spfStrict} trueLabel="-all" falseLabel="weak" /></td>
-              <td><BoolChip value={r.dmarcPresent} /></td>
+              <td>{r.apexNote ? <ApexNote note={r.apexNote} /> : <BoolChip value={r.dmarcPresent} />}</td>
               <td><PolicyChip policy={r.dmarcPolicy} /></td>
               <td><BoolChip value={r.dnssecEnabled} /></td>
               <td>

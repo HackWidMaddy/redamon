@@ -25,6 +25,16 @@ describe('the status recon writes', () => {
     expect(parseOpenApiSourceStatus(null).size).toBe(0)
   })
 
+  test('the five-segment form leads with the scan root; the newest status per source wins', () => {
+    const parsed = parseOpenApiSourceStatus([
+      'api.example.com|s1|aaaaaaaaaaaa|ok|2026-10-20T00:00:00Z',
+      'example.com|s1|aaaaaaaaaaaa|http_404|2026-10-21T00:00:00Z',
+      's2|bbbbbbbbbbbb|ok|2026-10-19T00:00:00Z',
+    ])
+    expect(parsed.get('s1')).toEqual({ hash: 'aaaaaaaaaaaa', code: 'http_404', at: '2026-10-21T00:00:00Z' })
+    expect(parsed.get('s2')?.code).toBe('ok')
+  })
+
   test.each([
     ['ok', 'Imported'], ['out_of_scope', 'Outside scope'], ['blocked_address', 'Internal address blocked'],
     ['http_401', 'HTTP 401'], ['invalid_document', 'Invalid document'], ['host_down', 'Host down'],
@@ -113,6 +123,20 @@ describe('the advisory scope hint', () => {
     expect(documentInProjectScope('https://one.test/spec', project)).toBe(false)
     expect(documentInProjectScope('https://docs.two.test/spec', project)).toBe(true)
     expect(documentInProjectScope('https://three.test/spec', project)).toBe(false)
+  })
+
+  test('a target below its org: everything under the target, nothing beside it', () => {
+    const project = { targetDomain: 'api.example.com', subdomainList: [] as string[] }
+    expect(documentInProjectScope('https://v1.api.example.com/spec', project)).toBe(true)
+    expect(documentInProjectScope('https://www.example.com/spec', project)).toBe(false)
+    expect(documentInProjectScope('https://api.example.com/spec', project)).toBe(false)
+  })
+
+  test('batch: hosts group by registrable domain, so a host under a multi-label suffix keeps its own scope', () => {
+    const project = { domainBatchMode: true, domainBatchHosts: ['www.acme.co.uk', '*.other.co.uk'] }
+    expect(documentInProjectScope('https://www.acme.co.uk/spec', project)).toBe(true)
+    expect(documentInProjectScope('https://api.acme.co.uk/spec', project)).toBe(false)
+    expect(documentInProjectScope('https://api.other.co.uk/spec', project)).toBe(true)
   })
 
   test('a Rules of Engagement exclusion is outside, matched as recon matches it', () => {

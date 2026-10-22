@@ -30,10 +30,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Import settings from project_settings (fetches from API or falls back to params.py)
-from recon.project_settings import get_settings
+from recon.project_settings import get_settings, log_scope
 
-# Load settings from API (if PROJECT_ID/WEBAPP_API_URL set) or params.py (CLI mode).
+# Load settings from the webapp API (PROJECT_ID/WEBAPP_API_URL set) or the
+# defaults (CLI mode). A scope recon refuses raises ScopeRefused here, before
+# any tool starts.
 # get_settings() now applies stealth + AI cascade overrides internally so every
 # downstream consumer (full pipeline + every partial recon module) gets them.
 _settings = get_settings()
@@ -98,15 +99,14 @@ DOMAIN_BATCH_MODE = _settings.get('DOMAIN_BATCH_MODE', False)
 
 
 def _batch_groups() -> list:
-    """The operator-approved groups, in run order, or [] outside batch mode.
+    """The batch's scope groups (SCOPE_GROUPS), in run order, or [] outside batch mode.
 
     Read through a function rather than a module constant so a test can point the
     settings dict at a different project without re-importing this module.
     """
     if not _settings.get('DOMAIN_BATCH_MODE', False):
         return []
-    groups = _settings.get('DOMAIN_BATCH_GROUPS') or []
-    return groups if isinstance(groups, list) else []
+    return settings_scope_groups(_settings)
 
 
 # The batch roots the graph writers may attach a host to. Fixed once per batch
@@ -114,26 +114,74 @@ def _batch_groups() -> list:
 _BATCH_ATTACH_ROOTS: list = []
 
 
+def _ownership_names(group: dict) -> list:
+    """Where the ownership TXT record may live (§4.8): the scan root, then the
+    registrable domain when it differs."""
+    names = [group['scanRoot']]
+    org = group.get('orgDomain')
+    if org and org != group['scanRoot']:
+        names.append(org)
+    return names
+
+
+def _group_ownership(group: dict) -> dict:
+    """Is this group's ownership proven? ``{verified, record_names, expected_value, error}``.
+
+    Proven when either name holds the token. Each name's definite answer (the
+    record, no record, a wrong value) is cached for the run, so a batch asks
+    once per name however many groups share it. A resolver failure is never
+    cached and never read as "no record": the group fails closed with the
+    resolver's message, and the second name is not tried.
+    """
+    from recon.helpers import circuit_breaker
+    cache = circuit_breaker.run_cache('ownership_txt')
+    names = _ownership_names(group)
+    record_names, errors, expected = [], [], ''
+    for name in names:
+        hit, res = cache.get(name)
+        if not hit:
+            res = verify_domain_ownership(name, OWNERSHIP_TOKEN, OWNERSHIP_TXT_PREFIX)
+            if not res.get('resolver_failed'):
+                cache.put(name, res)
+        record_names.append(res.get('record_name') or name)
+        expected = res.get('expected_value') or expected
+        if res.get('verified'):
+            if name != group['scanRoot']:
+                from recon.helpers.org_work import note_ownership_proven
+                note_ownership_proven(name)
+            return {'verified': True, 'record_names': record_names,
+                    'expected_value': expected, 'error': None}
+        if res.get('resolver_failed'):
+            return {'verified': False, 'record_names': record_names,
+                    'expected_value': expected, 'error': res.get('error')}
+        errors.append(res.get('error') or 'no matching record')
+    return {'verified': False,
+            'record_names': [f"{OWNERSHIP_TXT_PREFIX}.{n}" for n in names],
+            'expected_value': expected, 'error': '; '.join(e for e in errors if e)}
+
+
+def _roe_refuses_root(root: str) -> bool:
+    excluded = _settings.get('ROE_EXCLUDED_HOSTS') if _settings.get('ROE_ENABLED') else None
+    return bool(excluded) and _is_roe_excluded(root, excluded)
+
+
 def _eligible_batch_roots(groups: list) -> list:
-    """The batch's roots its groups will actually scan, in order.
+    """The batch's scan roots its groups will actually scan, in order.
 
     run_domain_group refuses a root that is RoE-excluded or fails ownership
     verification. A host found under such a root must stay an informational
     ExternalDomain, not become an in-scope Subdomain, so the root is left out.
-    Ownership is checked the way the group checks it, failing closed.
+    The checks are the group's own (RoE first, then the cached ownership
+    answer), so each name is verified once per run.
     """
-    excluded = _settings.get('ROE_EXCLUDED_HOSTS') if _settings.get('ROE_ENABLED') else None
     roots = []
     for group in groups or []:
-        root = str(group.get('rootDomain') or '').strip() if isinstance(group, dict) else ''
-        if not root or root in roots:
-            continue
-        if excluded and _is_roe_excluded(root, excluded):
+        root = group.get('scanRoot') if isinstance(group, dict) else ''
+        if not root or root in roots or _roe_refuses_root(root):
             continue
         if VERIFY_DOMAIN_OWNERSHIP:
             try:
-                verified = verify_domain_ownership(
-                    root, OWNERSHIP_TOKEN, OWNERSHIP_TXT_PREFIX).get("verified")
+                verified = _group_ownership(group)['verified']
             except Exception:  # noqa: BLE001 - an unanswered check is a failed check
                 verified = False
             if not verified:
@@ -143,18 +191,28 @@ def _eligible_batch_roots(groups: list) -> list:
 
 
 def _stamp_project_roots(recon_data: dict) -> dict:
-    """Carry the whole batch's roots for the graph writers.
+    """Carry the project's scope groups and roots (§4.10 output contract).
 
     The pipeline scans one group at a time, so recon_data["domain"] is the group
     root and the scan stays inside the group. The writers, though, must attach a
     host a scan found under ANOTHER batch root to that root's Domain, not record
     it as an ExternalDomain -- the same fix the partial path already has. They
-    read this through attach_roots(); it is absent for a single-domain project,
-    which needs no cross-root attachment. It is deliberately NOT "domains", which
-    would widen the per-group scan scope.
+    read this through attach_roots(); a single-domain project carries its one
+    root, which is what attach_roots() falls back to anyway. It is deliberately
+    NOT "domains", which would widen the per-group scan scope.
     """
-    if isinstance(recon_data, dict) and _batch_groups() and _BATCH_ATTACH_ROOTS:
-        recon_data["all_project_roots"] = list(_BATCH_ATTACH_ROOTS)
+    if not isinstance(recon_data, dict):
+        return recon_data
+    groups = settings_scope_groups(_settings)
+    recon_data["scope_groups"] = [
+        {"scan_root": g["scanRoot"], "org_domain": g["orgDomain"], "mode": g["mode"],
+         "include_root": bool(g["includeRoot"]), "exact_hosts": list(g["exactHosts"])}
+        for g in groups]
+    if _batch_groups():
+        if _BATCH_ATTACH_ROOTS:
+            recon_data["all_project_roots"] = list(_BATCH_ATTACH_ROOTS)
+    elif groups:
+        recon_data["all_project_roots"] = [g["scanRoot"] for g in groups]
     return recon_data
 
 
@@ -370,6 +428,8 @@ from recon.helpers.batch_groups import (  # noqa: E402
     _PREFIX_CHARSET,
     group_discovery_enabled,
     parse_target,
+    settings_scope_groups,
+    target_info_from_group,
 )
 
 
@@ -413,6 +473,10 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
     include_root = bool(target_info.get("include_root_domain", False))
     if include_root and root_domain not in discovered_subs:
         discovered_subs.insert(0, root_domain)
+    elif not include_root and root_domain in discovered_subs:
+        # Discovery can list the root itself (a SAN, a passive source); with
+        # Root off it is not a target, so it never reaches a scan.
+        discovered_subs.remove(root_domain)
     for host in target_info.get("full_subdomains") or []:
         if host not in discovered_subs:
             discovered_subs.append(host)
@@ -435,8 +499,15 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
         discovered_dns["subdomains"] = resolved
         if need_root:
             discovered_dns["domain"] = dns_result.get("domain") or {}
-    discovered_dns.setdefault("domain", {})
     discovered_dns.setdefault("subdomains", resolved)
+    if not include_root:
+        # Resolved for the resolver canary, never kept: every phase that reads
+        # dns.domain (or the root's own subdomains entry, which discovery's
+        # fan-in can add) would make the root's addresses targets.
+        discovered_dns["domain"] = {}
+        resolved.pop(root_domain, None)
+        discovered_dns["subdomains"] = resolved
+    discovered_dns.setdefault("domain", {})
 
     # SSRF / scope-escape guard on what ENUMERATION dragged in.
     #
@@ -481,6 +552,20 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
                        if s in set(discovered_subs)},
         "include_root": include_root,
     }
+
+
+def _org_whois(org: str) -> dict:
+    """WHOIS of the group's registrable domain, once per run (§4.9).
+
+    python-whois reduces a name to its registrable domain anyway, so asking for
+    the org changes no answer; the run cache stops a batch asking once per
+    group, and the org's later groups get a copy for their own graph write.
+    """
+    from recon.helpers.org_work import once_per_org
+    value, _ = once_per_org(
+        "whois", org, lambda o: whois_lookup(o, save_output=False, settings=_settings),
+        answered=lambda r: bool((r or {}).get("whois_data")), label="WHOIS")
+    return value
 
 
 def _whois_scope():
@@ -1037,6 +1122,11 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             "original_cidrs": original_cidrs,
             "ip_to_hostname": ip_to_hostname,
             "filtered_mode": True,
+            # The mock root is no host and no registrable name: its own org,
+            # an exact scope over the listed addresses, never a target itself.
+            "org_domain": mock_domain,
+            "scope_mode": "exact",
+            "include_root_domain": False,
             "subdomain_filter": subdomain_filter,
             "anonymous_mode": False,
             "bruteforce_mode": False,
@@ -1412,6 +1502,19 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     return combined_result
 
 
+def _scope_metadata(target_info: dict, root_domain: str, filtered_mode: bool) -> dict:
+    """The group's scope in its recon metadata (§4.10).
+
+    include_root_domain is restamped once the hosts are merged; it must never
+    be absent, because a missing flag reads as True downstream.
+    """
+    return {
+        "org_domain": target_info.get("org_domain") or root_domain,
+        "scope_mode": target_info.get("mode") or ("exact" if filtered_mode else "enumerate"),
+        "include_root_domain": bool(target_info.get("include_root_domain")),
+    }
+
+
 def run_domain_recon(target: str, bruteforce: bool = False,
                      target_info: dict = None,
                      discovery_enabled: bool = None) -> dict:
@@ -1513,6 +1616,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             "project_id": PROJECT_ID,
             "filtered_mode": filtered_mode,
             "wildcard_mode": bool(target_info.get("wildcard_mode")),
+            **_scope_metadata(target_info, root_domain, filtered_mode),
             # Keys a domain-level finding (SPF, DMARC...) on its root, so a
             # batch's roots do not share one Vulnerability node (vuln_mixin).
             "domain_batch": bool(_batch_groups()),
@@ -1551,8 +1655,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             g1_futures = {}
             if _settings.get('WHOIS_ENABLED', True):
                 g1_futures["whois"] = g1_exec.submit(
-                    whois_lookup, root_domain, save_output=False, settings=_settings
-                )
+                    _org_whois, target_info.get("org_domain") or root_domain)
             if _settings.get('URLSCAN_ENABLED'):
                 from recon.main_recon_modules.urlscan_enrich import run_urlscan_discovery_only
                 g1_futures["urlscan"] = g1_exec.submit(
@@ -1613,8 +1716,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
 
             if _settings.get('WHOIS_ENABLED', True):
                 g1_futures["whois"] = g1_exec.submit(
-                    whois_lookup, root_domain, save_output=False, settings=_settings
-                )
+                    _org_whois, target_info.get("org_domain") or root_domain)
 
             if discovery_enabled:
                 g1_futures["discovery"] = g1_exec.submit(
@@ -2226,8 +2328,18 @@ def _clear_recon_graph():
 _COVERAGE_WRITE_FAILED = False
 
 
+def _org_for_root(root: str) -> str:
+    """The registrable domain a scan root's hosts attach to; the root itself in
+    IP mode or when no group names it."""
+    for group in settings_scope_groups(_settings):
+        if group.get('scanRoot') == root:
+            return group.get('orgDomain') or root
+    return root
+
+
 def _write_coverage_record(domain: str, group=None) -> bool:
-    """Stamp this run's coverage record on `domain`'s Domain node. Synchronous.
+    """Stamp this run's coverage record for scan root `domain` on its org's
+    Domain node. Synchronous.
 
     Written for every full-run group, clean or not (see update_graph_coverage).
     Deliberately NOT through `_graph_update_bg`: by now `_graph_wait_all()` has
@@ -2244,15 +2356,24 @@ def _write_coverage_record(domain: str, group=None) -> bool:
         from graph_db import Neo4jClient
         from graph_db.mixins.base_mixin import run_timestamp
         report = group.report() if group is not None else circuit_breaker.coverage_report()
+        # Each gap names the scan root it came from, so a reader can drop the
+        # gaps of a root since removed from scope (§4.11.7).
+        gaps = json.loads(report.gaps_json() or "[]")
+        for gap in gaps:
+            if isinstance(gap, dict):
+                gap.setdefault("root", domain)
         with Neo4jClient() as graph_client:
             if not graph_client.verify_connection():
                 raise RuntimeError("Neo4j not reachable")
+            # On the org's Domain; the org's groups of this run merge into one
+            # record, keyed on when the run started.
             matched = graph_client.update_graph_coverage(USER_ID, PROJECT_ID, domain, {
                 "at": run_timestamp(),
-                "gaps_json": report.gaps_json(),
+                "gaps_json": json.dumps(gaps, sort_keys=True, separators=(",", ":")),
                 "skipped_hosts": report.stored_skipped_hosts(),
                 "nuclei_truncated": report.nuclei_truncated,
-            })
+                "org_domain": _org_for_root(domain),
+            }, run_started_at=_RUN_STARTED_AT)
         if not matched:
             raise RuntimeError("no Domain node to stamp")
         return True
@@ -2261,6 +2382,29 @@ def _write_coverage_record(domain: str, group=None) -> bool:
         print(f"[!][graph-db] Coverage record not written ({type(e).__name__}) - "
               f"the finding prune is skipped for this run")
         return False
+
+
+#: The orgs of the groups that passed RoE and ownership this run, in order.
+_RUN_ORGS: list = []
+
+
+def _note_run_org(org: str) -> None:
+    if org and org not in _RUN_ORGS:
+        _RUN_ORGS.append(org)
+
+
+def _note_unchecked_dns_orgs() -> None:
+    """Mark the security_check source degraded for each org whose DNS checks
+    (SPF, DMARC, DNSSEC) ran in no group this run: no live URL, the module or
+    the checks switched off. "Not reported" then means "not re-checked", and
+    the prune keeps the org's previous findings instead of deleting them."""
+    from recon.helpers import circuit_breaker
+    from recon.helpers.org_work import claimed_orgs
+    checked = set(claimed_orgs("dns_checks"))
+    for org in _RUN_ORGS:
+        if org.lower() not in checked:
+            circuit_breaker.note_degraded(
+                "vuln_scan", sources=["security_check"], reason=f"dns checks not run for {org}")
 
 
 def _prune_recon_findings():
@@ -2287,6 +2431,7 @@ def _prune_recon_findings():
     if _COVERAGE_WRITE_FAILED:
         print("[!][graph-db] Finding prune skipped: this run's coverage record was not written")
         return
+    _note_unchecked_dns_orgs()
     try:
         from recon.helpers import circuit_breaker
         report = circuit_breaker.coverage_report()
@@ -2420,9 +2565,9 @@ def _record_node_filter_metadata(stats):
 
 
 def _seed_batch_root_domains(roots: list) -> None:
-    """Restore the attachable batch roots' Domain nodes after the one-time clear.
+    """Restore the attachable batch roots' org Domain nodes after the one-time clear.
 
-    Groups run in order, so without this a later group's root has no Domain node
+    Groups run in order, so without this a later group's org has no Domain node
     while an earlier group's writers attach a host found under it
     (all_project_roots), and that Subdomain would be left unlinked. Never raises:
     a missing link is recoverable, a failed scan is not.
@@ -2455,44 +2600,40 @@ def run_domain_batch(groups: list, start_time) -> int:
     print("═" * 63)
     print(f"[*][Batch] DOMAIN BATCH: {total} domain group(s), sequential")
     for idx, group in enumerate(groups, 1):
-        _pfx = group.get('prefixes') or []
-        # '*' is a sentinel, not a host — counting it as one would advertise a
-        # group that enumerates thousands of names as "1 host".
-        _shape = ('enumerate' if '*' in _pfx
-                  else f"{len([p for p in _pfx if p != '*'])} host(s)")
-        print(f"  [*][Batch] {idx}. {group.get('rootDomain')} ({_shape})")
+        hosts = len(group['exactHosts']) + (1 if group['includeRoot'] else 0)
+        _shape = 'enumerate' if group['mode'] == 'enumerate' else f"{hosts} host(s)"
+        print(f"  [*][Batch] {idx}. {group['scanRoot']} ({_shape})")
     print("═" * 63)
     print()
 
     # Stale per-group files from a PREVIOUS run would be merged back into the
     # canonical output, resurrecting a domain the operator has since removed.
-    removed = clear_batch_outputs(OUTPUT_DIR, PROJECT_ID)
+    # A run that skips discovery reads each group's previous file as its input,
+    # so only the files of roots no longer in the batch are dropped.
+    removed = clear_batch_outputs(
+        OUTPUT_DIR, PROJECT_ID,
+        keep_roots=[] if "domain_discovery" in SCAN_MODULES else [g['scanRoot'] for g in groups])
     if removed:
         print(f"[*][Batch] Removed {removed} stale group output file(s) from a previous run")
     # Replace the canonical file NOW. Until the first group finishes and the merge
     # runs, it would otherwise still describe the PREVIOUS run while the graph has
     # already been cleared, so anything reading it in that window (a GVM start only
     # checks the file exists) would scan the last run's targets.
-    initialize_batch_canonical(
-        OUTPUT_DIR, PROJECT_ID, [str(g.get('rootDomain') or '') for g in groups])
+    initialize_batch_canonical(OUTPUT_DIR, PROJECT_ID, [g['scanRoot'] for g in groups])
     global _BATCH_ATTACH_ROOTS
     _BATCH_ATTACH_ROOTS = _eligible_batch_roots(groups)
-    _seed_batch_root_domains(_BATCH_ATTACH_ROOTS)
+    # A Domain node is an org: the scan roots' orgs, each once.
+    _seed_batch_root_domains(list(dict.fromkeys(_org_for_root(r) for r in _BATCH_ATTACH_ROOTS)))
     print()
 
     failed = []
     for idx, group in enumerate(groups, 1):
-        root = str(group.get('rootDomain') or '').strip()
-        prefixes = [p for p in (group.get('prefixes') or []) if isinstance(p, str)]
-        if not root or not prefixes:
-            print(f"[!][Batch] Group {idx}/{total} skipped: no usable target")
-            failed.append(root or f"group {idx}")
-            continue
-
-        # The marker the orchestrator parses into live "Group 2/3" progress.
+        root = group['scanRoot']
+        # The marker the orchestrator parses into live "Group 2/3" progress;
+        # the root stays one token (container_manager BATCH_GROUP_PATTERN).
         print(f"\n[Batch] Group {idx}/{total}: {root}")
         try:
-            rc = run_domain_group(root, prefixes, start_time=datetime.now())
+            rc = run_domain_group(group, start_time=datetime.now())
         except Exception as e:  # noqa: BLE001 - one bad domain must not end the batch
             print(f"[!][Batch] Group {idx}/{total} ({root}) failed: {e}")
             rc = 1
@@ -2592,31 +2733,42 @@ def _run_pipeline():
         print(f"[RoE] Reconnaissance aborted: outside Rules of Engagement time window.")
         return 1
 
+    log_scope(_settings)
+    groups = _batch_groups()
+    if DOMAIN_BATCH_MODE and not groups:
+        # The settings load refuses this already; a batch must never fall
+        # through to a single-domain run with an empty target.
+        print("[!][Batch] Domain batch with no group to run: refusing.")
+        return 1
+
     # ONCE per run, before any group: this is what lets a batch's groups
     # accumulate into a single graph instead of each wiping the last.
     _clear_recon_graph()
 
-    groups = _batch_groups()
     if groups:
         return run_domain_batch(groups, start_time)
 
-    rc = run_domain_group(TARGET_DOMAIN, SUBDOMAIN_LIST, start_time=start_time)
+    single = settings_scope_groups(_settings)
+    if not single:
+        print("[!][Pipeline] No target domain is configured: refusing.")
+        return 1
+    rc = run_domain_group(single[0], start_time=start_time)
     if rc == 0:
         _prune_recon_findings()
     return rc
 
 
-def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) -> int:
-    """Run the whole domain pipeline for ONE target: a single-domain project, or
-    one group of a Domain batch.
+def run_domain_group(group: dict, start_time=None) -> int:
+    """Run the whole domain pipeline for ONE scope group: a single-domain
+    project's one group, or one group of a Domain batch.
 
-    Everything that is per-TARGET lives here (ownership verification, target
-    parsing, RoE host exclusion, the pipeline itself, the summary). Everything
+    Everything that is per-TARGET lives here (RoE host exclusion, ownership
+    verification, target parsing, the pipeline itself, the summary). Everything
     that is per-RUN stays in main(): the RoE time window, and above all the
     graph clear, which must happen ONCE so a batch's groups accumulate into one
     graph instead of each wiping the last.
 
-    The target arrives as ARGUMENTS, never through the module globals: a batch
+    The target arrives as an ARGUMENT, never through the module globals: a batch
     group's domain is not TARGET_DOMAIN (which is empty in batch mode), and
     downstream modules re-read settings from the API, so a mutated global would
     not reach them anyway.
@@ -2627,25 +2779,40 @@ def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) 
         start_time = datetime.now()
     from recon.helpers import circuit_breaker
     coverage_group = circuit_breaker.group_scope()
+    target_domain = group['scanRoot']
 
-    # Domain Ownership Verification (if enabled)
-    # This MUST be the first check before any scanning to ensure we only
-    # scan domains the user controls.
+    # RoE before ownership: an excluded root gets no TXT lookup either.
+    if _roe_refuses_root(target_domain):
+        print(f"\n[RoE] BLOCKED: Root domain '{target_domain}' is in ROE excluded hosts list.")
+        print(f"[RoE] Reconnaissance aborted — target domain excluded by Rules of Engagement.")
+        return 1
+
+    # Ownership (when on) before anything touches the target. A batch already
+    # asked in _eligible_batch_roots; the answer is cached for the run.
     if VERIFY_DOMAIN_OWNERSHIP:
-        ownership_result = verify_domain_ownership(
-            target_domain,
-            OWNERSHIP_TOKEN,
-            OWNERSHIP_TXT_PREFIX
-        )
-
-        if not ownership_result["verified"]:
-            print(f"\n[!][Pipeline] SCAN ABORTED: Domain ownership verification failed!")
-            print(f"[!][Pipeline] Add TXT record: {ownership_result['record_name']} → \"{ownership_result['expected_value']}\"")
-            print(f"[!][Pipeline] Set VERIFY_DOMAIN_OWNERSHIP = False in params.py to disable\n")
+        ownership = _group_ownership(group)
+        if not ownership["verified"]:
+            print(f"\n[!][Pipeline] SCAN ABORTED: Domain ownership verification failed for {target_domain}")
+            if ownership.get("error"):
+                print(f"[!][Pipeline] {ownership['error']}")
+            print(f"[!][Pipeline] Add TXT {' OR '.join(ownership['record_names'])} → "
+                  f"\"{ownership['expected_value']}\"")
             return 1
+    # A refused group never triggers org-level work (§4.9).
+    _note_run_org(group.get('orgDomain') or target_domain)
 
-    # Parse target with this target's subdomain prefixes
-    target_info = parse_target(target_domain, subdomain_list)
+    # A batch group runs on its scope group, whose mode is explicit. A single
+    # domain keeps parse_target's legacy keys (its graph flags must not move)
+    # and carries the group's scope beside them.
+    if _batch_groups():
+        target_info = target_info_from_group(group)
+        subdomain_list = target_info["subdomain_list"]
+    else:
+        subdomain_list = SUBDOMAIN_LIST
+        target_info = parse_target(target_domain, subdomain_list)
+        scope = target_info_from_group(group)
+        for key in ("scan_root", "org_domain", "mode", "include_root", "exact_hosts"):
+            target_info[key] = scope[key]
     filtered_mode = target_info["filtered_mode"]
     root_domain = target_info["root_domain"]
     full_subdomains = target_info["full_subdomains"]
@@ -2658,13 +2825,6 @@ def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) 
     # the run-wide force-off in project_settings used to enforce on its own.
     discovery_enabled = group_discovery_enabled(
         _settings, _batch_groups(), target_info)
-
-    # RoE: check if root domain itself is excluded
-    if _settings.get('ROE_ENABLED') and _settings.get('ROE_EXCLUDED_HOSTS'):
-        if _is_roe_excluded(target_domain, _settings['ROE_EXCLUDED_HOSTS']):
-            print(f"\n[RoE] BLOCKED: Root domain '{target_domain}' is in ROE excluded hosts list.")
-            print(f"[RoE] Reconnaissance aborted — target domain excluded by Rules of Engagement.")
-            return 1
 
     # RoE: filter out excluded hosts from subdomains
     full_subdomains = _filter_roe_excluded(full_subdomains, _settings, label="subdomain")

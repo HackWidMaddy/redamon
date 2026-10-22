@@ -8,7 +8,7 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
-from graph_db.mixins.recon.scope import build_host_scope, host_in_scope
+from graph_db.mixins.recon.scope import build_host_scope, host_in_scope, org_for_scan_root
 
 def _openapi_params(endpoint_info: dict, method: str) -> dict:
     """Cypher parameters for an endpoint's OpenAPI fields; None keeps what is stored.
@@ -34,6 +34,43 @@ def _openapi_params(endpoint_info: dict, method: str) -> dict:
         "oa_spec_version": spec.get("version"),
         "oa_op_count": spec.get("operation_count"),
     }
+
+
+def openapi_status_entry(scan_root: str, entry: str) -> str:
+    """`<scanRoot>|<id>|<hash>|<code>|<time>` (§4.11.5): the writer files every
+    entry under the scan root it came from, whatever form recon produced."""
+    if entry.startswith(scan_root + "|") and entry.count("|") == 4:
+        return entry
+    return f"{scan_root}|{entry}"
+
+
+def write_openapi_source_status(tx, user_id: str, project_id: str, org: str,
+                                scan_root: str, statuses: list) -> None:
+    """Replace ONE scan root's entries on its org Domain, keeping every other
+    root's (§4.11.5).
+
+    Several scan roots share the org Domain, and parallel partial OpenAPI runs
+    can write it at once, so the node is locked in the statement's first
+    clause and the read-modify-write is that one statement (GDB-11). A
+    pre-scan-root (4-segment) entry belonged to the Domain's own name, so it
+    is dropped only when this scan root IS the org.
+    """
+    from graph_db.mixins.recon.domain_mixin import ORG_DOMAIN_LOCK
+    tx.run(
+        f"""
+        MATCH (d:Domain {{user_id: $user_id, project_id: $project_id}})
+        WHERE toLower(d.name) = $org
+        {ORG_DOMAIN_LOCK}
+        WITH d
+        SET d.openapi_source_status =
+            [s IN coalesce(d.openapi_source_status, [])
+             WHERE NOT s STARTS WITH $root + '|'
+               AND NOT (size(split(s, '|')) = 4 AND toLower(d.name) = $root)] + $new
+        """,
+        user_id=user_id, project_id=project_id, org=str(org or "").lower(),
+        root=str(scan_root or "").lower(),
+        new=[openapi_status_entry(str(scan_root or "").lower(), e) for e in statuses],
+    )
 
 
 class ResourceMixin:
@@ -526,6 +563,10 @@ class ResourceMixin:
             # Update Domain node with resource_enum metadata
             metadata = recon_data.get("metadata", {})
             root_domain = metadata.get("root_domain", "")
+            # The flat per-tool stamp goes on the org Domain (§4.11.3): a scan
+            # root below its org has no Domain node of its own.
+            if root_domain:
+                root_domain = metadata.get("org_domain") or org_for_scan_root(root_domain, recon_data)
             summary = resource_enum_data.get("summary", {})
 
             if root_domain:
@@ -548,21 +589,16 @@ class ResourceMixin:
                 except Exception as e:
                     stats["errors"].append(f"Domain update failed: {e}")
 
-            # Per-source OpenAPI status, on the Domain this run covers (the
-            # group root in a batch, ip-targets.<project> in IP mode). Present
-            # whenever OpenAPI ran, so a removed source's status is cleared.
+            # Per-source OpenAPI status, on the org Domain of the scan root this
+            # run covers (ip-targets.<project> in IP mode). Present whenever
+            # OpenAPI ran, so a removed source's status is cleared.
             openapi_inventory = resource_enum_data.get("openapi")
             run_root = recon_data.get("domain")
             if isinstance(openapi_inventory, dict) and "source_status" in openapi_inventory and run_root:
                 try:
-                    session.run(
-                        """
-                        MATCH (d:Domain {name: $root, user_id: $user_id, project_id: $project_id})
-                        SET d.openapi_source_status = $status
-                        """,
-                        root=run_root, user_id=user_id, project_id=project_id,
-                        status=[s for s in openapi_inventory.get("source_status") or [] if isinstance(s, str)],
-                    )
+                    statuses = [s for s in openapi_inventory.get("source_status") or [] if isinstance(s, str)]
+                    session.execute_write(lambda tx: write_openapi_source_status(
+                        tx, user_id, project_id, org_for_scan_root(run_root, recon_data), run_root, statuses))
                 except Exception as e:
                     stats["errors"].append(f"OpenAPI source status update failed: {e}")
 

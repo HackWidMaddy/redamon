@@ -16,6 +16,7 @@ from typing import Any, Optional
 # The engagement-limit derivation, shared with recon and the orchestrator so the
 # three services cannot disagree about whether a project's limits are live.
 from recon_settings.engagement import derive_roe_enabled
+import scope_groups as _scope_groups
 
 logger = logging.getLogger(__name__)
 
@@ -670,6 +671,12 @@ def fetch_agent_settings(project_id: str, webapp_url: str, *,
     # themselves, which is the opposite of fail-closed. See target_scope_domains().
     settings['DOMAIN_BATCH_MODE'] = project.get('domainBatchMode', False)
     settings['DOMAIN_BATCH_GROUPS'] = project.get('domainBatchGroups') or []
+    settings['SUBDOMAIN_LIST'] = project.get('subdomainList') or []
+    # The webapp's derived scope groups, validated here (scope_groups.py). An
+    # ABSENT field means a webapp older than them: the legacy fields are read.
+    (settings['SCOPE_GROUPS'], settings['SCOPE_GROUPS_SOURCE'],
+     settings['SCOPE_GROUPS_DROPPED']) = _scope_groups.scope_groups_from_project(project)
+    settings['PROJECT_UPDATED_AT'] = project.get('updatedAt')
 
     # Engagement limits. ROE_ENABLED is DERIVED, never read from the column.
     # One implementation, in recon_settings.engagement, which recon and the
@@ -898,6 +905,15 @@ def apply_memory_governor(settings: dict[str, Any]) -> dict[str, Any]:
 # only fails safe because the default happens to be empty.
 SETTINGS_SOURCE_KEY = "_SETTINGS_SOURCE"
 
+# The newest `updatedAt` a settings load saw, per project. The replay auth cache
+# (api._profile_auth_base) drops an entry fetched before it, so a rescope reaches
+# the replay path at the next turn instead of after a flat TTL.
+_SEEN_UPDATED_AT: dict[str, str] = {}
+
+
+def seen_project_updated_at(project_id: str) -> Optional[str]:
+    return _SEEN_UPDATED_AT.get(project_id)
+
 
 def load_project_settings(project_id: str) -> dict[str, Any]:
     """
@@ -925,6 +941,8 @@ def load_project_settings(project_id: str) -> dict[str, Any]:
             settings = fetch_agent_settings(project_id, webapp_url)
             logger.info(f"Loaded {len(settings)} agent settings from API for project {project_id}")
             settings[SETTINGS_SOURCE_KEY] = "api"
+            if settings.get('PROJECT_UPDATED_AT'):
+                _SEEN_UPDATED_AT[project_id] = settings['PROJECT_UPDATED_AT']
         except Exception as e:
             logger.error(f"Failed to fetch agent settings for project {project_id}: {e}")
             logger.warning("Falling back to DEFAULT_AGENT_SETTINGS")
@@ -968,11 +986,15 @@ def target_scope_domains() -> list[str]:
     `if not ip_mode and target_domain` was false: BOTH silently disarmed on exactly
     the projects with the most targets. This is the single source of scope for them.
 
+    With the webapp's scope groups these are the scan roots.
+
     Returns [] only for a genuinely unconfigured project or IP mode. Callers must
     treat an EMPTY list in batch mode as a refusal, never as "nothing to check".
     """
     if get_setting('IP_MODE', False):
         return []
+    if _from_webapp_groups():
+        return [g['scan_root'] for g in target_scope_groups()]
 
     if get_setting('DOMAIN_BATCH_MODE', False):
         groups = get_setting('DOMAIN_BATCH_GROUPS', []) or []
@@ -991,6 +1013,97 @@ def target_scope_domains() -> list[str]:
 
     domain = (get_setting('TARGET_DOMAIN', '') or '').strip()
     return [domain] if domain else []
+
+
+def _from_webapp_groups() -> bool:
+    return not get_setting('IP_MODE', False) and get_setting('SCOPE_GROUPS_SOURCE') == 'webapp'
+
+
+def target_scope_groups() -> list[dict]:
+    """The project's scope groups (scope_groups.py shape); [] in IP mode.
+
+    The webapp's `scopeGroups` when it sent them, else derived from the legacy
+    fields. A legacy group's `hosts` is never read: it holds `*.x` tokens.
+    """
+    if get_setting('IP_MODE', False):
+        return []
+    groups = get_setting('SCOPE_GROUPS')
+    if get_setting('SCOPE_GROUPS_SOURCE') == 'webapp' and isinstance(groups, list):
+        return groups
+    return _scope_groups.legacy_scope_groups({
+        'domainBatchMode': get_setting('DOMAIN_BATCH_MODE', False),
+        'domainBatchGroups': get_setting('DOMAIN_BATCH_GROUPS', []),
+        'targetDomain': get_setting('TARGET_DOMAIN', ''),
+        'subdomainList': get_setting('SUBDOMAIN_LIST', []),
+    })
+
+
+def soft_guardrail_names() -> list[str]:
+    """The names the LLM guardrail judges: orgs and scan roots. [] means nothing
+    to judge, which in batch mode the caller refuses."""
+    if not _from_webapp_groups():
+        return target_scope_domains()
+    return _scope_groups.soft_guardrail_names(target_scope_groups())
+
+
+def auth_scope_patterns() -> list[str]:
+    """Where an authenticated session may send its headers (§4.6): `*.<root>` for
+    an enumerated group, an exact group's hosts, a scan root only when it is a
+    target; the target IPs in IP mode. Never wider than the project's scope."""
+    return _scope_groups.auth_scope_patterns(
+        target_scope_groups(), ip_mode=bool(get_setting('IP_MODE', False)),
+        target_ips=get_setting('TARGET_IPS', []) or [],
+    )
+
+
+def scope_signature() -> str:
+    """Changes exactly when the project's scope does; a running session re-runs
+    its guardrails when it does."""
+    return _scope_groups.scope_signature(
+        target_scope_groups(), ip_mode=bool(get_setting('IP_MODE', False)),
+        target_ips=get_setting('TARGET_IPS', []) or [],
+    )
+
+
+def compact_scope_text() -> Optional[str]:
+    """The scope as a few prompt lines, or None (IP mode, no target)."""
+    return _scope_groups.compact_scope_text(target_scope_groups())
+
+
+def guardrail_names() -> list[str]:
+    """Every name the hard guardrail must check for this project, in order.
+
+    With the webapp's scope groups: every entry, exact host, scan root and org.
+    Otherwise a Domain batch adds its listed hosts (wildcard marker stripped)
+    before its group roots: a host under a multi-label government name
+    (`www.isa.org.jm`) groups under a root no rule names (`org.jm`), so checking
+    the roots alone lets it through. Single-domain mode is the target itself;
+    IP mode is []. Callers must treat an EMPTY list in batch mode as a refusal.
+    """
+    if _from_webapp_groups():
+        names = _scope_groups.guardrail_names(target_scope_groups())
+        if not get_setting('DOMAIN_BATCH_MODE', False):
+            # A target the webapp refused (a public suffix) has no group, yet it
+            # is still the name the operator typed.
+            typed = _scope_groups.clean_host(str(get_setting('TARGET_DOMAIN', '') or '').strip().removeprefix('*.'))
+            if typed and typed not in names:
+                names.insert(0, typed)
+        return names
+    roots = target_scope_domains()
+    if get_setting('IP_MODE', False) or not get_setting('DOMAIN_BATCH_MODE', False):
+        return roots
+    names: list[str] = []
+    groups = get_setting('DOMAIN_BATCH_GROUPS', []) or []
+    for entry in groups if isinstance(groups, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get('hosts'), list):
+            continue
+        for raw in entry['hosts']:
+            host = str(raw or '').strip().lower()
+            if host.startswith('*.'):
+                host = host[2:]
+            if host and _SCOPE_DOMAIN_CHARSET.match(host) and '..' not in host and host not in names:
+                names.append(host)
+    return names + [r for r in roots if r not in names]
 
 
 def reload_settings(project_id: Optional[str] = None) -> dict[str, Any]:

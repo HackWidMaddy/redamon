@@ -34,8 +34,8 @@ vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => undefined) }))
 
 import type { PrismaClient } from '@prisma/client'
 import { MAX_SKILLS_PER_USER, NAME_MAX_CHARS } from './userSkills'
-import { isNameTaken, nameKeys, normalizeName, suggestVersionName } from './userSkillNames'
-import { createUserSkill, type AuditActor } from './userSkillWrites'
+import { checkNames, isNameTaken, nameKeys, normalizeName, suggestVersionName } from './userSkillNames'
+import { createUserSkill, createUserSkillsBatch, type AuditActor } from './userSkillWrites'
 
 const MARKER = 'plugins_pg_integration_test_marker'
 const db = () => h.db as PrismaClient
@@ -230,6 +230,87 @@ describe.skipIf(!URL)('user skill names on a real Postgres (PLUGINS_PG_TEST_URL)
       await createUserSkill({ userId: 'alice', name: '  Café  flow\t', content: '# n' }, ACTOR)
       const [row] = await db().userAttackSkill.findMany({ where: { userId: 'alice' } })
       expect(row.name).toBe('Café flow')
+    })
+  })
+
+  describe('a batch: duplicates inside it are keyed in SQL too', () => {
+    const NAMES = ['My Flow', 'my  flow', 'Caf\u00e9', 'Cafe\u0301']
+
+    test('checkNames flags the later of two equal names, case, spacing and NFC included', async () => {
+      const results = await checkNames(db(), 'alice', NAMES)
+      expect(results.map((r) => r.reason ?? 'ok')).toEqual(['ok', 'name_duplicate', 'ok', 'name_duplicate'])
+    })
+
+    test('createUserSkillsBatch with the same names creates nothing', async () => {
+      const items = NAMES.map((name, i) => ({ name, content: `# ${i}` }))
+      await expect(createUserSkillsBatch({ userId: 'alice', items }, ACTOR)).rejects.toMatchObject({ code: 'batch_refused' })
+      expect(await db().userAttackSkill.count({ where: { userId: 'alice' } })).toBe(0)
+    })
+  })
+
+  describe('input Postgres cannot store', () => {
+    test('checkNames: a name holding U+0000 is name_invalid and the other names are still answered', async () => {
+      await stored('s-taken', 'alice', 'Taken flow')
+      const results = await checkNames(db(), 'alice', ['Taken flow', 'nul\u0000name', 'Free flow'])
+      expect(results.map((r) => r.reason ?? 'ok')).toEqual(['name_taken', 'name_invalid', 'ok'])
+    })
+
+    test('a batch row whose content holds a lone surrogate is refused as that row, nothing written', async () => {
+      const items = [{ name: 'Good row', content: '# fine' }, { name: 'Broken row', content: '# half \ud800 pair' }]
+      await expect(createUserSkillsBatch({ userId: 'alice', items }, ACTOR)).rejects.toMatchObject({
+        status: 409, code: 'batch_refused', extra: { items: [{ index: 1, code: 'content_not_text' }] },
+      })
+      expect(await db().userAttackSkill.count({ where: { userId: 'alice' } })).toBe(0)
+    })
+  })
+
+  describe('a batch and single creates racing under the same lock', () => {
+    test('a batch and a single create of one name at once: one row, the loser a 409 with a free suggestion', async () => {
+      for (let round = 0; round < 5; round++) {
+        const name = `Race twin ${round}`
+        const results = await settle<unknown>([
+          createUserSkillsBatch({ userId: 'alice', items: [{ name, content: `# batch ${round}` }] }, ACTOR),
+          createUserSkill({ userId: 'alice', name: `  RACE  twin ${round}`, content: `# single ${round}` }, ACTOR),
+        ])
+        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+        const loser = (results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason
+        expect(loser.status).toBe(409)
+        const suggestion = loser.code === 'batch_refused' ? loser.extra.items[0].suggestion : loser.extra.suggestion
+        expect(typeof suggestion).toBe('string')
+        expect(await isNameTaken(db(), 'alice', suggestion)).toBe(false)
+        expect(await isNameTaken(db(), 'alice', name)).toBe(true)
+        expect(await db().userAttackSkill.count({ where: { userId: 'alice' } })).toBe(round + 1)
+      }
+    })
+
+    test('a batch and single creates racing for the last two slots never pass the cap', async () => {
+      await db().userAttackSkill.createMany({
+        data: Array.from({ length: MAX_SKILLS_PER_USER - 2 }, (_, i) => ({ userId: 'alice', name: `seed ${i}`, content: '# s' })),
+      })
+      // Three batches and three single creates at once: each would see 998 and write without the lock.
+      const results = await settle<unknown>([
+        ...[0, 1, 2].map((b) => createUserSkillsBatch({
+          userId: 'alice', items: [{ name: `batch ${b} one`, content: '# b1' }, { name: `batch ${b} two`, content: '# b2' }],
+        }, ACTOR)),
+        ...[0, 1, 2].map((i) => createUserSkill({ userId: 'alice', name: `single ${i}`, content: `# s${i}` }, ACTOR)),
+      ])
+      for (const r of results.filter((x): x is PromiseRejectedResult => x.status === 'rejected')) {
+        expect(r.reason.code === 'skill_limit'
+          || (r.reason.code === 'batch_refused' && r.reason.extra.items.every((i: { code: string }) => i.code === 'skill_limit'))).toBe(true)
+      }
+      expect(await db().userAttackSkill.count({ where: { userId: 'alice' } })).toBe(MAX_SKILLS_PER_USER)
+    })
+
+    test('a 50-skill batch over 950 stored skills commits in under 2 seconds', async () => {
+      await db().userAttackSkill.createMany({
+        data: Array.from({ length: 950 }, (_, i) => ({ userId: 'alice', name: `stored skill ${i}`, content: '# s' })),
+      })
+      const items = Array.from({ length: 50 }, (_, i) => ({ name: `batch skill ${i}`, content: `# b${i}\n\n${'x'.repeat(2000)}` }))
+      const started = performance.now()
+      const out = await createUserSkillsBatch({ userId: 'alice', items }, ACTOR)
+      const elapsed = performance.now() - started
+      expect(out.created).toHaveLength(50)
+      expect(elapsed).toBeLessThan(2000)
     })
   })
 })

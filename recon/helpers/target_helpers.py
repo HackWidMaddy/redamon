@@ -37,12 +37,16 @@ def extract_targets_from_recon(recon_data: dict) -> Tuple[Set[str], Set[str], Di
         return ips, hostnames, ip_to_hostnames
 
     metadata = recon_data.get("metadata") or {}
-    include_root_domain = metadata.get("include_root_domain", True)
+    # A file written before scope_mode existed keeps the old default (the apex
+    # is in scope); a current one always stamps the flag.
+    include_root_domain = metadata.get("include_root_domain", "scope_mode" not in metadata)
 
     # Extract from root domain
     domain = recon_data.get("domain", "") or metadata.get("target", "")
     domain_dns = dns_data.get("domain", {})
-    if domain_dns:
+    if domain_dns and include_root_domain:
+        # The apex's IPs only with the apex: an address it resolves to is not a
+        # target when the operator left the root out.
         domain_ips = domain_dns.get("ips", {})
         ipv4_list = domain_ips.get("ipv4", [])
         ipv6_list = domain_ips.get("ipv6", [])
@@ -460,6 +464,23 @@ def _resolves_to_routable(hostname: str) -> bool:
     return _remember(True)
 
 
+def injection_scope(recon_data: dict) -> Optional[dict]:
+    """What a group lets a discovered name join (§4.6 hostname injection), from
+    the recon dict's metadata, or None for a file written before scope_mode.
+
+    ``{"mode": "exact"}`` admits nothing; ``{"mode": "enumerate", "scan_root",
+    "include_root"}`` admits strict subdomains of the scan root, and the root
+    itself only when it is a target.
+    """
+    metadata = (recon_data or {}).get("metadata") or {}
+    mode = metadata.get("scope_mode")
+    if mode not in ("exact", "enumerate"):
+        return None
+    return {"mode": mode,
+            "scan_root": str(metadata.get("root_domain") or recon_data.get("domain") or "").lower(),
+            "include_root": bool(metadata.get("include_root_domain"))}
+
+
 def merge_discovered_hostnames(
     combined_result: dict,
     hostnames: list,
@@ -467,6 +488,7 @@ def merge_discovered_hostnames(
     root_domain=None,
     settings: Optional[dict] = None,
     max_injected: Optional[int] = None,
+    scope: Optional[dict] = None,
 ) -> dict:
     """Merge discovered hostnames into ``dns.subdomains`` (the DICT shape read by
     ``extract_targets_from_recon``) + ``discovered_external_domains``, mirroring
@@ -490,6 +512,11 @@ def merge_discovered_hostnames(
     recorded as external), because there is no apex to test against — e.g. batch
     mode, where ``metadata['root_domain']`` is deliberately empty (a joined
     string once became a literal scan target).
+
+    ``scope`` (default: ``injection_scope(combined_result)``) narrows step 1 to
+    the group's rule: an EXACT group injects nothing, since it scans exactly
+    the hosts the operator listed; an ENUMERATE group injects strict
+    subdomains of its scan root, and the root only when it is a target.
     """
     settings = settings or {}
     result = combined_result
@@ -528,6 +555,21 @@ def merge_discovered_hostnames(
             in_scope.append(name)
         else:
             _record_external(name)
+
+    # 1b. The group's own rule.
+    if scope is None:
+        scope = injection_scope(result)
+    if scope is not None:
+        before = len(in_scope)
+        if scope["mode"] == "exact":
+            in_scope = []
+        else:
+            sr = scope["scan_root"]
+            in_scope = [n for n in in_scope
+                        if n.endswith("." + sr) or (n == sr and scope["include_root"])]
+        if before != len(in_scope):
+            print(f"[*][{source}] {before - len(in_scope)} name(s) not injected: outside "
+                  f"this group's {scope['mode']} scope")
 
     # 2. RoE narrowing pass.
     from recon.helpers.roe_scope import _filter_roe_excluded

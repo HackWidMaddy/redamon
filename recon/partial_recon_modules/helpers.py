@@ -41,6 +41,9 @@ def scope_roots(config: dict) -> list:
     return [legacy] if isinstance(legacy, str) and legacy else []
 
 
+from recon.helpers.batch_groups import settings_scope_groups  # noqa: E402,F401 - re-exported
+
+
 def _norm_host(value) -> str:
     return str(value or "").strip().strip(".").lower()
 
@@ -69,6 +72,16 @@ def host_in_roots(host: str, roots: list) -> bool:
     return root_for_host(host, roots) is not None
 
 
+def typed_host_ok(host: str, roots: list, groups) -> bool:
+    """A host the operator typed: the §4.6 partial rule when the run has scope
+    groups (an EXACT group's list, strictly under an ENUMERATE root, a root only
+    with Include Root), else under any root as before. The run's start already
+    applied it (filter_partial_user_input); this keeps a module honest on its own."""
+    if groups and all(isinstance(g, dict) and "mode" in g for g in groups):
+        return admits_partial_host(groups, host)
+    return host_in_roots(host, roots)
+
+
 def _group_for(root: str, groups: list):
     r = _norm_host(root)
     for group in groups or []:
@@ -78,25 +91,37 @@ def _group_for(root: str, groups: list):
 
 
 def include_root_for(root: str, groups: list) -> bool:
-    """Is the apex itself a target? True when that root's prefixes carry "."."""
-    from recon.helpers.batch_groups import parse_target
+    """Is the scan root itself a target? The group's includeRoot, or for a
+    legacy entry, a "." among its prefixes."""
     group = _group_for(root, groups)
     if group is None:
         return False
+    if "includeRoot" in group:
+        return bool(group["includeRoot"])
+    from recon.helpers.batch_groups import parse_target
     return parse_target(root, list(group.get("prefixes") or []))["include_root_domain"]
 
 
 def allowed_hosts_for(root: str, groups: list):
-    """The exact hosts a LITERAL batch group may scan, or None for "any host under root".
+    """The exact hosts an EXACT group may scan, or None for "any host under root".
 
-    A batch scans exactly the uploaded hostnames unless the operator wrote a
-    wildcard (project_settings.py, run_domain_group). Single-domain projects are
-    never narrowed here, even with a subdomain prefix list: that is a separate
-    product decision, and today's partial runs scan every Subdomain under them.
+    An EXACT group scans its listed hosts (and its scan root when Root is on),
+    nothing else, whether it is a batch group or the one group of a
+    single-domain project with a prefix list (§4.6). An ENUMERATE group scans
+    whatever lies under its root.
     """
-    from recon.helpers.batch_groups import parse_target
     group = _group_for(root, groups)
-    if group is None or not group.get("batch"):
+    if group is None:
+        return None
+    if "mode" in group:
+        if group["mode"] == "enumerate":
+            return None
+        hosts = {_norm_host(h) for h in group.get("exactHosts") or []}
+        if group.get("includeRoot"):
+            hosts.add(_norm_host(root))
+        return hosts
+    from recon.helpers.batch_groups import parse_target
+    if not group.get("batch"):
         return None
     info = parse_target(root, list(group.get("prefixes") or []))
     if info["wildcard_mode"]:
@@ -104,49 +129,112 @@ def allowed_hosts_for(root: str, groups: list):
     return {_norm_host(h) for h in info["full_subdomains"]}
 
 
+# Every scan root of the project, set once by partial_recon._prepare_scope from
+# the container's settings. A graph host belongs to the LONGEST scan root it
+# sits under across the whole project, not only the roots this run covers.
+_PROJECT_SCAN_ROOTS: list = []
+
+
+_ROOT_ORGS: dict = {}
+
+
+def scope_groups_payload(groups) -> list:
+    """Scope groups in the recon-file shape (snake_case) the graph writers read."""
+    out = []
+    for g in groups or []:
+        if isinstance(g, dict) and "scanRoot" in g:
+            out.append({"scan_root": g["scanRoot"], "org_domain": g.get("orgDomain") or g["scanRoot"],
+                        "mode": g["mode"], "include_root": bool(g.get("includeRoot")),
+                        "exact_hosts": list(g.get("exactHosts") or [])})
+    return out
+
+
+def set_project_scope(groups) -> None:
+    """Record the project's scan roots and each one's org, from the container's
+    settings (partial_recon._prepare_scope), for the builders and the writers.
+
+    The writers get the groups too, as the run's default for a recon dict that
+    carries none: a partial run builds its dicts in many places, and a writer
+    without the groups would attach a deeper scan root's hosts to a Domain
+    named after the root, which the org model never creates.
+    """
+    global _PROJECT_SCAN_ROOTS, _ROOT_ORGS
+    _PROJECT_SCAN_ROOTS, _ROOT_ORGS = [], {}
+    from graph_db.mixins.recon.scope import set_run_scope_groups
+    set_run_scope_groups(scope_groups_payload(groups))
+    for g in groups or []:
+        root = _norm_host(g.get("scanRoot")) if isinstance(g, dict) else ""
+        if root:
+            _PROJECT_SCAN_ROOTS.append(root)
+            _ROOT_ORGS[root] = _norm_host(g.get("orgDomain")) or root
+
+
+def project_scan_roots() -> list:
+    return list(_PROJECT_SCAN_ROOTS)
+
+
+def root_orgs(roots) -> dict:
+    """{scan root: org} for create_user_input_node, which attaches a UserInput
+    to the org of the root its first host sits under."""
+    return {r: attach_org(r) for r in roots or [] if r}
+
+
+def attach_org(root):
+    """The Domain a scan root's hosts attach to: its org (the graph names a
+    Domain after the org). The root itself when no group names it (IP mode,
+    a test); None stays None, so a host under no root attaches nowhere."""
+    if not root:
+        return root
+    return _ROOT_ORGS.get(_norm_host(root), root)
+
+
+def org_for_root(root: str, groups: list) -> str:
+    """The registrable domain (org) of a scan root, as its group carries it."""
+    group = _group_for(root, groups)
+    org = (group or {}).get("orgDomain")
+    return _norm_host(org) if org else _norm_host(root)
+
+
 def partial_domain_groups(settings: dict, roots: list) -> list:
     """Scope entries for `roots`, built from the container's own validated settings.
 
-    DOMAIN_BATCH_GROUPS has been through _parse_domain_batch_groups, which also
-    demotes a wildcard on a public suffix to literal. Prefixes carried in the
-    config would skip that, so the groups are always rebuilt from settings.
+    SCOPE_GROUPS went through the settings parser's re-validation (charset,
+    Python suffix list), so the groups are always rebuilt from settings, never
+    from anything in the config. Each entry carries the scope group's fields
+    plus the legacy `rootDomain`/`prefixes`/`batch` keys the graph builders read.
     """
     if settings.get("IP_MODE"):
         return []
     wanted = {_norm_host(r) for r in roots}
-    if settings.get("DOMAIN_BATCH_MODE"):
-        merged = {}
-        for group in settings.get("DOMAIN_BATCH_GROUPS") or []:
-            if not isinstance(group, dict):
-                continue
-            root = _norm_host(group.get("rootDomain"))
-            if root not in wanted:
-                continue
-            entry = merged.setdefault(root, {"rootDomain": root, "prefixes": [], "batch": True})
-            for prefix in group.get("prefixes") or []:
-                if prefix not in entry["prefixes"]:
-                    entry["prefixes"].append(prefix)
-        return list(merged.values())
-    target = str(settings.get("TARGET_DOMAIN") or "").strip()
-    if not target or _norm_host(target) not in wanted:
-        return []
-    return [{"rootDomain": target, "prefixes": list(settings.get("SUBDOMAIN_LIST") or []),
-             "batch": False}]
+    batch = bool(settings.get("DOMAIN_BATCH_MODE"))
+    out = []
+    for group in settings_scope_groups(settings):
+        root = _norm_host(group.get("scanRoot"))
+        if not root or root not in wanted or any(e["rootDomain"] == root for e in out):
+            continue
+        prefixes = ["*"] if group["mode"] == "enumerate" else []
+        if group.get("includeRoot"):
+            prefixes.append(".")
+        prefixes += [f"{h[:-len(root) - 1]}." for h in group.get("exactHosts") or []]
+        out.append({
+            "rootDomain": root, "prefixes": prefixes, "batch": batch,
+            "scanRoot": root, "orgDomain": group.get("orgDomain") or root,
+            "mode": group["mode"], "includeRoot": bool(group.get("includeRoot")),
+            "exactHosts": list(group.get("exactHosts") or []),
+        })
+    return out
 
 
 def settings_project_roots(settings: dict, project_id: str) -> list:
     """Every root the project scans according to the container's settings."""
     if settings.get("IP_MODE"):
         return [f"ip-targets.{project_id}"]
-    if settings.get("DOMAIN_BATCH_MODE"):
-        roots = []
-        for group in settings.get("DOMAIN_BATCH_GROUPS") or []:
-            root = _norm_host(group.get("rootDomain")) if isinstance(group, dict) else ""
-            if root and root not in roots:
-                roots.append(root)
-        return roots
-    target = str(settings.get("TARGET_DOMAIN") or "").strip()
-    return [target] if target else []
+    roots = []
+    for group in settings_scope_groups(settings):
+        root = _norm_host(group.get("scanRoot"))
+        if root and root not in roots:
+            roots.append(root)
+    return roots
 
 
 def partial_settings(config: dict) -> dict:
@@ -309,6 +397,121 @@ def _is_valid_url(value: str) -> bool:
         return False
 
 
+def admits_partial_host(groups: list, host: str) -> bool:
+    """§4.6, partial-recon typed hosts: strictly under an ENUMERATE scan root,
+    or one of an EXACT group's hosts; a scan root itself only when it is a
+    target. Mirrors recon_orchestrator/batch_scope.py:admits_partial_host."""
+    h = _norm_host(host)
+    if not h:
+        return False
+    for g in groups or []:
+        root = _norm_host(g.get("scanRoot") or g.get("rootDomain"))
+        if h == root:
+            if include_root_for(root, groups):
+                return True
+            continue
+        allowed = allowed_hosts_for(root, groups)
+        if allowed is None:
+            if h.endswith("." + root):
+                return True
+        elif h in allowed:
+            return True
+    return False
+
+
+# The CIDR widths the modal accepts (PartialReconModal), enforced server-side too.
+_IP_PREFIX_LIMITS = {4: (24, 32), 6: (120, 128)}
+
+
+def _valid_user_ip(value: str) -> bool:
+    import ipaddress as _ipaddress
+    try:
+        if "/" in value:
+            net = _ipaddress.ip_network(value, strict=False)
+            low, high = _IP_PREFIX_LIMITS[net.version]
+            return low <= net.prefixlen <= high
+        _ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _url_host(url: str) -> str:
+    from urllib.parse import urlsplit
+    try:
+        return (urlsplit(str(url).strip()).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def filter_partial_user_input(config: dict, settings: dict) -> list:
+    """Drop what the operator typed that this run may not touch; returns the refusals.
+
+    The orchestrator already filtered the same payload (PAR-10); this is the
+    container's own check against its own settings, so a job that reached the
+    container another way is held to the same rule. Hosts and URL hosts pass the
+    §4.6 partial rule for the run's groups (in IP mode, a URL host must be one
+    of the project's addresses); IPs and CIDRs get the modal's width limits.
+
+    The hard guardrail is not repeated here: every pattern is a suffix match,
+    so a host the scope rule admits is blocked only if its scan root is, and
+    the roots were guardrailed by the orchestrator before this container ran.
+    """
+    refused: list = []
+    groups = config.get("domain_groups") or []
+    ip_mode = bool(settings.get("IP_MODE"))
+    target_ips = {str(i).strip().lower() for i in settings.get("TARGET_IPS") or []}
+
+    def host_ok(host: str) -> bool:
+        if ip_mode:
+            return _norm_host(host) in target_ips
+        return admits_partial_host(groups, host)
+
+    def keep_hosts(values, label):
+        kept = []
+        for v in values if isinstance(values, list) else []:
+            if isinstance(v, str) and host_ok(v):
+                kept.append(_norm_host(v))
+            else:
+                refused.append(f"{label} {str(v)[:120]!r}")
+        return kept
+
+    if "user_inputs" in config:
+        config["user_inputs"] = keep_hosts(config.get("user_inputs"), "subdomain")
+    targets = config.get("user_targets")
+    if isinstance(targets, dict):
+        targets = dict(targets)
+        if "subdomains" in targets:
+            targets["subdomains"] = keep_hosts(targets["subdomains"], "subdomain")
+        if "urls" in targets:
+            kept = []
+            for u in targets["urls"] if isinstance(targets["urls"], list) else []:
+                if isinstance(u, str) and host_ok(_url_host(u)):
+                    kept.append(u.strip())
+                else:
+                    refused.append(f"url {str(u)[:120]!r}")
+            targets["urls"] = kept
+        if "ips" in targets:
+            kept = []
+            for ip in targets["ips"] if isinstance(targets["ips"], list) else []:
+                if isinstance(ip, str) and _valid_user_ip(ip.strip()):
+                    kept.append(ip.strip())
+                else:
+                    refused.append(f"ip {str(ip)[:60]!r}")
+            targets["ips"] = kept
+        # ip_attach_to names a Subdomain, url_attach_to a BaseURL. In IP mode
+        # both are graph nodes the modules look up, so only domain mode checks.
+        for key, host_of in (("ip_attach_to", str), ("url_attach_to", _url_host)):
+            value = targets.get(key)
+            if value and not ip_mode and not (isinstance(value, str) and host_ok(host_of(value))):
+                refused.append(f"{key} {str(value)[:120]!r}")
+                targets[key] = None
+        config["user_targets"] = targets
+    elif targets is not None:
+        config["user_targets"] = {}
+    return refused
+
+
 def _should_include_root_domain(settings: dict) -> bool:
     """
     Derive the "Include Root Domain" flag from project settings.
@@ -334,7 +537,8 @@ def _scope_partial_urls(
 
     Graph URLs outside the project scope are dropped rather than fetched: an
     Endpoint written before JS recon enforced scope can carry a third-party
-    baseurl. URLs the user typed are kept, as web_crawling keeps them.
+    baseurl. Typed URLs were already filtered when the run started; they are
+    kept, but an unscoped host never joins ``scope_hosts``.
     ``scope_hosts`` belongs in ``recon_data["subdomains"]``, the set the graph
     mixins store nodes under (graph_db/mixins/recon/scope.py); left empty there,
     the scope collapses to the apex and every subdomain's results are dropped.
@@ -380,8 +584,11 @@ def _scope_partial_urls(
         if url not in urls:
             urls.append(url)
     for url in user_urls:
+        # Typed URLs were filtered at the run's start (filter_partial_user_input).
+        # Their host still joins the writer's scope only when the scope admits
+        # it, so a caller that skipped the filter cannot widen what is written.
         host = _host(url)
-        if host:
+        if host and _in_scope(host):
             hosts.add(host)
         if url not in urls:
             urls.append(url)

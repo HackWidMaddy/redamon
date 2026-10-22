@@ -74,7 +74,7 @@ The goal of Phase 1 is to land in Phase 2 with a small, high-confidence list of 
    ```
    If the graph already has `DNSRecord` nodes, jump directly to step 4. If it does not, run step 3 first.
 
-3. **Expand the subdomain inventory.** When the graph carries fewer than ~20 subdomains for the root domain, fan out passively first:
+3. **Expand the subdomain inventory.** `<root>` below is a scan root of an enumerated scope group (a `*.name` entry in the project's target list), which may sit below its registrable domain (`api.example.com` under `example.com`). A listed group's hosts are the whole scope: never enumerate under them. When the graph carries fewer than ~20 subdomains for that scan root, fan out passively first:
    ```
    execute_subfinder -d <root> -all -json -silent
    ```

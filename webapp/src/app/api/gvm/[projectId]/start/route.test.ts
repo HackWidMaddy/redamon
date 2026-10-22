@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   existsSync: vi.fn(),
   recordScanStart: vi.fn(),
   guard: vi.fn(),
+  legacy: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => ({
@@ -37,6 +38,11 @@ vi.mock('@/lib/access', () => ({
 vi.mock('@/lib/scanTimeline', async orig => ({
   ...(await orig<typeof import('@/lib/scanTimeline')>()),
   recordScanStart: (...a: unknown[]) => h.recordScanStart(...a),
+}))
+
+vi.mock('@/lib/legacyGraph', async orig => ({
+  ...(await orig<typeof import('@/lib/legacyGraph')>()),
+  legacyGraphDomains: (...a: unknown[]) => h.legacy(...a),
 }))
 
 import { POST } from './route'
@@ -58,6 +64,7 @@ beforeEach(() => {
   h.recordScanStart.mockResolvedValue(null)
   h.orchestratorFetch.mockResolvedValue({ ok: true, json: async () => ({ status: 'starting' }) })
   h.findProject.mockResolvedValue(BATCH)
+  h.legacy.mockResolvedValue([])
 })
 
 describe('domain batch precondition', () => {
@@ -112,5 +119,30 @@ describe('domain batch precondition', () => {
     const res = await call()
     expect(res.status).toBe(404)
     expect(h.findProject).not.toHaveBeenCalled()
+  })
+})
+
+describe('an old-model graph', () => {
+  test('refuses the start with 409 and names the old Domain nodes', async () => {
+    h.legacy.mockResolvedValue(['co.uk'])
+    const res = await call()
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.error).toMatch(/built before the current scope model; run a full recon first/)
+    expect(body.legacyGraph).toEqual(['co.uk'])
+    expect(h.orchestratorFetch).not.toHaveBeenCalled()
+  })
+
+  test('is asked with the derived scope groups of the batch', async () => {
+    await call()
+    expect(h.legacy.mock.calls[0][0]).toBe('u1')
+    expect(h.legacy.mock.calls[0][2].map((g: { scanRoot: string }) => g.scanRoot))
+      .toEqual(['example.com', 'other.com'])
+  })
+
+  test('an unanswerable check lets the start through', async () => {
+    h.legacy.mockResolvedValue(null)
+    const res = await call()
+    expect(res.status).toBe(200)
   })
 })

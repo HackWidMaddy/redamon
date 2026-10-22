@@ -46,11 +46,36 @@ class TestScope(unittest.TestCase):
     def test_out_of_scope_returns_empty(self):
         self.assertEqual(ap.auth_headers_for_host(self.PROFILE, "evil.test", ["target.test"]), {})
 
-    def test_explicit_scope_hosts_win(self):
+    def test_explicit_scope_hosts_narrow_never_replace(self):
+        # D-22: the explicit scope is intersected with the project's.
         prof = {**self.PROFILE, "scopeHosts": ["*.target.test"]}
-        self.assertEqual(ap.auth_headers_for_host(prof, "a.b.target.test", ["ignored.test"]),
+        self.assertEqual(ap.auth_headers_for_host(prof, "a.b.target.test", ["*.target.test", "target.test"]),
                          {"Cookie": "sid=a"})
-        self.assertEqual(ap.auth_headers_for_host(prof, "target.test", ["ignored.test"]), {})
+        self.assertEqual(ap.auth_headers_for_host(prof, "target.test", ["*.target.test", "target.test"]), {})
+        self.assertEqual(ap.auth_headers_for_host(prof, "a.b.target.test", ["ignored.test"]), {})
+
+    def test_a_wide_explicit_wildcard_on_an_exact_project_admits_only_the_listed_host(self):
+        prof = {**self.PROFILE, "scopeHosts": ["*.example.com"]}
+        self.assertEqual(ap.resolve_scope_hosts(prof, ["www.example.com"]), ["www.example.com"])
+        self.assertEqual(ap.auth_headers_for_host(prof, "shop.example.com", ["www.example.com"]), {})
+
+    def test_an_roe_excluded_host_gets_nothing_under_an_allowed_pattern(self):
+        scope = ["*.target.test"]
+        self.assertEqual(ap.auth_headers_for_host(self.PROFILE, "admin.target.test", scope, ["admin.target.test"]), {})
+        self.assertEqual(ap.auth_headers_for_host(self.PROFILE, "x.admin.target.test", scope, ["admin.target.test"]), {})
+        self.assertEqual(ap.auth_headers_for_host(self.PROFILE, "app.target.test", scope, ["admin.target.test"]),
+                         {"Cookie": "sid=a"})
+
+    def test_roe_filters_exact_scope_entries(self):
+        self.assertEqual(ap.resolve_scope_hosts(None, ["www.target.test", "api.target.test"], ["*.target.test"]), [])
+        self.assertEqual(ap.resolve_scope_hosts(None, ["www.target.test", "*.target.test"], ["www.target.test"]),
+                         ["*.target.test"])
+
+    def test_roe_matching_mirrors_recon(self):
+        self.assertTrue(ap.is_roe_excluded("https://Admin.Target.test:8443/x", ["admin.target.test"]))
+        self.assertTrue(ap.is_roe_excluded("10.0.0.9", ["10.0.0.0/24"]))
+        self.assertFalse(ap.is_roe_excluded("10.0.0.5", ["0.5"]))
+        self.assertFalse(ap.is_roe_excluded("target.test", ["*.target.test"]))
 
     def test_empty_scope_fails_closed(self):
         self.assertEqual(ap.auth_headers_for_host(self.PROFILE, "target.test", []), {})

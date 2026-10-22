@@ -75,6 +75,9 @@ const AGENT_FACING = [
   'muteTools.ts',
   'verdictTools.ts',
   'findingTools.ts',
+  // update_project_scope's refusals and result note point the agent at the
+  // next call (preflight_scope_check), so they go stale like any description.
+  'scopeTools.ts',
 ]
 
 /**
@@ -185,6 +188,14 @@ describe('P8: every tool named in an agent-facing string exists', () => {
       /daily mute budget/i,
       /within a daily budget/i,
       /MCP_MUTE_DAILY_BUDGET/,
+      // update_project_scope edits a batch's host list, and create_project
+      // honours settings.targetGuardrailEnabled.
+      /domain-batch configuration.*outside what any token may write/i,
+      /cannot change what RedAmon points at/i,
+      // Nested wildcards shipped: a deeper wildcard is a scan root of its own,
+      // and a subdomain list names EXACT hosts, never seeds beside discovery.
+      /A wildcard must name a registrable domain, not a deeper name/i,
+      /Hosts seeded in addition to whatever discovery finds/i,
     ]
     const problems: string[] = []
     for (const file of AGENT_FACING) {

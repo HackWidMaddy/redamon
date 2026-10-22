@@ -4,6 +4,7 @@ import { formatNeo4jDateTime } from './formatters'
 import { getNodeId } from './linkHelpers'
 import { getNodeSeverity, getNodeUrl } from './nodeHelpers'
 import { TRIAGE_TEXT_PROPERTIES } from '@/lib/triage/properties'
+import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
 
 // Text a review model or an external MCP agent wrote, and the JSON blobs that
 // carry it. The agent this context goes to has tools, so none of it is handed
@@ -122,7 +123,13 @@ function relationLines(relations: Relation[]): string[] {
 export interface NodeContextOptions {
   projectName?: string
   targetDomain?: string
+  /** The project's current scope groups: the scope is stated from them, so a
+   *  batch (empty targetDomain) or a deeper scan root is never misnamed. */
+  scopeGroups?: readonly ScopeGroup[]
 }
+
+// A batch can hold 50 groups; the context names the first ones.
+const SCOPE_LINES = 10
 
 /**
  * Build an LLM-ready Markdown description of a graph node: its identity,
@@ -139,7 +146,13 @@ export function buildNodeContext(
 
   const header = ['# Attack-surface graph node']
   if (options.projectName) header.push(`Project: ${options.projectName}`)
-  if (options.targetDomain) header.push(`Target: ${options.targetDomain}`)
+  if (options.scopeGroups?.length) {
+    const shown = options.scopeGroups.slice(0, SCOPE_LINES).map(g => `- ${groupLabel(g)}`)
+    if (options.scopeGroups.length > SCOPE_LINES) shown.push(`- ...and ${options.scopeGroups.length - SCOPE_LINES} more`)
+    header.push(`Scope (scan roots; the graph's Domain nodes are their registrable domains):\n${shown.join('\n')}`)
+  } else if (options.targetDomain) {
+    header.push(`Target: ${options.targetDomain}`)
+  }
   sections.push(header.join('\n'))
 
   const severity = getNodeSeverity(node)

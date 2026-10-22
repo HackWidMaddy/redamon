@@ -2407,14 +2407,13 @@ fields:
     validator: json_object
     group: scope
     meaning: >-
-      Groups derived from the list at save time: [{ rootDomain, prefixes[],
-      hosts[] }]. Persisted rather than re-derived so the grouping rule has
-      exactly ONE implementation, and so what the operator approved in the preview
-      is literally what the pipeline runs. Always recomputed server-side; never
-      trusted from a body. A prefix is a subdomain label, or one of two
-      sentinels: "." meaning the root domain itself, and "*" meaning enumerate
-      this domain (full subdomain discovery, as a single-domain project runs it).
-      Wildcard-ness is read from the prefixes; there is no separate flag.
+      The legacy record of the batch scope, [{ rootDomain, prefixes[], hosts[],
+      wildcard }], recomputed server-side from domainBatchHosts at every save and
+      never trusted from a body. domainBatchHosts is the source of truth; the
+      scope every service reads is scopeGroups, which GET /api/projects/[id]
+      derives from it on each read. Kept for readers that have not moved and
+      for a rollback. A prefix is a subdomain label, or one of two sentinels:
+      "." meaning the scan root itself, and "*" meaning enumerate it.
     form_section: null
     deny_reason: internal
     written_by: "create_project, from domainBatchHosts"
@@ -10762,6 +10761,16 @@ runtime_only:
     meaning: >-
       The project whose settings were loaded. Written by the loader, never
       configured.
+  SCOPE_GROUPS:
+    source: internal
+    tool: targeting
+    unit: none
+    roe_capped: false
+    meaning: >-
+      The project's scope as scan-root groups, read from the scopeGroups field
+      the webapp derives on every GET, then re-validated by recon (charset and
+      its own Public Suffix List). A batch with no usable group, or a target
+      that is a public suffix, refuses the run. Never configured.
   SECURITYTRAILS_API_KEY:
     source: user_account
     tool: osint_enrichment

@@ -1,8 +1,8 @@
 /**
  * Strategy row 6: the Domain batch group preview must agree with what is saved.
  *
- * The preview is the ONLY place the grouping rule (last two labels) is visible to
- * an operator, and it is what they approve before the scan runs. If it disagrees
+ * The preview is the ONLY place the grouping rule (scope groups by registrable
+ * domain) is visible to an operator, and it is what they approve before the scan runs. If it disagrees
  * with the persisted grouping, or if the input cannot be typed into, the feature's
  * central promise ("you see exactly what will run, in order") is broken.
  *
@@ -11,12 +11,12 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react'
 import { TargetSection } from './TargetSection'
-import { groupHostsByRootDomain } from '@/lib/domainBatch'
+import { groupHostsByScanRoot } from '@/lib/domainBatch'
 
 vi.mock('@/components/shared/ModelPicker', () => ({ ModelPicker: () => null }))
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1' }) }))
 
-afterEach(cleanup)
+afterEach(() => { cleanup() })
 
 type Data = Record<string, unknown>
 
@@ -74,16 +74,16 @@ describe('the preview matches the grouping that will be persisted', () => {
     expect(domains).toEqual(['domain1.com', 'domain2.it', 'domain3.com'])
   })
 
-  test('the rendered groups equal groupHostsByRootDomain, the helper the server uses', () => {
+  test('the rendered groups equal groupHostsByScanRoot, the helper the server uses', () => {
     const s = renderSection()
     fireEvent.change(s.textarea(), { target: { value: HOSTS } })
 
-    const expected = groupHostsByRootDomain(s.data.domainBatchHosts as string[]).groups
+    const expected = groupHostsByScanRoot(s.data.domainBatchHosts as string[]).groups
     const rows = screen.getAllByRole('row').slice(1)
     expect(rows.map(r => within(r).getAllByRole('cell')[1].textContent))
-      .toEqual(expected.map(g => g.rootDomain))
-    expect(rows.map(r => within(r).getAllByRole('cell')[2].textContent))
-      .toEqual(expected.map(g => g.hosts.join(', ')))
+      .toEqual(expected.map(g => g.scanRoot))
+    expect(rows.map(r => within(r).getAllByRole('cell')[4].textContent))
+      .toEqual(expected.map(g => g.entries.join(', ')))
   })
 
   test('a deep subdomain joins its domain group rather than starting a new one', () => {
@@ -96,10 +96,9 @@ describe('the preview matches the grouping that will be persisted', () => {
   test('an invalid entry is flagged and not silently grouped', () => {
     const s = renderSection()
     fireEvent.change(s.textarea(), { target: { value: 'good.example.com\nlocalhost' } })
-    // The warning text is split across nodes, so match on the container's text.
-    // getByText matches the <strong> label; the offending entry is its sibling text.
-    const label = screen.getByText(/Not valid hostnames/)
-    expect(label.parentElement?.textContent).toContain('localhost')
+    // getByText matches the <strong> label; the offending entry is a sibling list item.
+    const label = screen.getByText(/Not accepted/)
+    expect(label.parentElement?.textContent).toContain('localhost: not a valid hostname')
   })
 
   test('a permanently blocked root is called out before submit', () => {
@@ -108,12 +107,104 @@ describe('the preview matches the grouping that will be persisted', () => {
     expect(screen.getByText(/permanently blocked/i)).toBeTruthy()
   })
 
+  test('single-domain banner flags a blocked prefix host, not only the target', () => {
+    // org.jm is not blocked, isa.org.jm is: the live banner checked the target
+    // alone, so the block only surfaced at submit.
+    // A plain render: on mount, single-domain mode syncs Include Root through
+    // updateField, before renderSection's live re-render can exist.
+    const data = { ...BASE, domainBatchMode: false, targetDomain: 'org.jm', subdomainList: ['isa.'] }
+    render(<TargetSection data={data as never} updateField={vi.fn() as never} mode="create" />)
+    const banner = screen.getByText(/Target permanently blocked:/)
+    expect(banner.textContent).toContain('isa.org.jm')
+  })
+
+  test('the banner names the listed host, not the group root it falls under', () => {
+    // www.isa.org.jm groups under org.jm, which no rule names: only the host is
+    // blocked, so a root-only check showed nothing and a root-named banner lied.
+    const s = renderSection()
+    fireEvent.change(s.textarea(), { target: { value: 'ok.example.com\nwww.isa.org.jm' } })
+    const banner = screen.getByText(/Target permanently blocked:/)
+    expect(banner.textContent).toContain('www.isa.org.jm')
+    expect(banner.textContent).not.toMatch(/blocked: org\.jm/)
+  })
+
   test('the counts shown are the real host and group counts', () => {
     const s = renderSection()
     fireEvent.change(s.textarea(), { target: { value: HOSTS } })
     const hint = screen.getAllByText((_t, el) => /\d+ hostnames?/.test(el?.textContent ?? '')).at(-1)!
     expect(hint.textContent).toMatch(/4 hostnames/)
-    expect(hint.textContent).toMatch(/3 domains/)
+    expect(hint.textContent).toMatch(/3 scope groups across 3 domains/)
+  })
+})
+
+describe('the preview columns (scan root, org, mode, hosts)', () => {
+  const cells = (row: number) => within(screen.getAllByRole('row')[row]).getAllByRole('cell').map(c => c.textContent)
+
+  test('a wildcard row shows *.root, FULL ENUMERATION and its seeds', () => {
+    renderSection({ domainBatchHosts: ['*.example.com', 'v1.example.com', 'www.acme.co.uk'] })
+    expect(cells(1).slice(1, 4)).toEqual(['*.example.com', 'example.com', 'FULL ENUMERATION'])
+    expect(cells(1)[4]).toContain('v1.example.com seeded')
+    expect(cells(2).slice(1, 5)).toEqual(['acme.co.uk', 'acme.co.uk', 'EXACT', 'www.acme.co.uk'])
+  })
+
+  test('a collapsed wildcard is noted on the group that covers it', () => {
+    renderSection({ domainBatchHosts: ['*.example.com', '*.api.example.com'] })
+    expect(screen.getAllByRole('row').slice(1)).toHaveLength(1)
+    expect(cells(1)[4]).toContain('*.api.example.com covered by *.example.com')
+  })
+
+  test('a second group under the same org is greyed and points at the first', () => {
+    renderSection({ domainBatchHosts: ['*.api.example.com', 'www.example.com'] })
+    expect(cells(1)[2]).toBe('example.com')
+    expect(cells(2)[2]).toBe('example.com (shared with #1)')
+    expect(cells(1)[1]).toBe('*.api.example.com')
+    // Root on a nested wildcard toggles the scan root's own line, not the org's.
+    expect(screen.getByLabelText('Also scan api.example.com itself')).toBeInTheDocument()
+  })
+
+  test('each refused entry carries its own reason', () => {
+    renderSection({ domainBatchHosts: ['*.co.uk', 'www.example.com'] })
+    expect(screen.getByText(/Not accepted/).parentElement?.textContent)
+      .toContain('*.co.uk: a wildcard on a public suffix')
+  })
+})
+
+describe('single domain: the target may be a hostname', () => {
+  function renderSingle(targetDomain: string, subdomainList: string[] = []) {
+    const data = { ...BASE, domainBatchMode: false, targetDomain, subdomainList }
+    render(<TargetSection data={data as never} updateField={vi.fn() as never} mode="create" />)
+  }
+
+  test('the field says a hostname is fine', () => {
+    renderSingle('')
+    expect(screen.getByText('Target domain or hostname')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('example.com or api.example.com')).toBeInTheDocument()
+  })
+
+  test('the hint names the graph (registrable) domain and the scan root', () => {
+    renderSingle('api.example.com')
+    expect(screen.getByText(/Graph domain: example\.com · scan root: api\.example\.com/)).toBeInTheDocument()
+  })
+
+  test('Include Root names the actual target', () => {
+    renderSingle('api.example.com')
+    expect(screen.getByText(/Also scan api\.example\.com itself/)).toBeInTheDocument()
+  })
+
+  test('a public-suffix target is refused with its reason; a half-typed one is not', () => {
+    renderSingle('co.uk')
+    expect(screen.getByText(/co\.uk: a public suffix/)).toBeInTheDocument()
+    cleanup()
+    renderSingle('exam')
+    expect(screen.queryByText(/public suffix/)).toBeNull()
+  })
+
+  test('a dotted prefix is accepted; an empty label is refused by name', () => {
+    renderSingle('example.com', ['eu.api.'])
+    expect(screen.queryByText(/Not accepted/)).toBeNull()
+    cleanup()
+    renderSingle('example.com', ['a..b.'])
+    expect(screen.getByText(/Not accepted/).parentElement?.textContent).toContain('a..b (not a valid subdomain prefix)')
   })
 })
 
@@ -165,6 +256,14 @@ describe('the wildcard Root control', () => {
     expect(h.data.domainBatchHosts).toContain('*.domain.com')
   })
 
+  test('unticking Root also removes a pasted spelling of the same name', () => {
+    const h = renderSection({
+      domainBatchMode: true, domainBatchHosts: ['*.domain.com', 'https://Domain.com/'],
+    })
+    fireEvent.click(screen.getByLabelText(/Also scan domain\.com itself/i))
+    expect(h.data.domainBatchHosts).toEqual(['*.domain.com'])
+  })
+
   test('it is offered only on wildcard rows', () => {
     renderSection({ domainBatchMode: true, domainBatchHosts: ['api.literal.com'] })
     expect(screen.queryByLabelText(/Also scan/i)).toBeNull()
@@ -191,7 +290,7 @@ describe('the wildcard Root control', () => {
     // Nothing caps wildcard count, so this warning and the badge are the only
     // thing standing between a pasted list and a multi-hour scan.
     renderSection({ domainBatchMode: true, domainBatchHosts: ['*.a.com', '*.b.com'] })
-    expect(screen.getByText(/2 domains will be\s+fully enumerated/i)).toBeInTheDocument()
+    expect(screen.getByText(/2 scope groups will be\s+fully enumerated/i)).toBeInTheDocument()
   })
 
   test('a literal-only list does not warn', () => {
@@ -358,5 +457,57 @@ describe('target modes: AI in Pipeline everywhere, Domain Verification never on 
     await waitFor(() => expect(jev).toBeEnabled())
     fireEvent.click(jev)
     expect(s.updateField).toHaveBeenCalledWith('ffufAiUseJev', true)
+  })
+})
+
+describe('ownership: the record names recon accepts (§4.8)', () => {
+  test('the preview names both records per scan root when verification is on', () => {
+    renderSection({ verifyDomainOwnership: true, ownershipTxtPrefix: '_rv',
+      domainBatchHosts: ['*.api.example.com', 'www.example.com'] })
+    const table = screen.getByRole('table')
+    expect(within(table).getByText('Ownership TXT')).toBeInTheDocument()
+    expect(within(table).getByText('_rv.api.example.com')).toBeInTheDocument()
+    expect(within(table).getAllByText('_rv.example.com')).toHaveLength(2)
+  })
+
+  test('no ownership column while verification is off', () => {
+    renderSection({ domainBatchHosts: ['www.example.com'] })
+    expect(screen.queryByText('Ownership TXT')).not.toBeInTheDocument()
+  })
+
+  test('a single domain below its org names both records, with the default prefix', () => {
+    renderSection({ domainBatchMode: false, targetDomain: 'api.example.com', verifyDomainOwnership: true })
+    expect(screen.getByText('_redamon-verify.api.example.com')).toBeInTheDocument()
+    expect(screen.getByText('_redamon-verify.example.com')).toBeInTheDocument()
+  })
+})
+
+describe('a widening save warns about enabled schedules (WEB-35, D-21)', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = realFetch })
+
+  function renderEdit(hosts: string[], schedules: { enabled: boolean }[]) {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ schedules }), { status: 200 })) as never
+    const saved = { ...BASE, domainBatchHosts: ['*.example.com'] }
+    const data = { ...saved, domainBatchHosts: hosts }
+    render(<TargetSection data={data as never} updateField={vi.fn() as never} mode="edit"
+      savedScope={saved as never} projectId="p1" />)
+  }
+
+  test('a new scan root warns, naming how many schedules will run it', async () => {
+    renderEdit(['*.example.com', '*.other.test'], [{ enabled: true }, { enabled: true }, { enabled: false }])
+    expect(await screen.findByText(/2 scheduled scans will run the wider scope/)).toBeInTheDocument()
+  })
+
+  test('a narrowing does not warn', async () => {
+    renderEdit(['*.api.example.com'], [{ enabled: true }])
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    expect(screen.queryByText(/will run the wider scope/)).not.toBeInTheDocument()
+  })
+
+  test('no enabled schedule, no warning', async () => {
+    renderEdit(['*.example.com', '*.other.test'], [{ enabled: false }])
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    expect(screen.queryByText(/will run the wider scope/)).not.toBeInTheDocument()
   })
 })

@@ -29,7 +29,11 @@ vi.mock('@/lib/access', () => ({
 // scanVersionAccess is only partially mocked, so its real module (and therefore
 // the Prisma client) still gets imported — stub the client so no engine loads.
 vi.mock('@/lib/prisma', () => ({
-  default: { scanVersion: { findUnique: vi.fn() }, $queryRaw: vi.fn() },
+  default: {
+    scanVersion: { findUnique: vi.fn() }, $queryRaw: vi.fn(),
+    // The project's scope, read to drop a removed scan root's coverage gaps.
+    project: { findUnique: vi.fn(async () => ({ targetDomain: 'example.com', subdomainList: [] })) },
+  },
 }))
 vi.mock('@/lib/scanVersionAccess', async orig => ({
   ...(await orig<typeof import('@/lib/scanVersionAccess')>()),
