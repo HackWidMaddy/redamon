@@ -409,6 +409,39 @@ describe('/api/analytics/redzone/dnsEmail', () => {
   })
 })
 
+describe('/api/analytics/redzone/dnsEmail: one row per org (WEB-16)', () => {
+  const base = {
+    domain: 'example.com', dnssec: null, domainNameServers: [], whoisEmails: [], registrar: null,
+    organization: null, country: null, expirationDate: null, registrarStatus: [], vtMaliciousCount: null,
+    vtReputation: null, otxPulseCount: null, mxRecords: [], nsRecords: [], txtRecords: [], soaRecords: [],
+  }
+
+  test('an apex that was no target reads "not resolved", never missing', async () => {
+    runReturn = [{ ...base, apexResolved: false, vulnTags: [] }]
+    const r = (await (await dnsEmailRoute.GET(makeRequest('p1'))).json()).rows[0]
+    expect(r.apexResolved).toBe(false)
+    expect(r.apexNote).toBe('not resolved (apex not in scope)')
+    expect(r.spfPresent).toBeNull()
+    expect(r.dmarcPresent).toBeNull()
+    expect(r.spfMissing).toBe(false)
+    expect(r.dmarcMissing).toBe(false)
+  })
+
+  test("the org-level findings still mark it, apex or not", async () => {
+    runReturn = [{ ...base, apexResolved: false, vulnTags: ['spf_missing', 'dmarc_missing'] }]
+    const r = (await (await dnsEmailRoute.GET(makeRequest('p1'))).json()).rows[0]
+    expect(r.spfMissing).toBe(true)
+    expect(r.dmarcMissing).toBe(true)
+  })
+
+  test('NS providers count by registrable domain', async () => {
+    runReturn = [{ ...base, apexResolved: true, vulnTags: [],
+      nsRecords: ['ns1.dns.example.co.uk.', 'ns2.dns.example.co.uk.', 'a.ns.other.net.'] }]
+    const r = (await (await dnsEmailRoute.GET(makeRequest('p1'))).json()).rows[0]
+    expect(r.nsDistinctProviders).toBe(2)
+  })
+})
+
 describe('/api/analytics/redzone/sharedInfra nodeId', () => {
   // An ASN is a property shared by many IP nodes, not a node, so that arm has
   // nothing to point at; the other two point at the node they cluster on.

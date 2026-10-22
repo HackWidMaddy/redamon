@@ -10,6 +10,7 @@ import {
   isDnssecEnabled,
   daysFromIso,
 } from '@/app/graph/components/RedZoneTables/dnsParsers'
+import { orgDomain } from '@/lib/publicSuffix'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -35,8 +36,10 @@ export async function GET(request: NextRequest) {
 
   const session = getGraphSession()
   try {
-    // DNS records attach to Subdomain (not Domain) in domain_mixin.
-    // For the apex Domain's DNS records, find the Subdomain with the same name as the Domain.
+    // One row per Domain, i.e. per org. DNS records attach to Subdomain (not
+    // Domain) in domain_mixin, so the org apex's records are on the Subdomain
+    // named like the Domain, which exists only when the apex was a target.
+    // SPF/DMARC/DNSSEC findings are org-level and sit on the Domain itself.
     const result = await session.run(
       `MATCH (d:Domain {project_id: $pid})
        OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(apex:Subdomain {name: d.name})
@@ -49,8 +52,10 @@ export async function GET(request: NextRequest) {
             collect(DISTINCT CASE WHEN dns.type = 'NS'  THEN dns.value END) AS nsVals,
             collect(DISTINCT CASE WHEN dns.type = 'TXT' THEN dns.value END) AS txtVals,
             collect(DISTINCT CASE WHEN dns.type = 'SOA' THEN dns.value END) AS soaVals,
-            collect(DISTINCT coalesce(v.type, v.vulnerability_type, v.name)) AS vulnTagsRaw
+            collect(DISTINCT coalesce(v.type, v.vulnerability_type, v.name)) AS vulnTagsRaw,
+            count(DISTINCT apex) > 0 AS apexResolved
        RETURN toString(id(d))                     AS nodeId,
+              apexResolved                        AS apexResolved,
               d.name                              AS domain,
               d.dnssec                            AS dnssec,
               d.name_servers                      AS domainNameServers,
@@ -80,6 +85,9 @@ export async function GET(request: NextRequest) {
       const ns = ((r.get('nsRecords') as string[]) || []).map(v => String(v))
       const dnssec = r.get('dnssec') as string | null
       const vulnTags = ((r.get('vulnTags') as string[]) || []).filter(Boolean)
+      // An apex that was no target has no records to read: "not resolved",
+      // never "missing". Its posture is the org-level findings alone.
+      const apexResolved = r.get('apexResolved') !== false
 
       const spfRecord     = extractSpfRecord(txt)
       const dmarcRec      = extractDmarcRecord(txt)
@@ -88,14 +96,18 @@ export async function GET(request: NextRequest) {
       const dnssecEnabled = isDnssecEnabled(dnssec)
 
       // Derive missing-flags from vuln tags OR from absence of records
-      const spfMissing       = vulnTags.includes('spf_missing')     || !spfRecord
-      const dmarcMissing     = vulnTags.includes('dmarc_missing')   || !dmarcRec
+      const spfMissing       = vulnTags.includes('spf_missing')     || (apexResolved && !spfRecord)
+      const dmarcMissing     = vulnTags.includes('dmarc_missing')   || (apexResolved && !dmarcRec)
       const dnssecMissing    = vulnTags.includes('dnssec_missing')  || !dnssecEnabled
       const zoneTransferOpen = vulnTags.includes('zone_transfer')
 
       const nameServerCount = ns.length
-      // Count distinct NS providers by last two labels (google.com, cloudflare.com, etc.)
-      const nsProviders = new Set(ns.map(n => n.toLowerCase().split('.').slice(-2).join('.')))
+      // Distinct NS providers by registrable domain: ns1.example.co.uk and
+      // ns2.example.co.uk are one provider, not one per `co.uk`.
+      const nsProviders = new Set(ns.map(n => {
+        const host = n.toLowerCase().replace(/\.$/, '')
+        return orgDomain(host) ?? host
+      }))
 
       const whoisEmails   = (r.get('whoisEmails') as string[]) || []
       const expirationIso = r.get('expirationDate') as string | null
@@ -104,10 +116,12 @@ export async function GET(request: NextRequest) {
       return {
         nodeId: (r.get('nodeId') as string | null) ?? null,
         domain: (r.get('domain') as string) || '',
-        spfPresent: !!spfRecord,
-        spfStrict,
+        apexResolved,
+        apexNote: apexResolved ? null : 'not resolved (apex not in scope)',
+        spfPresent: apexResolved ? !!spfRecord : null,
+        spfStrict: apexResolved ? spfStrict : null,
         spfRecord,
-        dmarcPresent: !!dmarcRec,
+        dmarcPresent: apexResolved ? !!dmarcRec : null,
         dmarcPolicy,
         dnssec,
         dnssecEnabled,
