@@ -122,7 +122,9 @@ describe('only the eight target lists move', () => {
       .rejects.toMatchObject({ code: 'setting_rejected' })
     await call({ domainBatchHosts: ['a.example.com', 'c.example.org'] })
     const data = h.projectUpdateMany.mock.calls[0][0].data
-    expect(data.domainBatchGroups).toEqual(validateDomainBatch(['a.example.com', 'c.example.org']).groups)
+    // The stored record is the legacy shape, derived here; the hosts are the normalised entries.
+    expect(data.domainBatchGroups).toEqual(validateDomainBatch(['a.example.com', 'c.example.org']).legacy)
+    expect(data.domainBatchHosts).toEqual(['a.example.com', 'c.example.org'])
     expect(data.updatedById).toBe('owner')
   })
 })

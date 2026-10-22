@@ -7,7 +7,8 @@ import dynamic from 'next/dynamic'
 import type { Project } from '@prisma/client'
 import { validateProjectForm } from '@/lib/validation'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
-import { validateDomainBatch, scopeGuardrailNames } from '@/lib/domainBatch'
+import { validateDomainBatch } from '@/lib/domainBatch'
+import { scopeGuardrailNames } from '@/lib/scopeGroups'
 import { ipModeRoot } from '@/lib/partialReconScope'
 import { tabForAnchor } from '@/lib/projectSettingsLinks'
 import { graphScanHref, type ScanModal } from '@/lib/scanModalLink'
@@ -992,7 +993,7 @@ export function ProjectForm({
   const partialReconRoots = useMemo(() => {
     if (formData.ipMode) return projectId ? [ipModeRoot(projectId)] : []
     if (formData.domainBatchMode) {
-      return validateDomainBatch(formData.domainBatchHosts || []).groups.map(g => g.rootDomain)
+      return validateDomainBatch(formData.domainBatchHosts || []).groups.map(g => g.scanRoot)
     }
     const target = (formData.targetDomain || '').trim()
     return target ? [target] : []

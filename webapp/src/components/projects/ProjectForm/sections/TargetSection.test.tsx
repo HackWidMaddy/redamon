@@ -11,7 +11,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react'
 import { TargetSection } from './TargetSection'
-import { groupHostsByRootDomain } from '@/lib/domainBatch'
+import { groupHostsByScanRoot } from '@/lib/domainBatch'
 
 vi.mock('@/components/shared/ModelPicker', () => ({ ModelPicker: () => null }))
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1' }) }))
@@ -74,16 +74,16 @@ describe('the preview matches the grouping that will be persisted', () => {
     expect(domains).toEqual(['domain1.com', 'domain2.it', 'domain3.com'])
   })
 
-  test('the rendered groups equal groupHostsByRootDomain, the helper the server uses', () => {
+  test('the rendered groups equal groupHostsByScanRoot, the helper the server uses', () => {
     const s = renderSection()
     fireEvent.change(s.textarea(), { target: { value: HOSTS } })
 
-    const expected = groupHostsByRootDomain(s.data.domainBatchHosts as string[]).groups
+    const expected = groupHostsByScanRoot(s.data.domainBatchHosts as string[]).groups
     const rows = screen.getAllByRole('row').slice(1)
     expect(rows.map(r => within(r).getAllByRole('cell')[1].textContent))
-      .toEqual(expected.map(g => g.rootDomain))
+      .toEqual(expected.map(g => g.scanRoot))
     expect(rows.map(r => within(r).getAllByRole('cell')[2].textContent))
-      .toEqual(expected.map(g => g.hosts.join(', ')))
+      .toEqual(expected.map(g => g.entries.join(', ')))
   })
 
   test('a deep subdomain joins its domain group rather than starting a new one', () => {

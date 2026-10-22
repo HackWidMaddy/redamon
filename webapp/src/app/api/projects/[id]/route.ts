@@ -312,22 +312,19 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       if (!batch.ok) {
         return NextResponse.json({ error: batch.errors.join(' ') }, { status: 400 })
       }
-      // Compare the whole derived shape, not just the roots. Turning
-      // `api.example.com` into `*.example.com` leaves the root set identical
-      // while changing that group from "one host" to "every host under this
-      // domain" - the largest widening this feature permits, and the one a
-      // root-only comparison waves straight through.
-      const signature = (gs: Array<{ rootDomain?: string; prefixes?: string[] }>) =>
-        gs.map(g => `${String(g?.rootDomain || '')}|${[...(g?.prefixes || [])].sort().join(',')}`)
-          .sort().join(';')
-      batchScopeChanged = signature(batch.groups) !== signature(
-        Array.isArray(existing?.domainBatchGroups)
-          ? existing.domainBatchGroups as Array<{ rootDomain?: string; prefixes?: string[] }>
-          : []
+      // Compare the scope derived from the STORED host list with the new one, never
+      // the stored group records: a regroup of the same hosts (a public-suffix
+      // change, or a row saved by an older writer) is no change, while
+      // `api.example.com` -> `*.example.com` (same root, one host -> every host)
+      // is the largest widening this feature permits.
+      const { resolveScopeGroups, sameScope } = await import('@/lib/scopeGroups')
+      batchScopeChanged = !sameScope(
+        resolveScopeGroups({ domainBatchMode: true, domainBatchHosts: existing?.domainBatchHosts ?? [] }).groups,
+        batch.groups,
       )
-      updateData.domainBatchHosts = batch.groups.flatMap(g => g.hosts)
-      updateData.domainBatchGroups = batch.groups
-      batchRootsAdded = batch.groups.map(g => g.rootDomain)
+      updateData.domainBatchHosts = batch.entries
+      updateData.domainBatchGroups = batch.legacy
+      batchRootsAdded = batch.groups.map(g => g.scanRoot)
     }
 
     // A project that is not a batch keeps no batch scope. Recon's auth scope and
@@ -398,7 +395,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       // Every host and root this project would scan gets the non-disableable
       // check. POST does this at creation; without it here, the paths that can
       // re-point a project after creation are the paths that never guardrail it.
-      const { scopeGuardrailNames } = await import('@/lib/domainBatch')
+      const { scopeGuardrailNames } = await import('@/lib/scopeGroups')
       const { firstHardBlocked } = await import('@/lib/hard-guardrail')
       const blocked = firstHardBlocked(scopeGuardrailNames(nextScope))
       if (blocked) {

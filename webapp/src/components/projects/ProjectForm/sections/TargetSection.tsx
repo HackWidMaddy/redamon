@@ -11,7 +11,8 @@ import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { classifyIpTargets } from '@/lib/ip-target-utils'
-import { validateDomainBatch, scopeGuardrailNames, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS, ROOT_DOMAIN_PREFIX } from '@/lib/domainBatch'
+import { validateDomainBatch, INVALID_REASON_TEXT, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS } from '@/lib/domainBatch'
+import { scopeGuardrailNames } from '@/lib/scopeGroups'
 import { deriveRoeEnabled } from '@/lib/engagement'
 import { FileImportButton } from '../FileImportButton'
 import { ModelPicker } from '@/components/shared/ModelPicker'
@@ -153,7 +154,7 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
   // Nothing caps how many domains may be enumerated, so the count is what the
   // operator is shown instead - here, and again in the start-scan confirmation.
   const wildcardGroupCount = useMemo(
-    () => (batchResult?.groups ?? []).filter(g => g.wildcard).length,
+    () => (batchResult?.groups ?? []).filter(g => g.mode === 'enumerate').length,
     [batchResult]
   )
 
@@ -464,23 +465,23 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                       </thead>
                       <tbody>
                         {batchResult.groups.map((g, i) => (
-                          <tr key={g.rootDomain}>
+                          <tr key={g.scanRoot}>
                             <td className={styles.previewTableMuted} style={{ padding: '6px 8px' }}>{i + 1}</td>
-                            <td style={{ padding: '6px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{g.rootDomain}</td>
+                            <td style={{ padding: '6px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{g.scanRoot}</td>
                             <td className={styles.previewTableMuted} style={{ padding: '6px 8px' }}>
-                              {g.wildcard && (
+                              {g.mode === 'enumerate' && (
                                 <span className={styles.enumBadge}>FULL ENUMERATION</span>
                               )}
-                              {g.hosts.join(', ')}
+                              {g.entries.join(', ')}
                             </td>
                             <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                              {g.wildcard ? (
+                              {g.mode === 'enumerate' ? (
                                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
                                   <input
                                     type="checkbox"
-                                    checked={g.prefixes.includes(ROOT_DOMAIN_PREFIX)}
-                                    onChange={(e) => handleGroupRootToggle(g.rootDomain, e.target.checked)}
-                                    aria-label={`Also scan ${g.rootDomain} itself`}
+                                    checked={g.includeRoot}
+                                    onChange={(e) => handleGroupRootToggle(g.scanRoot, e.target.checked)}
+                                    aria-label={`Also scan ${g.scanRoot} itself`}
                                   />
                                 </label>
                               ) : (
@@ -518,7 +519,7 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                 <div className={`${styles.callout} ${styles.calloutDanger}`}>
                   <AlertTriangle size={16} />
                   <span>
-                    <strong>Not valid hostnames:</strong> {batchResult.invalid.join(', ')}. Each
+                    <strong>Not valid hostnames:</strong> {batchResult.invalid.map(i => `${i.entry} (${INVALID_REASON_TEXT[i.reason]})`).join('; ')}. Each
                     entry needs at least two labels (example.com) and may only
                     contain letters, digits, dots and hyphens. A wildcard is written{' '}
                     <code>*.example.com</code> or <code>*example.com</code> and must name a

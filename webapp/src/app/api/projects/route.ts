@@ -7,7 +7,8 @@ import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmG
 import { requireEffectiveUser, ownerScope } from '@/lib/access'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
-import { validateDomainBatch, splitWildcard, scopeGuardrailNames } from '@/lib/domainBatch'
+import { validateDomainBatch, splitWildcard } from '@/lib/domainBatch'
+import { scopeGuardrailNames } from '@/lib/scopeGroups'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { actingAdminId } from '@/lib/roe/actor'
@@ -142,7 +143,7 @@ export async function POST(request: NextRequest) {
     if (batch && !batch.ok) {
       return NextResponse.json({ error: batch.errors.join(' ') }, { status: 400 })
     }
-    const batchRoots = batch ? batch.groups.map(g => g.rootDomain) : []
+    const batchRoots = batch ? batch.groups.map(g => g.scanRoot) : []
 
     // Owner is the effective user, never the client-supplied body value.
     const userId = eff.userId
@@ -392,8 +393,8 @@ export async function POST(request: NextRequest) {
         domainBatchMode: domainBatchMode || false,
         // A non-batch project keeps no batch scope: recon's auth scope and the
         // agent's replay read these columns whatever the mode.
-        ...(batch ? { domainBatchHosts: batch.groups.flatMap(g => g.hosts),
-                      domainBatchGroups: batch.groups as unknown as Prisma.InputJsonValue }
+        ...(batch ? { domainBatchHosts: batch.entries,
+                      domainBatchGroups: batch.legacy as unknown as Prisma.InputJsonValue }
                   : { domainBatchHosts: [] }),
       }
     })

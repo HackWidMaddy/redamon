@@ -33,7 +33,8 @@
  */
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
-import { validateDomainBatch, splitWildcard, scopeGuardrailNames, MAX_BATCH_HOSTS } from '@/lib/domainBatch'
+import { validateDomainBatch, splitWildcard, MAX_BATCH_HOSTS } from '@/lib/domainBatch'
+import { scopeGuardrailNames } from '@/lib/scopeGroups'
 import {
   currentAuthorization,
   describeEngagement,
@@ -292,11 +293,11 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
     // Every host and root, so the refusal names the host that was listed.
     refuseHardBlocked(scopeGuardrailNames({ domainBatchMode: true, domainBatchHosts: hosts }))
     data.domainBatchMode = true
-    data.domainBatchHosts = hosts
+    data.domainBatchHosts = validation.entries
     // The server re-derives the grouping from the raw host list and discards
     // any client-supplied one. That is a control, not a convenience: the
     // grouping decides the run order and therefore what gets scanned together.
-    data.domainBatchGroups = validation.groups
+    data.domainBatchGroups = validation.legacy
   }
 
   if (args.subdomainList?.length) {

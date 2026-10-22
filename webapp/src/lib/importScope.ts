@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client'
-import { scopeGuardrailNames, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
+import { describeInvalid, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
+import { scopeGuardrailNames } from '@/lib/scopeGroups'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 
 export interface ImportScopeResult {
@@ -42,15 +43,15 @@ export function normalizeImportedScope(fields: Record<string, unknown>): ImportS
       : []
     let batch = validateDomainBatch(raw)
     if (batch.invalid.length > 0) {
-      warnings.push(`Dropped hostnames the current rules refuse: ${batch.invalid.slice(0, 5).join(', ')}`
-        + (batch.invalid.length > 5 ? ` (+${batch.invalid.length - 5} more)` : ''))
-      batch = validateDomainBatch(raw.filter(h => !batch.invalid.includes(h.trim())))
+      const refused = new Set(batch.invalid.map(i => i.entry))
+      warnings.push(`Dropped hostnames the current rules refuse. ${describeInvalid(batch.invalid)}`)
+      batch = validateDomainBatch(raw.filter(h => !refused.has(h.trim())))
     }
     if (!batch.ok) {
       return { error: `The bundle's hostname list cannot be imported: ${batch.errors.join(' ')}`, status: 400, warnings }
     }
-    fields.domainBatchHosts = batch.groups.flatMap(g => g.hosts)
-    fields.domainBatchGroups = batch.groups as unknown as Prisma.InputJsonValue
+    fields.domainBatchHosts = batch.entries
+    fields.domainBatchGroups = batch.legacy as unknown as Prisma.InputJsonValue
     fields.targetDomain = ''
   } else {
     fields.domainBatchGroups = Prisma.DbNull

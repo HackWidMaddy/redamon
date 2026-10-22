@@ -7,7 +7,7 @@
  * the row's current URL hashes to the stored one; an edited URL reads
  * "Not fetched yet" until the next run.
  */
-import { groupHostsByRootDomain } from './domainBatch'
+import { groupHostsByScanRoot, toLegacyRecord } from './domainBatch'
 import type { ProjectTargetFields } from './partialReconScope'
 
 export interface OpenApiSourceStatus {
@@ -182,7 +182,7 @@ function roeExcluded(host: string, excluded: unknown): boolean {
  */
 function batchGroups(project: DocumentScopeFields): unknown[] {
   const hosts = strings(project.domainBatchHosts).filter(h => h.trim())
-  if (hosts.length) return groupHostsByRootDomain(hosts).groups
+  if (hosts.length) return groupHostsByScanRoot(hosts).groups.map(toLegacyRecord)
   return Array.isArray(project.domainBatchGroups) ? project.domainBatchGroups : []
 }
 
