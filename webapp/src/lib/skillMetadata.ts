@@ -111,7 +111,7 @@ function scalar(rest: string, continuation: string[]): string {
   }
   const first = cutComment(head)
   // An explicit YAML null is "no value", not the word.
-  if (!continuation.length && /^(?:~|null)$/i.test(first)) return ''
+  if (continuation.every((l) => !l.trim()) && /^(?:~|null)$/i.test(first)) return ''
   return fold([first, ...continuation.map((l) => cutComment(l.trim()))])
 }
 

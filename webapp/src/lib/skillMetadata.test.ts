@@ -88,6 +88,12 @@ describe('readSkillMetadata', () => {
     expect(readSkillMetadata(md('---', 'name: ~', '---', '# Null Name')).name).toBe('Null Name')
   })
 
+  test('name: null followed by a blank line is still no name, so the heading is used', () => {
+    expect(readSkillMetadata(md('---', 'name: null', '', 'description: D', '---', '# From Heading'))).toMatchObject({
+      name: 'From Heading', nameFrom: 'heading', description: 'D',
+    })
+  })
+
   test('an H1 in a fence is ignored, #tag and ## are not level 1, a setext ===== title is', () => {
     expect(readSkillMetadata(md('```bash', '# not a heading', '```', '#tag', '## Sub', '# Real')).name).toBe('Real')
     expect(readSkillMetadata(md('~~~', '# inside', '~~~', 'Setext Title', '=====', '# Later')).name).toBe('Setext Title')
