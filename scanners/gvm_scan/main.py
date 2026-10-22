@@ -307,12 +307,20 @@ def run_vulnerability_scan(
         print("[!] No targets found in recon data")
         return {"error": "No targets found"}
 
+    # The org Domain(s) the GVM stamp lands on: a Domain node is the org, and a
+    # batch's merged recon file names every org (metadata.org_domains).
+    recon_md = recon_data.get("metadata", {}) or {}
+    org_domain = recon_md.get("org_domain") or root_domain
+    org_domains = [o for o in (recon_md.get("org_domains") or [org_domain]) if o]
+
     # Initialize results structure (use root_domain from recon metadata)
     results = {
         "metadata": {
             "scan_type": "vulnerability_scan",
             "scan_timestamp": datetime.now().isoformat(),
             "target_domain": root_domain,
+            "org_domain": org_domain,
+            "org_domains": org_domains,
             "scan_strategy": scan_targets,
             "recon_file": f"recon_{project_id}.json",
             "targets": {

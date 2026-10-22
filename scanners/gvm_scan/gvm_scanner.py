@@ -1054,11 +1054,14 @@ def extract_targets_from_recon(recon_data: Dict) -> Tuple[Set[str], Set[str]]:
     if not dns_data:
         return ips, hostnames
     
-    # Root domain - only include if it has DNS records (respects SUBDOMAIN_LIST filtering)
-    domain = recon_data.get("metadata", {}).get("root_domain", "") or recon_data.get("domain", "")
+    # Root domain - only when it is a target and has DNS records. A recon file
+    # written before scope_mode keeps the old default (the root is in).
+    metadata = recon_data.get("metadata", {}) or {}
+    domain = metadata.get("root_domain", "") or recon_data.get("domain", "")
     domain_dns = dns_data.get("domain", {})
-    
-    if domain and domain_dns and domain_dns.get("has_records"):
+    include_root = metadata.get("include_root_domain", "scope_mode" not in metadata)
+
+    if domain and include_root and domain_dns and domain_dns.get("has_records"):
         # Root domain was resolved (included in scan via "." in SUBDOMAIN_LIST or full discovery)
         hostnames.add(domain)
         domain_ips = domain_dns.get("ips", {})
