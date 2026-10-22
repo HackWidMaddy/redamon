@@ -227,3 +227,36 @@ describe('a hung agent cannot stall project creation', () => {
     }
   })
 })
+
+describe('a single-domain target gets the batch entry rules', () => {
+  test.each([
+    ['co.uk', [], 'public suffix'],
+    ['192.0.2.10', [], 'IP address'],
+    ['example.com', ['*'], 'subdomain prefix'],
+    ['example.com', ['a..b.'], 'subdomain prefix'],
+  ])('%s with prefixes %j is refused (%s)', async (targetDomain, subdomainList, reason) => {
+    const res = await POST(postReq({
+      userId: 'user-1', name: 'S', targetDomain, subdomainList, targetGuardrailEnabled: false,
+    }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain(reason)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('the target is stored normalised and lower-cased; dotted prefixes are accepted', async () => {
+    const res = await POST(postReq({
+      userId: 'user-1', name: 'S', targetDomain: 'HTTPS://Api.Example.COM/', subdomainList: ['eu.v1.'],
+      targetGuardrailEnabled: false,
+    }))
+    expect(res.status).toBe(201)
+    expect(mockProjectCreate.mock.calls[0][0].data.targetDomain).toBe('api.example.com')
+  })
+
+  test('the soft guardrail sees a deep target and its org', async () => {
+    await POST(postReq({ userId: 'user-1', name: 'S', targetDomain: 'api.example.com', targetGuardrailEnabled: true }))
+    const call = mockFetch.mock.calls.find(c => String(c[0]).includes('/guardrail/check-target'))
+    const body = JSON.parse(call![1].body as string)
+    expect(body.target_domain).toBe('api.example.com')
+    expect(body.target_domains).toEqual(['example.com'])
+  })
+})

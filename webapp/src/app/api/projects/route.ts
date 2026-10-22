@@ -7,8 +7,8 @@ import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmG
 import { requireEffectiveUser, ownerScope } from '@/lib/access'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
-import { validateDomainBatch, splitWildcard } from '@/lib/domainBatch'
-import { scopeGuardrailNames } from '@/lib/scopeGroups'
+import { describeInvalid, normalizeHost, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
+import { resolveScopeGroups, scopeGuardrailNames, softGuardrailNames } from '@/lib/scopeGroups'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { actingAdminId } from '@/lib/roe/actor'
@@ -192,16 +192,25 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Hard guardrail: deterministic, non-disableable - always blocks government/public domains.
-    // Checks every host AND every group root the project would scan, so a batch
-    // cannot smuggle one in, and the refusal names the host that was listed.
     const rawSubdomains = optionalParams.subdomainList
-    const blocked = firstHardBlocked(scopeGuardrailNames({
+    const scopeFields = {
       ipMode, domainBatchMode, domainBatchHosts: batchHosts, targetDomain,
       subdomainList: Array.isArray(rawSubdomains)
         ? rawSubdomains.filter((s): s is string => typeof s === 'string')
         : typeof rawSubdomains === 'string' ? rawSubdomains.split(',') : [],
-    }))
+    }
+    // The single-domain target and prefixes get the same rules as a batch entry
+    // (no public suffix, no IP, prefixes of any depth): a direct POST bypasses
+    // the form's own check.
+    const scope = resolveScopeGroups(scopeFields)
+    if (!ipMode && !domainBatchMode && scope.invalid.length > 0) {
+      return NextResponse.json({ error: describeInvalid(scope.invalid) }, { status: 400 })
+    }
+
+    // Hard guardrail: deterministic, non-disableable - always blocks government/public domains.
+    // Checks every host AND every group root the project would scan, so a batch
+    // cannot smuggle one in, and the refusal names the host that was listed.
+    const blocked = firstHardBlocked(scopeGuardrailNames(scopeFields))
     if (blocked) {
       return NextResponse.json(
         { error: `Target permanently blocked: ${blocked.name}: ${blocked.reason}` },
@@ -218,11 +227,14 @@ export async function POST(request: NextRequest) {
           // Fail-open by design, so a hung agent must not stall the create either.
           signal: AbortSignal.timeout(SOFT_GUARDRAIL_TIMEOUT_MS),
           body: JSON.stringify({
-            // Batch mode has no single targetDomain. Send the roots as a LIST:
-            // joining them into target_domain feeds a singular prompt that can
-            // approve the set despite one blocked member.
-            target_domain: (ipMode || domainBatchMode) ? '' : (targetDomain || ''),
-            target_domains: domainBatchMode ? batchRoots : [],
+            // Batch mode has no single targetDomain. Send the orgs and scan roots
+            // as a LIST: joining them into target_domain feeds a singular prompt
+            // that can approve the set despite one blocked member. A single
+            // target adds its org and, for a private-section org, the platform
+            // owner, so the model judges the company rather than a hostname.
+            target_domain: (ipMode || domainBatchMode) ? '' : (scope.groups[0]?.scanRoot ?? ''),
+            target_domains: ipMode ? [] : softGuardrailNames(scope.groups)
+              .filter(n => domainBatchMode || n !== scope.groups[0]?.scanRoot),
             target_ips: ipMode ? (optionalParams.targetIps || []) : [],
             user_id: userId,
           }),
@@ -386,7 +398,7 @@ export async function POST(request: NextRequest) {
         // the crt.sh URL, a puredns filename and a Cypher MERGE, and the in-scope
         // test `endswith('.' + domain)` would then match nothing - a green scan
         // that finds zero hosts.
-        targetDomain: (ipMode || domainBatchMode) ? '' : splitWildcard((targetDomain || '').trim()).rest,
+        targetDomain: (ipMode || domainBatchMode) ? '' : splitWildcard(normalizeHost(targetDomain || '')).rest,
         ipMode: ipMode || false,
         ...sanitizedParams,
         // After sanitizedParams so a client-supplied domainBatchGroups cannot win.
