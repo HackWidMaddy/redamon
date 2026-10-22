@@ -330,7 +330,7 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
     legacyGraph,
     recordingScopeUpdated,
     note:
-      (graphSeeded ? '' : 'The new roots could not be added to the graph yet; the next full recon adds them. ') +
+      (graphSeeded ? '' : "The new registrable domains' Domain nodes could not be added to the graph yet; the next full recon adds them. ") +
       (legacyGraph.length > 0 ? `${LEGACY_GRAPH_MESSAGE} (old domain nodes: ${legacyGraph.join(', ')}). ` : '') +
       (pausedSchedules.count > 0
         ? `The batch gained hosts, so ${pausedSchedules.count} scheduled scan(s) were paused; a person ` +
