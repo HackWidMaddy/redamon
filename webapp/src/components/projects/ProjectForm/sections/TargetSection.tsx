@@ -14,7 +14,9 @@ import { classifyIpTargets } from '@/lib/ip-target-utils'
 import {
   validateDomainBatch, INVALID_REASON_TEXT, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS, NESTED_WILDCARDS_ENABLED, normalizeHost,
 } from '@/lib/domainBatch'
-import { GRAPH_DOMAIN_IS_ORG, resolveScopeGroups, scopeGuardrailNames } from '@/lib/scopeGroups'
+import {
+  GRAPH_DOMAIN_IS_ORG, type ScopeFields, isScopeWidening, resolveScopeGroups, scopeGuardrailNames,
+} from '@/lib/scopeGroups'
 import { deriveRoeEnabled } from '@/lib/engagement'
 import { isValidDomain } from '@/lib/validation'
 import { FileImportButton } from '../FileImportButton'
@@ -28,6 +30,10 @@ interface TargetSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
   mode?: 'create' | 'edit'
+  /** Edit mode: the scope as last saved, to tell a widening apart. */
+  savedScope?: ScopeFields
+  /** Edit mode: whose schedules a widening would reach. */
+  projectId?: string
 }
 
 // Helper to convert stored format (with dots) to display format (without dots)
@@ -74,7 +80,13 @@ function parseHostList(text: string): string[] {
 
 type TargetMode = 'domain' | 'ip' | 'batch'
 
-export function TargetSection({ data, updateField, mode = 'create' }: TargetSectionProps) {
+/** Where the ownership TXT record may sit for a group (plan §4.8): the scan
+ *  root, then its registrable domain when that differs. Recon accepts either. */
+function ownershipRecordNames(g: { scanRoot: string; orgDomain: string }, prefix: string): string[] {
+  return [`${prefix}.${g.scanRoot}`, ...(g.orgDomain !== g.scanRoot ? [`${prefix}.${g.orgDomain}`] : [])]
+}
+
+export function TargetSection({ data, updateField, mode = 'create', savedScope, projectId }: TargetSectionProps) {
   const jevStatus = useHasJevProvider()
   const isLocked = mode === 'edit'
   const [isOpen, setIsOpen] = useState(true)
@@ -174,6 +186,29 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
     [targetMode, data.targetDomain, data.subdomainList]
   )
   const singleGroup = singleScope?.groups[0] ?? null
+
+  // A save that widens the scope (D-21: a host the saved scope did not admit) is
+  // what every enabled schedule will scan from its next run. Warn, never pause:
+  // the operator may want exactly that (Q-15).
+  const [enabledSchedules, setEnabledSchedules] = useState(0)
+  useEffect(() => {
+    if (mode !== 'edit' || !projectId) return
+    let alive = true
+    fetch(`/api/projects/${projectId}/schedules`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(body => {
+        const list: { enabled?: boolean }[] = Array.isArray(body?.schedules) ? body.schedules : []
+        if (alive) setEnabledSchedules(list.filter(s => s.enabled).length)
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [mode, projectId])
+  const widensScheduledScope = useMemo(() => {
+    if (!savedScope || enabledSchedules === 0 || ipMode) return false
+    const next = batchMode ? batchResult?.groups ?? [] : singleScope?.groups ?? []
+    return next.length > 0 && isScopeWidening(resolveScopeGroups(savedScope).groups, next)
+  }, [savedScope, enabledSchedules, ipMode, batchMode, batchResult, singleScope])
+  const ownershipPrefix = (data.ownershipTxtPrefix || '').trim() || '_redamon-verify'
   // A half-typed name ("exam") is not yet a hostname, and calling it a public
   // suffix would be wrong: only a well-formed name gets the refusal reason.
   const targetInvalid = singleScope?.invalid.find(i => i.reason === 'ip_literal'
@@ -503,6 +538,9 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                           <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Mode</th>
                           <th style={{ padding: '6px 8px' }}>Hosts</th>
                           <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Root</th>
+                          {data.verifyDomainOwnership && (
+                            <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Ownership TXT</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody>
@@ -550,6 +588,13 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                                 <span className={styles.previewTableMuted}>&ndash;</span>
                               )}
                             </td>
+                            {data.verifyDomainOwnership && (
+                              <td className={styles.previewTableMuted} style={{ padding: '6px 8px' }}>
+                                {ownershipRecordNames(g, ownershipPrefix).map((name, k) => (
+                                  <div key={name}>{k > 0 && 'or '}<code>{name}</code></div>
+                                ))}
+                              </td>
+                            )}
                           </tr>
                           )
                         })}
@@ -682,6 +727,21 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
               rows={2}
             />
           </div>
+
+          {widensScheduledScope && (
+            <div className={`${styles.callout} ${styles.calloutWarning}`} role="status">
+              <AlertTriangle size={16} />
+              <span>
+                <strong>
+                  {enabledSchedules} scheduled scan{enabledSchedules === 1 ? '' : 's'} will run the
+                  wider scope.
+                </strong>{' '}
+                This change adds hosts the saved scope did not cover, and every enabled schedule
+                scans them from its next run. Pause a schedule in the Scans tab if that is not
+                intended.
+              </span>
+            </div>
+          )}
 
           {/* Domain-mode only fields */}
           {/* Domain and batch modes share the AI + ownership settings below, but
@@ -999,7 +1059,19 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                 <div>
                   <span className={styles.toggleLabel}>Verify Domain Ownership</span>
                   <p className={styles.toggleDescription}>
-                    Require DNS TXT record verification before scanning
+                    Require a DNS TXT record <code>redamon-verify=&lt;token&gt;</code> before
+                    scanning. Each scan root accepts it at <code>{ownershipPrefix}.&lt;scan root&gt;</code>{' '}
+                    or at <code>{ownershipPrefix}.&lt;registrable domain&gt;</code>
+                    {!batchMode && singleGroup && (
+                      <>
+                        {' '}(here{' '}
+                        {ownershipRecordNames(singleGroup, ownershipPrefix).map((name, k) => (
+                          <span key={name}>{k > 0 && ' or '}<code>{name}</code></span>
+                        ))}
+                        )
+                      </>
+                    )}
+                    .
                   </p>
                 </div>
                 <Toggle

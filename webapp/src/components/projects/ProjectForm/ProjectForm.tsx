@@ -1292,7 +1292,11 @@ export function ProjectForm({
 
         {activeTab === 'target' && viewMode === 'tabs' && (
           <>
-            <TargetSection data={formData} updateField={updateField} mode={mode} />
+            <TargetSection
+              data={formData} updateField={updateField} mode={mode}
+              savedScope={mode === 'edit' ? baseline : undefined}
+              projectId={mode === 'edit' ? projectId : undefined}
+            />
             <AuthenticationSection data={formData} updateField={updateField} projectId={projectId} mode={mode} />
             <ScanModulesSection data={formData} updateField={updateField} />
           </>

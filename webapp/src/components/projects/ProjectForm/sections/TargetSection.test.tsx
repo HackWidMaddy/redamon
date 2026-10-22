@@ -16,23 +16,7 @@ import { groupHostsByScanRoot } from '@/lib/domainBatch'
 vi.mock('@/components/shared/ModelPicker', () => ({ ModelPicker: () => null }))
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1' }) }))
 
-// Nested wildcards ship disabled, and the preview's covered-by notes and shared-org
-// rows only exist with them on: a test turns them on for the preview's grouping.
-const flags = vi.hoisted(() => ({ nested: false }))
-vi.mock('@/lib/domainBatch', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/domainBatch')>()
-  return {
-    ...actual,
-    validateDomainBatch: (hosts: readonly string[]) => {
-      const v = actual.validateDomainBatch(hosts)
-      if (!flags.nested) return v
-      const { groups, invalid } = actual.groupHostsByScanRoot(hosts, { nestedWildcards: true })
-      return { ...v, groups, invalid }
-    },
-  }
-})
-
-afterEach(() => { cleanup(); flags.nested = false })
+afterEach(() => { cleanup() })
 
 type Data = Record<string, unknown>
 
@@ -164,14 +148,12 @@ describe('the preview columns (scan root, org, mode, hosts)', () => {
   })
 
   test('a collapsed wildcard is noted on the group that covers it', () => {
-    flags.nested = true
     renderSection({ domainBatchHosts: ['*.example.com', '*.api.example.com'] })
     expect(screen.getAllByRole('row').slice(1)).toHaveLength(1)
     expect(cells(1)[4]).toContain('*.api.example.com covered by *.example.com')
   })
 
   test('a second group under the same org is greyed and points at the first', () => {
-    flags.nested = true
     renderSection({ domainBatchHosts: ['*.api.example.com', 'www.example.com'] })
     expect(cells(1)[2]).toBe('example.com')
     expect(cells(2)[2]).toBe('example.com (shared with #1)')
@@ -475,5 +457,57 @@ describe('target modes: AI in Pipeline everywhere, Domain Verification never on 
     await waitFor(() => expect(jev).toBeEnabled())
     fireEvent.click(jev)
     expect(s.updateField).toHaveBeenCalledWith('ffufAiUseJev', true)
+  })
+})
+
+describe('ownership: the record names recon accepts (§4.8)', () => {
+  test('the preview names both records per scan root when verification is on', () => {
+    renderSection({ verifyDomainOwnership: true, ownershipTxtPrefix: '_rv',
+      domainBatchHosts: ['*.api.example.com', 'www.example.com'] })
+    const table = screen.getByRole('table')
+    expect(within(table).getByText('Ownership TXT')).toBeInTheDocument()
+    expect(within(table).getByText('_rv.api.example.com')).toBeInTheDocument()
+    expect(within(table).getAllByText('_rv.example.com')).toHaveLength(2)
+  })
+
+  test('no ownership column while verification is off', () => {
+    renderSection({ domainBatchHosts: ['www.example.com'] })
+    expect(screen.queryByText('Ownership TXT')).not.toBeInTheDocument()
+  })
+
+  test('a single domain below its org names both records, with the default prefix', () => {
+    renderSection({ domainBatchMode: false, targetDomain: 'api.example.com', verifyDomainOwnership: true })
+    expect(screen.getByText('_redamon-verify.api.example.com')).toBeInTheDocument()
+    expect(screen.getByText('_redamon-verify.example.com')).toBeInTheDocument()
+  })
+})
+
+describe('a widening save warns about enabled schedules (WEB-35, D-21)', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = realFetch })
+
+  function renderEdit(hosts: string[], schedules: { enabled: boolean }[]) {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ schedules }), { status: 200 })) as never
+    const saved = { ...BASE, domainBatchHosts: ['*.example.com'] }
+    const data = { ...saved, domainBatchHosts: hosts }
+    render(<TargetSection data={data as never} updateField={vi.fn() as never} mode="edit"
+      savedScope={saved as never} projectId="p1" />)
+  }
+
+  test('a new scan root warns, naming how many schedules will run it', async () => {
+    renderEdit(['*.example.com', '*.other.test'], [{ enabled: true }, { enabled: true }, { enabled: false }])
+    expect(await screen.findByText(/2 scheduled scans will run the wider scope/)).toBeInTheDocument()
+  })
+
+  test('a narrowing does not warn', async () => {
+    renderEdit(['*.api.example.com'], [{ enabled: true }])
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    expect(screen.queryByText(/will run the wider scope/)).not.toBeInTheDocument()
+  })
+
+  test('no enabled schedule, no warning', async () => {
+    renderEdit(['*.example.com', '*.other.test'], [{ enabled: false }])
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    expect(screen.queryByText(/will run the wider scope/)).not.toBeInTheDocument()
   })
 })
