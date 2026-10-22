@@ -254,5 +254,13 @@ describe.skipIf(!URL)('user skill names on a real Postgres (PLUGINS_PG_TEST_URL)
       const results = await checkNames(db(), 'alice', ['Taken flow', 'nul\u0000name', 'Free flow'])
       expect(results.map((r) => r.reason ?? 'ok')).toEqual(['name_taken', 'name_invalid', 'ok'])
     })
+
+    test('a batch row whose content holds a lone surrogate is refused as that row, nothing written', async () => {
+      const items = [{ name: 'Good row', content: '# fine' }, { name: 'Broken row', content: '# half \ud800 pair' }]
+      await expect(createUserSkillsBatch({ userId: 'alice', items }, ACTOR)).rejects.toMatchObject({
+        status: 409, code: 'batch_refused', extra: { items: [{ index: 1, code: 'content_not_text' }] },
+      })
+      expect(await db().userAttackSkill.count({ where: { userId: 'alice' } })).toBe(0)
+    })
   })
 })

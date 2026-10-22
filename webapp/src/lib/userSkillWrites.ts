@@ -194,8 +194,11 @@ function readBatchRow(raw: unknown): BatchRow | UserSkillError {
   const item = isObject(raw) ? raw : {}
   try {
     const content = readContent(item.content)
-    // Postgres TEXT refuses 0x00: without this the whole batch would be a 500.
-    if (content.includes('\u0000')) return new UserSkillError(400, 'content_not_text', 'The file is not text.')
+    // Postgres TEXT refuses 0x00, and Prisma's engine a lone surrogate (half of a UTF-16 pair):
+    // without this the whole batch would be a 500.
+    if (content.includes('\u0000') || /\p{Cs}/u.test(content)) {
+      return new UserSkillError(400, 'content_not_text', 'The file is not text.')
+    }
     let description: string | null = null
     if (item.description !== undefined && item.description !== null) {
       if (typeof item.description !== 'string') {
