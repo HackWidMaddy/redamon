@@ -37,7 +37,8 @@ describe('DNS posture of an org whose apex was no target', () => {
       return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
     }) as typeof fetch
     render(createElement(DnsEmailTable, { projectId: 'p1' }), { wrapper })
+    // In the SPF and the DMARC cell of that org's row only.
     const notes = await screen.findAllByTestId('dns-apex-note')
-    expect(notes.map(n => n.textContent)).toEqual(['not resolved (apex not in scope)'])
+    expect(notes.map(n => n.textContent)).toEqual(['not resolved (apex not in scope)', 'not resolved (apex not in scope)'])
   })
 })

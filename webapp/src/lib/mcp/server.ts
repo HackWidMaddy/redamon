@@ -947,7 +947,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'budget, and returns the same thing every time. Run one with run_graph_view.\n\n' +
         'The query text itself is deliberately not shown. Note a view saved in the app can still ' +
         'be refused here: this surface proves a query is tenant-scoped and read-only by stricter ' +
-        'rules than the app applies.',
+        'rules than the app applies.\n\n' +
+        '`mayNeedUpdate` is true when a view names a Domain the graph no longer has: Domain nodes ' +
+        'carry the registrable domain, so a view written for `api.example.com` as a Domain now ' +
+        'returns nothing. Its rows would read as a clean target; tell the person instead.',
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
       inputSchema: { projectId: projectIdSchema },

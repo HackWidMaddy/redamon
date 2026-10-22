@@ -71,6 +71,11 @@ function PolicyChip({ policy }: { policy: string | null }) {
   return <span className={`${rowStyles.sevBadge} ${cls}`}>{policy}</span>
 }
 
+/** An org whose apex was no target: its SPF/DMARC records were never read. */
+function ApexNote({ note }: { note: string }) {
+  return <span className={rowStyles.nullCell} data-testid="dns-apex-note">{note}</span>
+}
+
 /** Module-level: the filter profiles are keyed off these, and a fresh array
  *  literal per render would re-profile every row. */
 const COLUMNS: RedZoneFilterColumn[] = [
@@ -171,13 +176,10 @@ export const DnsEmailTable = memo(function DnsEmailTable({ projectId }: Props) {
           {sliced.map((r, i) => (
             <tr key={`${r.domain}-${i}`}>
               <td><NodeIdCell value={r.nodeId} /></td>
-              <td>
-                <HostCell host={r.domain} />
-                {r.apexNote && <div className={rowStyles.nullCell} data-testid="dns-apex-note">{r.apexNote}</div>}
-              </td>
-              <td><BoolChip value={r.spfPresent} /></td>
+              <td><HostCell host={r.domain} /></td>
+              <td>{r.apexNote ? <ApexNote note={r.apexNote} /> : <BoolChip value={r.spfPresent} />}</td>
               <td><BoolChip value={r.spfStrict} trueLabel="-all" falseLabel="weak" /></td>
-              <td><BoolChip value={r.dmarcPresent} /></td>
+              <td>{r.apexNote ? <ApexNote note={r.apexNote} /> : <BoolChip value={r.dmarcPresent} />}</td>
               <td><PolicyChip policy={r.dmarcPolicy} /></td>
               <td><BoolChip value={r.dnssecEnabled} /></td>
               <td>
