@@ -6,6 +6,7 @@ import { unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import path from 'path'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { batchGroupFiles } from '@/lib/reconOutputFiles'
 import { clearProjectGraph } from '@/lib/graphRestore'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
@@ -725,6 +726,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       // Fallback: try to delete locally (may fail in Docker due to read-only mounts)
       const filesToDelete = [
         { path: path.join(RECON_OUTPUT_PATH, `recon_${id}.json`), name: 'recon' },
+        ...(await batchGroupFiles(RECON_OUTPUT_PATH, id)).map(p => ({ path: p, name: 'recon group' })),
         { path: path.join(GVM_OUTPUT_PATH, `gvm_${id}.json`), name: 'GVM' },
         { path: path.join(GITHUB_HUNT_OUTPUT_PATH, `github_hunt_${id}.json`), name: 'GitHub hunt' },
       ]

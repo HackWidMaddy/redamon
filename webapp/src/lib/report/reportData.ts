@@ -1505,8 +1505,11 @@ async function queryTrufflehog(session: any, pid: string) {
             count(DISTINCT a) AS assets`,
     { pid }
   )
+  // DISTINCT: a project has one Domain per org, and a scan reached through two
+  // of them would be listed, and its findings counted, twice.
   const bySourceRes = await session.run(
-    `MATCH (d:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
+    `MATCH (:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
+     WITH DISTINCT ts
      OPTIONAL MATCH (ts)-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
        WHERE ${notMuted('tf')}
      RETURN ts.source AS source, ts.target AS target, ts.status AS status,
@@ -1517,8 +1520,9 @@ async function queryTrufflehog(session: any, pid: string) {
     { pid }
   )
   const findingsRes = await session.run(
-    `MATCH (d:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->()-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
+    `MATCH (:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->()-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
     WHERE ${notMuted('tf')}
+     WITH DISTINCT a, tf
      RETURN tf.detector_name AS detectorName, tf.verified AS verified,
             tf.validation_status AS validationStatus, tf.source AS source,
             tf.finding_kind AS findingKind,
