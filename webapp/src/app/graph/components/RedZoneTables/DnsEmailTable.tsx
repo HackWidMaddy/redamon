@@ -26,10 +26,13 @@ import rowStyles from './RedZoneTableRow.module.css'
 interface DnsEmailRow {
   nodeId: string | null
   domain: string
-  spfPresent: boolean
-  spfStrict: boolean
+  /** False when the org apex was no target: its records were never read. */
+  apexResolved?: boolean
+  apexNote?: string | null
+  spfPresent: boolean | null
+  spfStrict: boolean | null
   spfRecord: string | null
-  dmarcPresent: boolean
+  dmarcPresent: boolean | null
   dmarcPolicy: string | null
   dnssec: string | null
   dnssecEnabled: boolean
@@ -168,7 +171,10 @@ export const DnsEmailTable = memo(function DnsEmailTable({ projectId }: Props) {
           {sliced.map((r, i) => (
             <tr key={`${r.domain}-${i}`}>
               <td><NodeIdCell value={r.nodeId} /></td>
-              <td><HostCell host={r.domain} /></td>
+              <td>
+                <HostCell host={r.domain} />
+                {r.apexNote && <div className={rowStyles.nullCell} data-testid="dns-apex-note">{r.apexNote}</div>}
+              </td>
               <td><BoolChip value={r.spfPresent} /></td>
               <td><BoolChip value={r.spfStrict} trueLabel="-all" falseLabel="weak" /></td>
               <td><BoolChip value={r.dmarcPresent} /></td>
