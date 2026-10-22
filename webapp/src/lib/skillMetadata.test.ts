@@ -94,6 +94,13 @@ describe('readSkillMetadata', () => {
     })
   })
 
+  test('a heading line of 49,000 spaces or brackets is read in linear time, not seconds', () => {
+    const started = performance.now()
+    expect(readSkillMetadata(`# a${' '.repeat(49_000)}b`).name).toBe('a b')
+    readSkillMetadata(`# ${'['.repeat(49_000)}`)
+    expect(performance.now() - started).toBeLessThan(250)
+  })
+
   test('an H1 in a fence is ignored, #tag and ## are not level 1, a setext ===== title is', () => {
     expect(readSkillMetadata(md('```bash', '# not a heading', '```', '#tag', '## Sub', '# Real')).name).toBe('Real')
     expect(readSkillMetadata(md('~~~', '# inside', '~~~', 'Setext Title', '=====', '# Later')).name).toBe('Setext Title')

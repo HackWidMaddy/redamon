@@ -149,12 +149,26 @@ export function readFrontmatter(
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
 const ATX_ANY = /^ {0,3}#{1,6}(?:[ \t]|$)/
-const ATX_H1 = /^ {0,3}#(?!#)[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/
+// Greedy, with the closing sequence removed by atxText: a lazy capture followed by optional
+// trailing groups backtracks quadratically, seconds on one 50 KB line of spaces.
+const ATX_H1 = /^ {0,3}#(?!#)[ \t]+(.*)$/
 const SETEXT_H1 = /^ {0,3}=+[ \t]*$/
+
+/** An ATX heading's text without trailing spaces and its closing `#` run (which needs a space before it, so "C#" stays). */
+function atxText(rest: string): string {
+  let end = rest.length
+  while (end > 0 && (rest[end - 1] === ' ' || rest[end - 1] === '\t')) end--
+  let hashes = end
+  while (hashes > 0 && rest[hashes - 1] === '#') hashes--
+  if (hashes < end && hashes > 0 && (rest[hashes - 1] === ' ' || rest[hashes - 1] === '\t')) end = hashes
+  return rest.slice(0, end)
+}
 
 function stripInline(text: string): string {
   return text
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    // `[^[\]]`, not `[^\]]`: each attempt then stops at the next "[" instead of rescanning a
+    // long run of them to the end of the line.
+    .replace(/\[([^[\]]*)\]\([^)]*\)/g, '$1')
     .replace(/`([^`]*)`/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/__(.+?)__/g, '$1')
@@ -177,7 +191,7 @@ function firstHeading(lines: string[], start: number): string {
     }
     const atx = ATX_H1.exec(line)
     if (atx) {
-      const text = stripInline(atx[1]).trim()
+      const text = stripInline(atxText(atx[1])).trim()
       if (text) return text
       continue
     }
