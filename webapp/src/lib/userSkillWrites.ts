@@ -364,7 +364,8 @@ async function enableInProjectTx(tx: Tx, userId: string, projectId: string, ids:
     if (e instanceof UserSkillError) return { enabled: [], leftOff: [], skipped: e.code, project: null }
     throw e
   }
-  let room = Math.max(0, MAX_ENABLED_USER_SKILLS_PER_PROJECT - Object.values(current).filter((on) => on === true).length)
+  // Counted as normalizeUserToggleMap counts (truthy), or a legacy "true" left room it then refuses.
+  let room = Math.max(0, MAX_ENABLED_USER_SKILLS_PER_PROJECT - Object.values(current).filter(Boolean).length)
   const next = { ...current }
   const enabled: string[] = []
   const leftOff: string[] = []

@@ -211,6 +211,17 @@ describe('createUserSkillsBatch: project toggles', () => {
     })
   })
 
+  test('a legacy stored toggle that is truthy but not true counts as on: the batch is created, the extra skill left off', async () => {
+    const user: Record<string, unknown> = seedOn(19)
+    db.seed('userAttackSkill', [{ id: 'legacy', userId: 'alice', name: 'Legacy toggle', content: 'x' }])
+    user.legacy = 'true'
+    db.seed('project', [{ id: 'p1', userId: 'alice', attackSkillConfig: { builtIn: {}, user } }])
+    const out = await createUserSkillsBatch({ userId: 'alice', items: [item('A')], enableInProjectId: 'p1' }, ALICE)
+    expect(out.created).toHaveLength(1)
+    expect(out.enabled).toEqual([])
+    expect(out.leftOff).toEqual([out.created[0].id])
+  })
+
   test('a stored config without builtIn keeps it absent', async () => {
     db.seed('project', [{ id: 'p1', userId: 'alice', attackSkillConfig: { user: {} } }])
     const out = await createUserSkillsBatch({ userId: 'alice', items: [item('A')], enableInProjectId: 'p1' }, ALICE)
