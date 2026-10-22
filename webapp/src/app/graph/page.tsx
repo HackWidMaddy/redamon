@@ -77,6 +77,7 @@ import { useAlertModal, useToast } from '@/components/ui'
 import { useNavigationGuard } from '@/context/NavigationGuardContext'
 import styles from './page.module.css'
 import { deriveRoeEnabled } from '@/lib/engagement'
+import { groupLabel } from '@/lib/scopeGroups'
 
 // A saved (past) version is read-only, and GVM/GitHub-Hunt/TruffleHog write to the
 // LIVE/active graph. Starting one while viewing an old version would silently add
@@ -1501,8 +1502,8 @@ export default function GraphPage() {
         onOpenFileSystem={toggleFileSystemDrawer}
         isFileSystemOpen={isFileSystemOpen}
         // Target info
-        targetDomain={currentProject?.targetDomain}
-        subdomainList={currentProject?.subdomainList}
+        targetLabel={currentProject?.targetLabel || currentProject?.targetDomain}
+        scopeLines={(currentProject?.scopeGroups ?? []).map(groupLabel)}
         // Recon props
         onStartRecon={handleStartRecon}
         onPauseRecon={handlePauseRecon}
@@ -1669,6 +1670,7 @@ export default function GraphPage() {
             graphData={data}
             projectName={currentProject?.name}
             targetDomain={currentProject?.targetDomain}
+            scopeGroups={isViewingPastVersion ? undefined : currentProject?.scopeGroups}
             onStartAgentSession={isViewingPastVersion ? undefined : handleStartAgentSession}
           />
         )}
@@ -2012,7 +2014,7 @@ export default function GraphPage() {
         onClose={() => setIsGvmModalOpen(false)}
         onConfirm={handleConfirmGvm}
         projectName={currentProject?.name || 'Unknown'}
-        targetDomain={currentProject?.targetDomain || currentProject?.targetIps?.join(', ') || 'Unknown'}
+        targetDomain={currentProject?.targetLabel || currentProject?.targetDomain || currentProject?.targetIps?.join(', ') || 'Unknown'}
         stats={gvmStats}
         isLoading={isGvmLoading}
         error={gvmError}
