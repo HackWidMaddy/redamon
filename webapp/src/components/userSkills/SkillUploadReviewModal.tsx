@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useReducer, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type DragEvent } from 'react'
 import { ChevronDown, ChevronRight, FilePlus, Loader2, Sparkles, Square, Trash2, Upload } from 'lucide-react'
 import { Modal } from '@/components/ui/Modal/Modal'
 import { useAlertModal, useToast } from '@/components/ui'
@@ -129,6 +129,20 @@ export function SkillUploadReviewModal({ mode, userId, existingCount, files, cut
   const [previewOpen, setPreviewOpen] = useState<Record<string, boolean>>({})
   const stopRef = useRef<AbortController | null>(null)
   const addInput = useRef<HTMLInputElement>(null)
+
+  // The drop zone covers only the rows: a file dropped on the header, the footer or the overlay
+  // would otherwise make the browser open it in place of the page, losing every edit.
+  useEffect(() => {
+    const keep = (e: globalThis.DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files')) e.preventDefault()
+    }
+    window.addEventListener('dragover', keep)
+    window.addEventListener('drop', keep)
+    return () => {
+      window.removeEventListener('dragover', keep)
+      window.removeEventListener('drop', keep)
+    }
+  }, [])
 
   const update = useCallback((key: string, fn: (row: DraftRow) => DraftRow) => {
     dispatch((all) => all.map((r) => (r.key === key ? fn(r) : r)))

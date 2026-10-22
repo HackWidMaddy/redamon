@@ -396,6 +396,19 @@ describe('batch extras', () => {
     expect(screen.getAllByLabelText(/^Name for f02_heading\.md$/)).toHaveLength(1)
   })
 
+  test('a file dropped outside the row area (the footer) never navigates the page either', () => {
+    draw([HEADING])
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    const fire = (type: 'dragover' | 'drop') => {
+      const e = new Event(type, { bubbles: true, cancelable: true })
+      Object.assign(e, { dataTransfer: { types: ['Files'], files: [], dropEffect: 'none' } })
+      cancel.dispatchEvent(e)
+      return e
+    }
+    expect(fire('dragover').defaultPrevented).toBe(true)
+    expect(fire('drop').defaultPrevented).toBe(true)
+  })
+
   test('Add files past 50 rows adds only up to 50 and shows the banner', async () => {
     draw(Array.from({ length: 49 }, (_, i) => ({ name: `r${i}.md`, text: `# Row ${i}\n` })))
     expect(screen.queryByText(/Only the first 50 files were read/)).toBeNull()
