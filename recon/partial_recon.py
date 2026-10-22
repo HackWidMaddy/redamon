@@ -44,11 +44,13 @@ from recon.partial_recon_modules.helpers import (
     _is_valid_hostname,
     _is_valid_url,
     STATUS_OK,
+    filter_partial_user_input,
     partial_domain_groups,
     print_run_report,
     run_exit_code,
     scope_roots,
     settings_project_roots,
+    settings_scope_groups,
 )
 from recon.partial_recon_modules.graph_builders import (
     _build_recon_data_from_graph,
@@ -199,7 +201,54 @@ def _prepare_scope(config: dict, settings: dict, project_id: str):
     config["batch_mode"] = bool(settings.get("DOMAIN_BATCH_MODE"))
     config["settings_overrides"] = _allowlist_overrides(config.get("settings_overrides"))
     config["_settings"] = settings
+
+    typed = _typed_anything(config)
+    dropped = filter_partial_user_input(config, settings)
+    for item in dropped:
+        print(f"[!][Partial Recon] Not using typed input outside the scope: {item}")
+    if typed and not _typed_anything(config) and not config.get("include_graph_targets", True):
+        print("[!][Partial Recon] No typed target is in this project's scope.")
+        for root in kept:
+            refused[root] = "refused: no typed target in scope"
+        config["domains"], config["domain"] = [], ""
     return refused
+
+
+def _typed_anything(config: dict) -> bool:
+    targets = config.get("user_targets") or {}
+    return bool(config.get("user_inputs")) or any(
+        targets.get(k) for k in ("subdomains", "urls", "ips"))
+
+
+# Which name the graph's Domain node carries. Until the org model ships it is
+# the scan root; mirrors GRAPH_DOMAIN_IS_ORG in webapp/src/lib/scopeGroups.ts.
+GRAPH_DOMAIN_IS_ORG = False
+
+
+def _legacy_graph_refusal(settings: dict, user_id: str, project_id: str):
+    """Why this project's graph is refused as built under an older scope model, or None.
+
+    The webapp refuses the same thing before it starts a job (§4.11.6); this is
+    the backstop for a job that reached the container another way. It fails
+    closed: a graph it cannot read is a graph it cannot vouch for.
+    """
+    if settings.get("IP_MODE"):
+        return None
+    groups = settings_scope_groups(settings)
+    expected = sorted({(g["orgDomain"] if GRAPH_DOMAIN_IS_ORG else g["scanRoot"]).lower() for g in groups})
+    related = sorted({n.lower() for g in groups for n in (g["orgDomain"], g["scanRoot"])})
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as client:
+            if not client.verify_connection():
+                return "the graph database is unreachable, so the scope model cannot be checked"
+            legacy = client.legacy_domain_nodes(user_id, project_id, expected, related)
+    except Exception as e:  # noqa: BLE001 - an unanswered check is a failed check
+        return f"the scope model check failed ({type(e).__name__})"
+    if legacy:
+        return ("this project's graph was built before the current scope model "
+                f"({', '.join(sorted(legacy)[:5])}); run a full recon first")
+    return None
 
 
 def _run_tool(tool_id: str, config: dict):
@@ -263,6 +312,11 @@ def main():
     refused = _prepare_scope(config, settings, project_id)
     if not scope_roots(config):
         print_run_report(tool_id, {}, refused)
+        sys.exit(1)
+    legacy = _legacy_graph_refusal(settings, user_id, project_id)
+    if legacy:
+        print(f"[!][Partial Recon] Refusing to scan: {legacy}")
+        print_run_report(tool_id, {}, {root: f"refused: {legacy}" for root in scope_roots(config)})
         sys.exit(1)
     print(f"[*][Partial Recon] Roots: {', '.join(scope_roots(config))}")
 

@@ -377,9 +377,12 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
                 else:
                     refused.append(f'ip {ip!r}')
             targets['ips'] = kept
-        for key in ('ip_attach_to', 'url_attach_to'):
+        # ip_attach_to names a Subdomain, url_attach_to a BaseURL. In IP mode
+        # both are graph nodes the container looks up, so only domain mode checks.
+        for key, host_of in (('ip_attach_to', str), ('url_attach_to', _url_host)):
             value = targets.get(key)
-            if value and not (isinstance(value, str) and host_ok(value.strip().lower())):
+            if value and not project.get('ipMode', False) and not (
+                    isinstance(value, str) and host_ok(host_of(value).strip().lower())):
                 refused.append(f'{key} {value!r}')
                 targets[key] = None
         if 'ports' in targets:

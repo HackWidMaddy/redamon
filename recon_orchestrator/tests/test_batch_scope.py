@@ -211,3 +211,23 @@ class TestPartialUserInput:
         _, targets, _ = self._filter(['ip-targets.p1'], project=project, targets={
             'urls': ['http://192.0.2.10:8080/', 'http://192.0.2.99/']})
         assert targets['urls'] == ['http://192.0.2.10:8080/']
+
+    def test_url_attach_to_is_a_base_url_judged_by_its_host(self):
+        _, targets, refused = self._filter(['example.com'], targets={
+            'urls': ['https://www.example.com/a'], 'url_attach_to': 'https://www.example.com'})
+        assert targets['url_attach_to'] == 'https://www.example.com' and not refused
+        _, targets, refused = self._filter(['example.com'], targets={
+            'urls': [], 'url_attach_to': 'https://evil.test'})
+        assert targets['url_attach_to'] is None and refused == ["url_attach_to 'https://evil.test'"]
+
+    def test_ip_attach_to_names_a_subdomain_in_scope(self):
+        _, targets, _ = self._filter(['example.com'], targets={'ips': ['192.0.2.1'], 'ip_attach_to': 'www.example.com'})
+        assert targets['ip_attach_to'] == 'www.example.com'
+        _, targets, _ = self._filter(['example.com'], targets={'ips': ['192.0.2.1'], 'ip_attach_to': 'mail.example.com'})
+        assert targets['ip_attach_to'] is None
+
+    def test_ip_mode_leaves_the_attach_targets_to_the_graph_lookup(self):
+        project = {'ipMode': True, 'targetIps': ['192.0.2.10']}
+        _, targets, refused = self._filter(['ip-targets.p1'], project=project, targets={
+            'ips': ['192.0.2.10'], 'ip_attach_to': '192-0-2-10.ip-targets.p1'})
+        assert targets['ip_attach_to'] == '192-0-2-10.ip-targets.p1' and not refused

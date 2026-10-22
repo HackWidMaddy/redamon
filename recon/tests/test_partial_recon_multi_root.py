@@ -148,9 +148,12 @@ class TestGroupsComeFromSettings:
         assert allowed_hosts_for("beta.test", groups) == {"www.beta.test"}
 
     def test_single_project(self):
+        # One scope group: no listed prefix, so it enumerates, with its root on.
         settings = {"TARGET_DOMAIN": "alpha.test", "SUBDOMAIN_LIST": ["."]}
-        assert partial_domain_groups(settings, ["alpha.test"]) == [
-            {"rootDomain": "alpha.test", "prefixes": ["."], "batch": False}]
+        assert partial_domain_groups(settings, ["alpha.test"]) == [{
+            "rootDomain": "alpha.test", "prefixes": ["*", "."], "batch": False,
+            "scanRoot": "alpha.test", "orgDomain": "alpha.test", "mode": "enumerate",
+            "includeRoot": True, "exactHosts": []}]
 
     def test_ip_mode_has_no_groups(self):
         assert partial_domain_groups({"IP_MODE": True}, ["ip-targets.p1"]) == []
@@ -250,6 +253,8 @@ def pr(monkeypatch):
     monkeypatch.setenv("PROJECT_ID", "p1")
     monkeypatch.setattr("recon.graph_db_preflight.require_graph_db", lambda *_: None)
     monkeypatch.setattr(module, "_cleanup_orphan_user_inputs", lambda *_: 0)
+    # No graph here; test_partial_scope_groups.py covers the check itself.
+    monkeypatch.setattr(module, "_legacy_graph_refusal", lambda settings, uid, pid: None)
     return module
 
 
