@@ -75,6 +75,9 @@ const AGENT_FACING = [
   'muteTools.ts',
   'verdictTools.ts',
   'findingTools.ts',
+  // update_project_scope's refusals and result note point the agent at the
+  // next call (preflight_scope_check), so they go stale like any description.
+  'scopeTools.ts',
 ]
 
 /**

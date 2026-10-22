@@ -53,7 +53,18 @@ describe('start', () => {
   test('happy path creates a session scoped to the target', async () => {
     const res = await START(req(), params)
     expect(res.status).toBe(200)
-    expect(db.recordingSession.create.mock.calls[0][0].data.scopeHosts).toContain('target.test')
+    expect(db.recordingSession.create.mock.calls[0][0].data.scopeHosts).toEqual(['*.target.test'])
+  })
+
+  test('a Domain-batch project records its scope groups, not nothing (B-7)', async () => {
+    db.project.findUnique.mockResolvedValue({
+      ...await db.project.findUnique(), targetDomain: '', domainBatchMode: true,
+      domainBatchHosts: ['*.example.com', 'www.acme.test', 'shop.acme.test'],
+    })
+    await START(req(), params)
+    expect(db.recordingSession.create.mock.calls[0][0].data.scopeHosts)
+      .toEqual(['*.example.com', 'www.acme.test', 'shop.acme.test'])
+    expect(db.project.findUnique.mock.calls.at(-1)![0].select).toMatchObject({ domainBatchMode: true, domainBatchHosts: true })
   })
 
   test('refused while graph is activating (G11)', async () => {

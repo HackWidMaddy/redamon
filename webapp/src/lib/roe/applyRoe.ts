@@ -20,7 +20,7 @@ import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { roeTextDigest } from '@/lib/engagement'
 import { guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
-import { defaultRecordingScope } from '@/lib/recordingSession'
+import { refreshActiveRecordingScope } from '@/lib/recordingSession'
 import { fetchBackendDefaults } from '@/lib/reconPresets/server'
 import { field } from '@/lib/reconSettings/registry'
 import { parseValueProblem } from '@/lib/reconSettings/roeParse'
@@ -307,22 +307,7 @@ export async function applyRoe(input: ApplyRoeInput): Promise<NextResponse> {
   })
 
   // 10. The active login recording captures by a scope computed at its start.
-  let recordingScopeUpdated = false
-  try {
-    const session = await prisma.recordingSession.findFirst({
-      where: { projectId, state: 'active', expiresAt: { gt: new Date() } },
-      select: { id: true },
-    })
-    if (session) {
-      await prisma.recordingSession.update({
-        where: { id: session.id },
-        data: { scopeHosts: defaultRecordingScope(updated as never) },
-      })
-      recordingScopeUpdated = true
-    }
-  } catch (e) {
-    console.error('[roe-apply] could not update the recording scope:', e)
-  }
+  const recordingScopeUpdated = await refreshActiveRecordingScope(prisma, projectId, updated as never)
 
   const [queued, affected] = await Promise.all([
     countQueuedJobsNeedingReview(projectId),

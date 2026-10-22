@@ -23,6 +23,9 @@ const h = vi.hoisted(() => ({
   live: vi.fn(),
   seed: vi.fn(),
   audit: vi.fn(),
+  fetch: vi.fn(),
+  recordingFind: vi.fn(),
+  recordingUpdate: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => {
@@ -38,6 +41,10 @@ vi.mock('@/lib/prisma', () => {
       updateMany: (...a: unknown[]) => h.schedulesUpdate(...a),
     },
     userSettings: { findUnique: (...a: unknown[]) => h.userSettings(...a) },
+    recordingSession: {
+      findFirst: (...a: unknown[]) => h.recordingFind(...a),
+      update: (...a: unknown[]) => h.recordingUpdate(...a),
+    },
     $transaction: (fn: (tx: unknown) => unknown) => fn(client),
   }
   return { default: client }
@@ -97,6 +104,10 @@ beforeEach(() => {
   h.live.mockResolvedValue(null)
   h.seed.mockResolvedValue(true)
   h.audit.mockResolvedValue(undefined)
+  h.fetch.mockResolvedValue({ ok: true, json: async () => ({ allowed: true }) })
+  vi.stubGlobal('fetch', h.fetch)
+  h.recordingFind.mockResolvedValue(null)
+  h.recordingUpdate.mockResolvedValue({})
 })
 
 const call = (changes: Record<string, unknown>, extra: Record<string, unknown> = {}, scopes?: McpScope[]) =>
@@ -302,8 +313,69 @@ describe('a batch that gains hosts pauses the scan schedules (C-7)', () => {
     expect(r.note).not.toMatch(/paused/)
   })
 
+  test.each([
+    ['a wildcard narrowed to one of its hosts', ['www.example.com']],
+    ['a seed under the wildcard', ['*.example.com', 'v1.example.com']],
+  ])('%s is no widening by containment (D-21): pauses nothing', async (_label, hosts) => {
+    row = batchRow(['*.example.com'])
+    h.schedules.mockResolvedValue(SCHEDULES)
+    const r = await call({ domainBatchHosts: hosts })
+    expect(h.schedulesUpdate).not.toHaveBeenCalled()
+    expect(r.pausedSchedules).toEqual({ count: 0, names: [] })
+    expect(r.widenings).toEqual([])
+  })
+
   test('no enabled schedule: nothing to pause, no empty update', async () => {
     await call({ domainBatchHosts: ['a.example.com', 'b.example.com', 'c.example.com'] })
     expect(h.schedulesUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('the soft guardrail judges a rescope as the form\'s save does (Q-1)', () => {
+  const body = () => JSON.parse(h.fetch.mock.calls[0][1].body as string)
+
+  test('a refusal is target_blocked and nothing is written', async () => {
+    h.fetch.mockResolvedValue({ ok: true, json: async () => ({ allowed: false, reason: 'a government site' }) })
+    await expect(call({ domainBatchHosts: ['a.example.com', 'www.acme.co.uk'] }))
+      .rejects.toMatchObject({ code: 'target_blocked', message: expect.stringMatching(/a government site/) })
+    expect(h.projectUpdateMany).not.toHaveBeenCalled()
+    expect(body()).toMatchObject({ target_domain: '', target_domains: ['example.com', 'acme.co.uk'], user_id: 'owner' })
+  })
+
+  test('a narrowing is judged too; an unreachable agent fails open', async () => {
+    h.fetch.mockRejectedValue(new Error('ECONNREFUSED'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await call({ domainBatchHosts: ['a.example.com'] })
+    expect(h.fetch).toHaveBeenCalledTimes(1)
+    expect(h.projectUpdateMany).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  test('a project that switched it off, or a regroup of the same hosts, is not asked', async () => {
+    row = batchRow(['a.example.com', 'b.example.com'], { targetGuardrailEnabled: false })
+    await call({ domainBatchHosts: ['a.example.com', 'b.example.com', 'c.example.com'] })
+    row = batchRow(['a.example.com', 'b.example.com'])
+    await call({ domainBatchHosts: ['b.example.com', 'a.example.com'] })
+    expect(h.fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('an active login recording follows the rescope (WEB-15b)', () => {
+  test('its scope is re-derived from the new host list, RoE still applied', async () => {
+    row = batchRow(['a.example.com'], { roeExcludedHosts: ['b.example.com'] })
+    h.recordingFind.mockResolvedValue({ id: 'rec-1' })
+    const r = await call({ domainBatchHosts: ['a.example.com', 'b.example.com', '*.example.org'] })
+    expect(h.recordingUpdate).toHaveBeenCalledWith({
+      where: { id: 'rec-1' }, data: { scopeHosts: ['a.example.com', '*.example.org'] },
+    })
+    expect(r.recordingScopeUpdated).toBe(true)
+  })
+
+  test('a regroup, or a change that leaves the batch alone, does not touch it', async () => {
+    h.recordingFind.mockResolvedValue({ id: 'rec-1' })
+    await call({ domainBatchHosts: ['b.example.com', 'a.example.com'] })
+    const r = await call({ gvmScanTargets: 'ips_only' })
+    expect(h.recordingFind).not.toHaveBeenCalled()
+    expect(r.recordingScopeUpdated).toBe(false)
   })
 })

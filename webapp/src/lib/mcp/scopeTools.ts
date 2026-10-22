@@ -12,22 +12,26 @@
  *  - its own permission, never auto-ticked by any profile;
  *  - refused while anything reads or writes the graph: the in-app agent reads
  *    the batch groups every turn, and the scanners read their targets at spawn;
- *  - every value validated, every new batch root through the permanent
- *    guardrail, the batch grouping re-derived here and never taken from a caller;
+ *  - every value validated, every batch host and root through the permanent
+ *    guardrail and, unless the project switched it off, the soft (LLM) one,
+ *    the batch grouping re-derived here and never taken from a caller;
  *  - on a third-party engagement a WIDENING must arrive with an authorization
  *    record, written in the same transaction, and passing one needs
  *    engagement:authorize as well;
  *  - a compare-and-swap on `updatedAt`, and an audit row with every before/after;
  *  - a batch that gains hosts pauses the project's scan schedules in the same
  *    transaction, so no unattended run reaches the new hosts before a person
- *    has looked at them.
+ *    has looked at them;
+ *  - an active login recording is re-pointed at the new scope.
  */
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { validateDomainBatch } from '@/lib/domainBatch'
 import {
   type ScopeGroup, isScopeWidening, resolveScopeGroups, sameScope, scopeGuardrailNames, scopeSignature,
+  softGuardrailNames,
 } from '@/lib/scopeGroups'
+import { refreshActiveRecordingScope } from '@/lib/recordingSession'
 import { activationBusy } from '@/lib/activationLock'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { seedProjectDomains } from '@/lib/graphSeedDomains'
@@ -38,7 +42,9 @@ import { rescopableFields } from '@/lib/reconSettings/registry'
 import { validateCrossFieldRules } from '@/lib/reconSettings/crossField'
 import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
-import { normaliseAuthorization, refuseHardBlocked, type AuthorizationArgs } from '@/lib/mcp/engagementTools'
+import {
+  normaliseAuthorization, refuseHardBlocked, softGuardrailRefusal, type AuthorizationArgs,
+} from '@/lib/mcp/engagementTools'
 import { busyHint, casVersion, countQueuedJobsNeedingReview, describeAffectedSchedules } from '@/lib/mcp/writeTools'
 
 export interface UpdateProjectScopeArgs {
@@ -138,6 +144,8 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   const select = {
     ...Object.fromEntries(rescopableFields().map(f => [f.key, true])),
     engagementKind: true, domainBatchMode: true, domainBatchHosts: true, domainBatchGroups: true, updatedAt: true,
+    // Not changed here; read for the soft guardrail and the recording scope.
+    targetGuardrailEnabled: true, roeExcludedHosts: true,
   }
   assertReadableSelect(select, 'update_project_scope')
   const row = await prisma.project.findUnique({ where: { id: args.projectId }, select }) as Row | null
@@ -202,6 +210,22 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
     )
   }
 
+  // A rewrite of the derived record alone (a legacy row re-saved with the same
+  // hosts) is not a scope change and must not read as one in the activity feed.
+  const regroupOnly = 'domainBatchHosts' in data
+    && sameScope(batchScope(row.domainBatchHosts), batchScope(data.domainBatchHosts))
+  const batchRescoped = 'domainBatchHosts' in data && !regroupOnly
+
+  // Every scope change, as the project form's save does: the soft guardrail
+  // judges the whole new scope, a narrowing included.
+  if (batchRescoped && row.targetGuardrailEnabled !== false) {
+    const refusal = await softGuardrailRefusal({
+      targetDomains: softGuardrailNames(batchScope(data.domainBatchHosts)),
+      userId: ctx.token.userId,
+    })
+    if (refusal) throw new McpToolError(`Target blocked by the guardrail: ${refusal}`, 'target_blocked')
+  }
+
   const version = casVersion(row.updatedAt, args.expectedUpdatedAt)
   const batchGained = batchEntriesAdded(row, data) > 0
   const { authorizationId, paused } = await prisma.$transaction(async tx => {
@@ -251,11 +275,13 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   // row's own userId is not an MCP-readable column.
   const graphSeeded = await seedProjectDomains(addedRoots, ctx.token.userId, args.projectId)
 
+  const recordingScopeUpdated = batchRescoped && await refreshActiveRecordingScope(prisma, args.projectId, {
+    domainBatchMode: true,
+    domainBatchHosts: data.domainBatchHosts as string[],
+    roeExcludedHosts: Array.isArray(row.roeExcludedHosts) ? row.roeExcludedHosts as string[] : [],
+  })
+
   const shown = changed.filter(k => k !== 'domainBatchGroups')
-  // A rewrite of the derived record alone (a legacy row re-saved with the same
-  // hosts) is not a scope change and must not read as one in the activity feed.
-  const regroupOnly = 'domainBatchHosts' in data
-    && sameScope(batchScope(row.domainBatchHosts), batchScope(data.domainBatchHosts))
   const audited = regroupOnly ? shown : changed
   void writeAudit({
     actorId: ctx.token.userId,
@@ -291,6 +317,7 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
     pausedSchedules,
     affectedSchedules,
     graphSeeded,
+    recordingScopeUpdated,
     note:
       (graphSeeded ? '' : 'The new roots could not be added to the graph yet; the next full recon adds them. ') +
       (pausedSchedules.count > 0
