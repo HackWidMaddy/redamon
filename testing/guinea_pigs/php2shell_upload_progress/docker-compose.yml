@@ -1,0 +1,19 @@
+services:
+  php2shell-target:
+    build: .
+    image: redamon-gp-php2shell:8.4.26
+    # The public PoC auto-derives libphp offsets from a container of this exact
+    # name (--docker-container php2shell-target); keeping it matches that default.
+    container_name: php2shell-target
+    networks:
+      pentest:
+        # .91/.92 are taken by the skiller targets; .93 is the next free high host.
+        ipv4_address: 172.28.0.93
+    ports:
+      - "127.0.0.1:8088:80"   # host alias for manual curl / running the PoC from the host
+    restart: unless-stopped
+
+networks:
+  pentest:
+    external: true
+    name: redamon_pentest-net
