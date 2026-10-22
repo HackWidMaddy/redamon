@@ -250,6 +250,24 @@
 }
 
 /* =============================================================================
+   AI GENERATE BUTTON
+   Blue "Generate with AI" variant; pair it with .secondaryButton, which gives the
+   shape and the disabled state. Blue-600, not blue-500: white text on blue-500 is
+   3.7:1, under the 4.5:1 this text size needs.
+   ============================================================================= */
+
+.secondaryButton.aiGenerateButton {
+  background: var(--accent-secondary-hover);
+  border-color: var(--accent-secondary-hover);
+  color: var(--text-on-accent);
+}
+
+.secondaryButton.aiGenerateButton:hover:not(:disabled) {
+  background: var(--accent-secondary-active);
+  border-color: var(--accent-secondary-active);
+}
+
+/* =============================================================================
    RECON START BUTTON
    Green outlined button matching the graph toolbar's Start Recon Pipeline style
    ============================================================================= */

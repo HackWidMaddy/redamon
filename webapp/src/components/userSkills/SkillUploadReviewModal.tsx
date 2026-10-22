@@ -434,7 +434,7 @@ export function SkillUploadReviewModal({ mode, userId, existingCount, files, cut
             <div className={styles.aiRow}>
               <button
                 type="button"
-                className="secondaryButton"
+                className="secondaryButton aiGenerateButton"
                 onClick={() => void generate()}
                 disabled={!targets.length || !!generating || uploading}
                 title={!targets.length ? 'Every name and description is filled' : undefined}

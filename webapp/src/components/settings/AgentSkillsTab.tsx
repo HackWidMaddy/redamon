@@ -440,7 +440,7 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
         <div className={own.generate}>
           <button
             type="button"
-            className="secondaryButton"
+            className="secondaryButton aiGenerateButton"
             onClick={() => void generateEdit()}
             disabled={!editEmptyField || editSaving || editGenerating === edit?.id}
             title={editEmptyField ? 'Write the empty name or description with AI' : 'The name and description are both filled'}
