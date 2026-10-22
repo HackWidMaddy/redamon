@@ -130,6 +130,37 @@ describe('Generate with AI in the Edit dialog', () => {
     expect(stub.calls(GENERATE_URL, 'POST')).toHaveLength(1)
   })
 
+  test("a late Generate answer for a closed skill never shows on the next skill's dialog", async () => {
+    const other = { ...SKILL, id: 'sk2', name: 'Second Skill' }
+    let releaseFirst!: () => void
+    stubGateFetch({ skill_metadata: 'claude-haiku-4-5' }, (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (url === LIST_URL && method === 'GET') return jsonResponse(200, [SKILL, other])
+      if (url === `${LIST_URL}/sk1` && method === 'GET') return jsonResponse(200, { ...SKILL, content: '# One' })
+      if (url === `${LIST_URL}/sk2` && method === 'GET') return jsonResponse(200, { ...other, content: '# Two' })
+      if (url.startsWith(`${LIST_URL}/name-check`)) return jsonResponse(200, { available: true, normalized: 'x', suggestion: null })
+      if (url === GENERATE_URL && method === 'POST') {
+        const key = JSON.parse(init!.body as string).items[0].key
+        if (key === 'sk1') {
+          return new Promise<Response>((resolve) => {
+            releaseFirst = () => resolve(jsonResponse(200, { items: [{ key, error: 'skill_contains_credentials' }], modelUsed: null }))
+          })
+        }
+      }
+      return jsonResponse(404, {})
+    })
+    await openEdit()
+    fireEvent.click(generateButton())
+    await waitFor(() => expect(releaseFirst).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(await screen.findByTestId('user-skill-sk2')).getByTitle('Edit name and description'))
+    await screen.findByRole('heading', { name: 'Edit Skill' })
+    expect(generateButton()).toBeEnabled()
+    releaseFirst()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByText(/This file holds a key or token/)).toBeNull()
+  })
+
   test('the button is disabled when both fields are filled', async () => {
     stubGateFetch({ skill_metadata: 'claude-haiku-4-5' }, route(answer))
     await openEdit()

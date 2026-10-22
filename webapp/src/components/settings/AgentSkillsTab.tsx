@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Download, Files, GitBranch, Inbox, Loader2, Pencil, Search, ShieldOff, Sparkles, Swords, Trash2, Upload } from 'lucide-react'
 import { Modal } from '@/components/ui/Modal/Modal'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
@@ -68,7 +68,12 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
   const [edit, setEdit] = useState<{ id: string; name: string; description: string } | null>(null)
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
-  const [editGenerating, setEditGenerating] = useState(false)
+  // The skill whose Generate runs: per skill, so a run left behind by a closed dialog neither
+  // blocks the next skill's button nor writes into its dialog.
+  const [editGenerating, setEditGenerating] = useState<string | null>(null)
+  const editGeneratingRef = useRef<string | null>(null)
+  const editRef = useRef(edit)
+  editRef.current = edit
   const [editAiError, setEditAiError] = useState<string | null>(null)
   const [reviewChangeSetId, setReviewChangeSetId] = useState<string | null>(null)
 
@@ -167,15 +172,19 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
     if (!userId || !edit) return
     const fields = [...(edit.name.trim() ? [] : ['name']), ...(edit.description.trim() ? [] : ['description'])]
     if (!fields.length) return
-    const model = await ensureFeatureModel('skill_metadata')
-    if (!model) return
     const skillId = edit.id
-    setEditGenerating(true)
+    // Set before the first await: a double click must not start a second run.
+    if (editGeneratingRef.current === skillId) return
+    editGeneratingRef.current = skillId
+    setEditGenerating(skillId)
     setEditAiError(null)
+    const stillOpen = () => editRef.current?.id === skillId
     try {
+      const model = await ensureFeatureModel('skill_metadata')
+      if (!model) return
       const text = await fetch(`/api/users/${userId}/attack-skills/${skillId}`)
       if (!text.ok) {
-        setEditAiError('The skill text could not be read.')
+        if (stillOpen()) setEditAiError('The skill text could not be read.')
         return
       }
       const { content } = await text.json()
@@ -188,6 +197,7 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
         body: JSON.stringify({ items: [{ key: skillId, fileName: '', content, name: contextName, fields }] }),
       }))
       const body = await res.json().catch(() => ({}))
+      if (!stillOpen()) return
       if (!res.ok) {
         const code = readFeatureModelCode(body)
         setEditAiError(code ? featureModelMessage(code, model) : (typeof body.error === 'string' && body.error) || AI_FAILED_TEXT)
@@ -204,9 +214,10 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
       } : x))
     } catch (err) {
       console.error('Failed to generate the skill metadata:', err)
-      setEditAiError(AI_FAILED_TEXT)
+      if (stillOpen()) setEditAiError(AI_FAILED_TEXT)
     } finally {
-      setEditGenerating(false)
+      if (editGeneratingRef.current === skillId) editGeneratingRef.current = null
+      setEditGenerating((g) => (g === skillId ? null : g))
     }
   }, [userId, edit, ensureFeatureModel, fetchWithFeatureModel])
 
@@ -431,10 +442,10 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
             type="button"
             className="secondaryButton"
             onClick={() => void generateEdit()}
-            disabled={!editEmptyField || editSaving || editGenerating}
+            disabled={!editEmptyField || editSaving || editGenerating === edit?.id}
             title={editEmptyField ? 'Write the empty name or description with AI' : 'The name and description are both filled'}
           >
-            {editGenerating ? <Loader2 size={14} className={styles.spin} /> : <Sparkles size={14} />}
+            {editGenerating === edit?.id ? <Loader2 size={14} className={styles.spin} /> : <Sparkles size={14} />}
             Generate with AI
           </button>
           <FeatureModelLine featureId="skill_metadata" />
