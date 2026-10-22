@@ -160,6 +160,13 @@ describe('generate-metadata: a file that holds a key is never sent', () => {
     expect(JSON.stringify(sent)).not.toContain('AKIAIOSFODNN7EXAMPLE')
   })
 
+  test('a key-shaped name of another row never reaches the model through otherNames', async () => {
+    await generate({ items: [item('a')], otherNames: ['Clean neighbour', 'ghp_' + 'a'.repeat(36), 'AKIAIOSFODNN7EXAMPLE'] })
+    const sent = sentToAgent().body
+    expect(sent.other_names).toEqual(['Clean neighbour'])
+    expect(JSON.stringify(sent)).not.toMatch(/ghp_|AKIA/)
+  })
+
   test('when it is the only item the agent and the model are never asked', async () => {
     const res = await generate({ items: [item('a', { name: 'AKIAIOSFODNN7EXAMPLE' })] })
     expect(await res.json()).toEqual({ items: [{ key: 'a', error: 'skill_contains_credentials' }], modelUsed: null })

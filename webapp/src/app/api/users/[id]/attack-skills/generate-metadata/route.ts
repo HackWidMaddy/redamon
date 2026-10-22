@@ -122,7 +122,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         want_name: i.fields.includes('name'),
         want_description: i.fields.includes('description'),
       })),
-      other_names: read.otherNames,
+      // Another row's name came from a file too, so it gets the same rule as the items.
+      other_names: read.otherNames.filter((n) => !hasSecretKeyShape(n)),
       model,
       user_id: eff.userId,
     },
