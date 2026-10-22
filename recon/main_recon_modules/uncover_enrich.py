@@ -173,14 +173,23 @@ def _drop_refused_engines(config: dict, engines: list[str]) -> None:
         for e in refused])
 
 
-def _build_queries(domain: str, settings: dict) -> list[str]:
+def _owns_its_org(recon_data: dict) -> bool:
+    """True when this group's scan root is its registrable domain (or the file
+    predates scope groups): org-wide results then belong to it."""
+    from recon.helpers.recon_scope import recon_scope
+    scope = recon_scope(recon_data)
+    return scope.mode is None or scope.scan_root == scope.org_domain
+
+
+def _build_queries(domain: str, settings: dict, whois_org: str = '') -> list[str]:
     """Build search queries for the target domain.
 
     Uses hostname and SSL certificate org searches to maximize coverage.
+    ``whois_org`` is this group's WHOIS registrant: passed in, never kept in
+    the shared settings, where one group's org would leak into the next.
     """
     queries = [domain]
 
-    whois_org = settings.get('_WHOIS_ORG', '')
     if whois_org and whois_org.lower() not in ('n/a', 'unknown', '', 'none'):
         queries.append(f'ssl:"{whois_org}"')
 
@@ -436,15 +445,22 @@ def run_uncover_expansion(
     if not domain:
         print("[!][Uncover] No target domain — skipping")
         return {}
+    from recon.helpers.recon_scope import recon_scope
+    if recon_scope(combined_result).ip_mode:
+        # The run's root is a synthetic name: searching it would send the
+        # project id to paid engines and find nothing.
+        print("[-][Uncover] IP mode has no domain to search for — skipping")
+        return {}
 
-    # Extract org name from whois if available
+    # The ssl:"<registrant>" search finds the whole organisation, not this
+    # group: only a group whose scan root is its org asks it (§4.9), and with
+    # one group per scan root that is at most once per run.
+    whois_org = ''
     whois_data = combined_result.get('whois', {})
-    if isinstance(whois_data, dict):
-        org = whois_data.get('registrant_org', '') or whois_data.get('org', '')
-        if org:
-            settings['_WHOIS_ORG'] = org
+    if isinstance(whois_data, dict) and _owns_its_org(combined_result):
+        whois_org = whois_data.get('registrant_org', '') or whois_data.get('org', '')
 
-    queries = _build_queries(domain, settings)
+    queries = _build_queries(domain, settings, whois_org)
     max_results = int(settings.get('UNCOVER_MAX_RESULTS', 500))
 
     print(f"[*][Uncover] Queries: {queries}")
@@ -535,6 +551,20 @@ def merge_uncover_into_pipeline(
     if not uncover_data:
         return 0
 
+    from recon.helpers.recon_scope import recon_scope
+    scope = recon_scope(combined_result)
+    if scope.exact:
+        # An EXACT group scans its listed hosts: search-engine names and
+        # addresses never join it, and update_graph_from_uncover must not
+        # write them as the group's either. A URL on a listed host stays.
+        dropped = len(uncover_data.get("hosts") or []) + len(uncover_data.get("ips") or [])
+        uncover_data["hosts"], uncover_data["ips"], uncover_data["ip_ports"] = [], [], {}
+        uncover_data["urls"] = [u for u in uncover_data.get("urls") or []
+                                if scope.admits(_extract_hostname_from_url(u))]
+        if dropped:
+            print(f"[*][Uncover] Listed hosts only (exact scope): {dropped} discovered name(s)/IP(s) not merged")
+        return 0
+
     dns = combined_result.setdefault("dns", {})
     subdomains = dns.setdefault("subdomains", {})
     merged = 0
@@ -570,8 +600,13 @@ def merge_uncover_into_pipeline(
         if ip not in existing_ips:
             new_ip_count += 1
 
-    # Store the uncover IP data for OSINT enrichment modules to consume
-    if uncover_data.get("ips"):
+    # Store the uncover IP data for OSINT enrichment modules to consume. They
+    # feed js_recon's probe scope and the graph's host scope, so only a group
+    # whose scan root is its org takes the org-wide addresses (§4.9).
+    if uncover_data.get("ips") and not _owns_its_org(combined_result):
+        print(f"[*][Uncover] {len(uncover_data['ips'])} IP(s) not added as targets: "
+              f"this group's scan root is below its registrable domain")
+    elif uncover_data.get("ips"):
         expanded = combined_result.get("metadata", {}).get("expanded_ips", [])
         if isinstance(expanded, list):
             existing_expanded = set(expanded)

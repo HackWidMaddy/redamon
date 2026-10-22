@@ -60,10 +60,9 @@ group into one row per node.
 
 ### Infrastructure Nodes (Hierarchy: Domain -> Subdomain -> IP -> Port -> Service)
 
-**Domain** - Root domain being assessed
+**Domain** - The organisation (registrable) domain the project's scan roots belong to: one node per org, e.g. `example.com` for the scan roots `example.com` and `api.example.com`. It is not a scope statement: what was scanned is the project's scope groups (a deeper scan root that is a target is a `Subdomain {is_scan_root: true}` of its org). IP mode has one mock Domain, `ip-targets.<project id>`
 - name (string): "example.com"
-- openapi_source_status (list[string]): One `<source id>|<url hash>|<code>|<time>` entry per configured API specification document, from the last run that fetched it. Codes: `ok`, `out_of_scope`, `blocked_address`, `http_<status>`, `invalid_document`, `unsupported_version`, `transport_error`, `host_down`, `limit_reached`. Holds no URL
-- wildcard_mode (boolean): this domain was ENUMERATED (the operator wrote `*.domain.com` in a Domain batch, or it is a single-domain full-discovery run), rather than scanned as the exact host list that was supplied
+- openapi_source_status (list[string]): One `<scan root>|<source id>|<url hash>|<code>|<time>` entry per configured API specification document and scan root, from the last run that fetched it (entries from before scan roots have four segments, without the scan root). Codes: `ok`, `out_of_scope`, `blocked_address`, `http_<status>`, `invalid_document`, `unsupported_version`, `transport_error`, `host_down`, `limit_reached`. Holds no URL
 - registrar: WHOIS data
 - creation_date: WHOIS data
 - expiration_date: WHOIS data
@@ -98,21 +97,20 @@ group into one row per node.
 - criminalip_abuse_count (int): number of abuse reports for this domain from Criminal IP
 - criminalip_current_service (string): current service classification from Criminal IP
 - recon_coverage_at (datetime): when this run stamped its coverage record; present on every Domain a full recon run completed, absent when the run crashed, the graph write failed, or an older recon wrote the node
-- recon_coverage_gaps (string): JSON array of what this run could NOT check, one object per cut source (`source`, `module`, `reason`, `skipped`, `hosts`); "[]" on a clean run
+- recon_coverage_gaps (string): JSON array of what this run could NOT check, one object per cut source (`source`, `module`, `reason`, `skipped`, `hosts`, and `root`: the scan root whose group cut it); "[]" on a clean run
+- recon_coverage_roots (list[string]): the scan roots whose groups stamped this coverage record in its run (several scan roots share one org Domain)
+- recon_coverage_run (string): the start of the full recon run that wrote the coverage record; the groups of one run merge into it, a new run replaces it
 - recon_skipped_hosts (list[string]): host:port targets this run skipped as unreachable (first 500, sorted); their findings were kept, not re-checked
 - recon_nuclei_truncated (boolean): a Nuclei pass hit NUCLEI_MAX_RUNTIME and was stopped; its partial findings were kept
 
 Additional properties present on this node type, not yet described:
 - admin_name (string)
 - admin_org (string)
-- anonymous_mode (boolean)
 - apex_domain_age_days (integer)
-- bruteforce_mode (boolean)
 - dnssec (string)
 - domain_age_days (integer)
 - domain_name (string)
 - expanded_ips (list[string])
-- filtered_mode (boolean)
 - http_probe_live_urls (float)
 - http_probe_technology_count (float)
 - http_probe_timestamp (string)
@@ -132,7 +130,6 @@ Additional properties present on this node type, not yet described:
 - resource_enum_total_forms (float)
 - resource_enum_total_parameters (float)
 - scan_type (string)
-- subdomain_filter (list[string])
 - target_ips (list[string])
 - tech_name (string)
 - tech_org (string)
@@ -156,6 +153,7 @@ Additional properties present on this node type, not yet described:
 - gvm_total_vulnerabilities
 **Subdomain** - Discovered subdomains
 - name (string): "api.example.com", "www.example.com"
+- is_scan_root (boolean): true on a scan root below its org Domain that is itself a target (the operator listed `api.example.com`, or `*.api.example.com` with Include Root); absent otherwise
 - has_dns_records (boolean): a CACHED FLAG from the resolver, which can be true while no DNSRecord node was ever written. Prefer the relationship - `(s)-[:HAS_DNS_RECORD]->(:DNSRecord)` - whenever the question is about the records themselves; the flag answers "did resolution succeed", the traversal answers "what do we hold", and they do not always agree
 - status (string): "resolved" (DNS only, not yet probed), "no_http" (no HTTP response), or HTTP status code as string ("200", "301", "403", "404", "500", etc.)
 - status_codes (list[int]): all unique HTTP status codes seen e.g. [200, 301, 404]
@@ -1149,7 +1147,7 @@ Additional properties present on this node type, not yet described:
 - file_name (string): original file name if available
 - source (string): discovery tool ("otx", "virustotal")
 - first_seen (datetime): when first associated with this indicator
-**ExternalDomain** - Foreign domains encountered during recon (out-of-scope, informational only)
+**ExternalDomain** - Hosts encountered during recon that are under none of the project's scan roots (informational only; it may share an org with a scan root, e.g. `mail.example.com` when only `*.api.example.com` is in scope)
 - domain (string): foreign domain name
 - sources (string[]): discovery sources (http_probe_redirect, urlscan, gau, katana, hakrawler, zap_ajax_spider, jsluice, cert_discovery, otx_passive_dns)
 - redirect_from_urls (string[]): in-scope URLs that redirected to this domain
@@ -1251,7 +1249,7 @@ not so you can query for one.
 - `(ui:UserInput)-[:PRODUCED]->(e:Endpoint)` - Endpoint declared by an API specification document the operator gave a partial OpenAPI run
 - `(d:Domain)-[:HAS_EXTERNAL_DOMAIN]->(ed:ExternalDomain)` - Domain encountered foreign domain during recon
 - `(s:Subdomain)-[:BELONGS_TO]->(d:Domain)` - Subdomain belongs to Domain
-- `(d:Domain)-[:HAS_IP]->(i:IP)` - Domain resolves DIRECTLY to this IP (apex A record, OSINT enrichment). Distinct from the Subdomain->IP path: a query that only walks HAS_SUBDOMAIN misses the apex
+- `(d:Domain)-[:HAS_IP]->(i:IP)` - An address uncover's org-wide search tied to this org Domain, with no hostname to hang it on. NOT the apex's A record: the apex's own addresses are on `Subdomain {name: d.name}` via RESOLVES_TO, when the apex is a target
 - `(d:Domain)-[:HAS_SUBDOMAIN]->(s:Subdomain)` - Domain has subdomain. The INVERSE of BELONGS_TO; both directions are written, so traverse whichever reads better and never assume only one exists
 - `(ed:ExternalDomain)-[:DISCOVERED_BY]->(d:Domain)` - A foreign domain encountered during this domain's recon. Points BACK at the domain that found it, so an ExternalDomain is attributable rather than orphaned
 - `(s:Subdomain)-[:RESOLVES_TO {record_type, timestamp, last_seen_at, first_seen, last_seen, discovered_via}]->(i:IP)` - Subdomain resolves to IP (DNS). Exactly ONE edge per Subdomain->IP pair, whichever tool found it; its properties describe the resolution and may be absent. record_type is A or AAAA; OTX passive_dns adds first_seen/last_seen (earliest/latest passive-DNS sighting); discovered_via = 'vhost_sni_enum' marks an edge a vhost/SNI probe created before that was stopped; the probe no longer writes this edge at all, and re-probing a pair removes a leftover one that no DNS writer ever corroborated

@@ -176,7 +176,6 @@ RUN mkdir -p /opt/redamon/wordlists && \
         -o /opt/redamon/wordlists/jhaddix-all.txt
 
 # Copy the application code
-# Copy recon module (includes recon/params.py)
 COPY recon/ /app/recon/
 
 # Copy graph_db module (for Neo4j integration)
@@ -198,7 +197,6 @@ RUN chmod +x /app/entrypoint.sh
 VOLUME ["/var/run/docker.sock", "/data"]
 
 # Set default environment variables (can be overridden)
-ENV TARGET_DOMAIN=""
 ENV SUBDOMAIN_LIST=""
 ENV SCAN_MODULES="domain_discovery,port_scan,http_probe,resource_enum,vuln_scan"
 ENV USE_BRUTEFORCE_FOR_SUBDOMAINS="false"

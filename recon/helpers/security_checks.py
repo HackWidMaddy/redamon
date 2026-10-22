@@ -3061,7 +3061,13 @@ _SYNTHETIC_IP_ROOT = re.compile(r"^ip-targets\.(?=[a-z0-9]*[0-9])[a-z0-9]+$")
 
 
 def _dns_check_domains(recon_data: Dict[str, Any]) -> List[str]:
-    """The roots whose mail and zone records to check: recon_data["domains"], else "domain".
+    """The names whose mail and zone records to check: each root's registrable
+    domain (org), from recon_data["domains"], else "domain".
+
+    SPF, DMARC and DNSSEC are properties of the org (§4.9): checking a deeper
+    scan root reports records "missing" that the org holds. The org comes
+    from the root's group (metadata.org_domain, or the run's scope_groups); a
+    file written before scope groups keeps checking the root itself.
 
     An IP-mode scan has no domain: its root is a name in no DNS zone, so every
     record would read as "missing" and SPF/DMARC/DNSSEC would report findings
@@ -3072,12 +3078,36 @@ def _dns_check_domains(recon_data: Dict[str, Any]) -> List[str]:
     roots = recon_data.get("domains")
     if not isinstance(roots, list) or not roots:
         roots = [recon_data.get("domain", "")]
+    orgs = {str(g.get("scan_root") or "").lower(): str(g.get("org_domain") or "").lower()
+            for g in recon_data.get("scope_groups") or [] if isinstance(g, dict)}
+    own_org = str((recon_data.get("metadata") or {}).get("org_domain") or "").lower()
+    own_root = str(recon_data.get("domain") or "").lower()
     seen = []
     for root in roots:
-        if (isinstance(root, str) and root.strip() and root not in seen
-                and not _SYNTHETIC_IP_ROOT.match(root.strip().lower())):
-            seen.append(root)
+        if not (isinstance(root, str) and root.strip()) or _SYNTHETIC_IP_ROOT.match(root.strip().lower()):
+            continue
+        name = orgs.get(root.strip().lower()) or (own_org if root.strip().lower() == own_root else "") or root
+        if name not in seen:
+            seen.append(name)
     return seen
+
+
+def _dns_check_claims(names: List[str], roe_excluded_hosts) -> List[str]:
+    """The orgs this call checks: each org once per run (§4.9). The first group
+    of an org to reach the checks runs them; its later groups find the org
+    claimed. An org the RoE excludes is never checked."""
+    from recon.helpers.org_work import claim_org
+    from recon.helpers.roe_scope import _is_roe_excluded
+    out = []
+    for name in names:
+        if roe_excluded_hosts and _is_roe_excluded(name, roe_excluded_hosts):
+            print(f"[-][SecurityCheck] DNS checks skipped for {name}: RoE excluded")
+            continue
+        if claim_org("dns_checks", name.lower()):
+            out.append(name)
+        else:
+            print(f"[-][SecurityCheck] DNS checks for {name} already ran this run")
+    return out
 
 
 def run_security_checks(
@@ -3143,9 +3173,11 @@ def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, m
 
     dns_data = recon_data.get("dns", {})
 
-    # From root domain
+    # From root domain, only when it is a target: a `*`-only group must never
+    # TLS/header-check its apex, nor its addresses (a legacy file keeps it).
+    from recon.helpers.recon_scope import recon_scope
     domain = recon_data.get("domain", "") or recon_data.get("metadata", {}).get("target", "")
-    domain_dns = dns_data.get("domain", {})
+    domain_dns = dns_data.get("domain", {}) if recon_scope(recon_data).include_root else {}
     if domain_dns:
         domain_ips = domain_dns.get("ips", {})
         ipv4_list = domain_ips.get("ipv4", [])
@@ -3302,7 +3334,7 @@ def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, m
     # Run DNS Security checks, once per root: a Domain batch run covers several,
     # each with its own mail and zone records.
     if enabled_dns > 0:
-        for domain in _dns_check_domains(recon_data):
+        for domain in _dns_check_claims(_dns_check_domains(recon_data), roe_excluded_hosts):
             print(f"[*][SecurityCheck] Running DNS Security checks on {domain}...")
             dns_findings = run_dns_checks(
                 domain=domain,

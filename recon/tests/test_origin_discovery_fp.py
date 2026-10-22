@@ -113,9 +113,7 @@ class TestPartialCdnLabel(unittest.TestCase):
         client.driver.session.return_value = session
         fake_graph_db = MagicMock(Neo4jClient=MagicMock(return_value=client))
         by_url = {}
-        with patch.dict(sys.modules, {"graph_db": fake_graph_db}), \
-             patch.object(oe, "_root_scope", return_value=(["example.com"], None)), \
-             patch.object(oe, "_host_allowed", return_value=True):
+        with patch.dict(sys.modules, {"graph_db": fake_graph_db}):
             oe._inject_graph_fronted_hosts(by_url, ["example.com"], "u1", "p1")
         self.assertEqual(by_url["https://www.example.com"]["cdn"], "cloudflare")
 

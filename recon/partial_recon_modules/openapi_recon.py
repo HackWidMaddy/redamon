@@ -69,7 +69,8 @@ def run_openapi_partial(config: dict):
     from recon.helpers.openapi.fetch import public_url
     from recon.helpers.resource_enum import build_openapi_inventory, merge_openapi_into_by_base_url
     from recon.partial_recon_modules.helpers import (
-        _is_valid_url, _should_include_root_domain, host_in_roots, partial_settings, run_per_root, scope_roots,
+        _is_valid_url, _should_include_root_domain, partial_settings, run_per_root,
+        scope_roots, typed_host_ok,
     )
     from recon.partial_recon_modules.graph_builders import _build_http_probe_data_from_graph
 
@@ -96,7 +97,7 @@ def run_openapi_partial(config: dict):
         if not entry:
             continue
         host = urlparse(entry).hostname or ""
-        if _is_valid_url(entry) and (ip_mode or host_in_roots(host, roots)):
+        if _is_valid_url(entry) and (ip_mode or typed_host_ok(host, roots, config.get("domain_groups"))):
             custom_urls.append(entry)
         else:
             # The URL may carry a token in its query: log its location only.
@@ -177,6 +178,7 @@ def run_openapi_partial(config: dict):
 def _link_user_input(client, roots, user_id, project_id, custom_urls, keys, stats):
     """UserInput -[:PRODUCED]-> Endpoint for what the operator's documents declared (D13)."""
     from recon.helpers.openapi.fetch import public_url
+    from recon.partial_recon_modules.helpers import root_orgs
 
     user_input_id = str(uuid.uuid4())
     client.create_user_input_node(
@@ -185,6 +187,7 @@ def _link_user_input(client, roots, user_id, project_id, custom_urls, keys, stat
         user_input_data={"id": user_input_id, "input_type": "urls",
                          "values": [public_url(u) for u in custom_urls], "tool_id": "OpenAPI"},
         user_id=user_id, project_id=project_id,
+        root_orgs=root_orgs(roots),
     )
     rows = [{"baseurl": b, "path": p, "method": m} for b, p, m in sorted(keys)]
     with client.driver.session() as session:

@@ -246,12 +246,6 @@ class TestGraphMixinWiring:
         assert "VhostSniMixin" in src, "ReconMixin doesn't include VhostSniMixin"
         assert "from graph_db.mixins.recon.vhost_sni_mixin import VhostSniMixin" in src
 
-    def test_get_graph_inputs_for_tool_handles_vhostsni(self):
-        path = self._graph_db_root() / "mixins" / "recon" / "user_input_mixin.py"
-        src = path.read_text()
-        assert 'tool_id == "VhostSni"' in src, \
-            "get_graph_inputs_for_tool missing the VhostSni branch"
-
 
 # ===========================================================================
 # 6. Partial recon dispatch

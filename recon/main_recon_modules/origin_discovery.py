@@ -261,6 +261,19 @@ class _RunCtx:
         return None
 
 
+def _run_ctx(settings: dict) -> _RunCtx:
+    """The run's one context: a Domain batch's groups share its per-key cache
+    and its search budget (a key every group of an org shares is asked once).
+    Held in a circuit_breaker run cache, so reset_registry() drops it."""
+    from recon.helpers import circuit_breaker
+    cache = circuit_breaker.run_cache("origin_discovery_ctx")
+    hit, ctx = cache.get("ctx")
+    if not hit:
+        ctx = _RunCtx(settings)
+        cache.put("ctx", ctx)
+    return ctx
+
+
 # ---------------------------------------------------------------------------
 # Favicon mmh3 (unwaf favicon.go computeMMH3) — matches httpx favicon_hash
 # ---------------------------------------------------------------------------
@@ -1103,12 +1116,19 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optio
 # Per-host orchestration
 # ---------------------------------------------------------------------------
 
-def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict) -> Dict[str, str]:
-    """Run every enabled source for one host; map ip -> first source. Never raises."""
-    # The domain-keyed sources (SPF, crt.sh, passive DNS) query the org. An IP
-    # literal or a name on a public suffix has none, so only the host-keyed
-    # scanners run for it.
-    domain = org_domain(host)
+_KEY_FROM_HOST = object()
+
+
+def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict,
+                       key=_KEY_FROM_HOST) -> Dict[str, str]:
+    """Run every enabled source for one host; map ip -> first source. Never raises.
+
+    ``key`` is the name the domain-keyed sources (SPF/MX, crt.sh, the
+    ``<word>.<key>`` wordlist, passive DNS) query: from ``_candidate_key_rule``,
+    else the host's registrable domain. An IP literal, a name on a public
+    suffix, or a None key gets none of them, so only the host-keyed scanners run.
+    """
+    domain = org_domain(host) if key is _KEY_FROM_HOST else key
     favicon = _favicon_hash_for_host(host, entry.get("favicon_hash"), ctx)
     if favicon is not None:
         entry["favicon_hash"] = favicon
@@ -1160,9 +1180,36 @@ _METHOD_LABEL = {
 }
 
 
-def _process_host(host: str, entry: dict, ctx: _RunCtx) -> Tuple[List[dict], dict]:
+def _candidate_key_rule(combined_result: dict):
+    """host -> the candidate key (§4.9, REC-30).
+
+    The org when the org is in scope (a group has it as its scan root, or
+    ownership was proven at <prefix>.<org>), else the group's own scan root:
+    the active probes then never reach an org-derived candidate the operator
+    did not put in scope. A file without scope groups (a legacy file, partial
+    recon, IP mode) keeps the host's registrable domain.
+    """
+    from recon.helpers.org_work import org_in_scope
+    metadata = combined_result.get("metadata") or {}
+    groups = combined_result.get("scope_groups") or []
+    scan_root = str(metadata.get("root_domain") or combined_result.get("domain") or "").lower()
+    org = str(metadata.get("org_domain") or "").lower()
+    if not groups or not org or not scan_root or metadata.get("ip_mode"):
+        return org_domain
+    if org == scan_root or org_in_scope(org, groups):
+        return lambda host: org if org_domain(host) else None
+    _log("*", f"candidate key: {scan_root} (org not in scope)")
+
+    def _scan_root_key(host):
+        h = str(host or "").lower()
+        under = h == scan_root or h.endswith("." + scan_root)
+        return scan_root if under and org_domain(h) else None
+    return _scan_root_key
+
+
+def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST) -> Tuple[List[dict], dict]:
     meta: dict = {"candidates": [], "methods": [], "errors": {}}
-    candidates = _gather_candidates(host, entry, ctx, meta)
+    candidates = _gather_candidates(host, entry, ctx, meta, key=key)
     kept = _dedup_and_filter(candidates, entry, ctx, meta)
     meta["candidates"] = [ip for ip, _ in kept]
     if not kept:
@@ -1227,7 +1274,8 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
     if not settings.get("ORIGIN_DISCOVERY_ENABLED", False):
         return combined_result
 
-    ctx = _RunCtx(settings)
+    ctx = _run_ctx(settings)
+    key_for = _candidate_key_rule(combined_result)
     fronted = _select_fronted_hosts(combined_result, ctx)
     if not fronted:
         _log("-", "no CDN-fronted hosts in http_probe — nothing to unmask")
@@ -1241,7 +1289,7 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
     all_confirmed: List[dict] = []
     for host, entry in fronted.items():
         try:
-            confirmed, meta = _process_host(host, entry, ctx)
+            confirmed, meta = _process_host(host, entry, ctx, key=key_for(host))
         except Exception as e:  # a host never sinks the whole module
             payload["candidates_meta"][host] = {"errors": {"fatal": str(e)[:200]}}
             _log("!", f"{host}: {e}")

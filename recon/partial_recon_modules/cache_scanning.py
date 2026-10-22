@@ -15,6 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.graph_builders import _build_graphql_data_from_graph
 from recon.partial_recon_modules.helpers import (
+    root_orgs,
     _should_include_root_domain,
     include_root_for,
     partial_settings,
@@ -167,6 +168,7 @@ def _link_user_urls(graph_client, user_urls, url_attach_to, roots, user_id, proj
             },
             user_id=user_id,
             project_id=project_id,
+            root_orgs=root_orgs(roots),
         )
         print(f"[*][Partial Recon][CachePoison] Created UserInput node {user_input_id} for {len(user_urls)} URL(s)")
     except Exception as e:

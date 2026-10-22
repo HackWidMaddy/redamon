@@ -8,6 +8,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.helpers import (
+    attach_org,
     STATUS_NO_RESULTS,
     STATUS_OK,
     STATUS_RATE_LIMITED,
@@ -204,7 +205,7 @@ def run_shodan(config: dict) -> dict:
                                 ui_id = user_input_id or str(uuid.uuid4())
                                 session.run(
                                     """
-                                    MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                                    MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE toLower(d.name) = toLower($domain)
                                     MERGE (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     ON CREATE SET ui.type = 'ip',
                                                   ui.values = $ips,
@@ -213,7 +214,7 @@ def run_shodan(config: dict) -> dict:
                                     SET ui.updated_at = datetime()
                                     MERGE (d)-[:HAS_USER_INPUT]->(ui)
                                     """,
-                                    domain=domain, uid=user_id, pid=project_id,
+                                    domain=attach_org(domain), uid=user_id, pid=project_id,
                                     ui_id=ui_id, ips=user_ips,
                                 )
                                 for ip_str in user_ips:
@@ -610,7 +611,7 @@ def run_osint_enrichment(config: dict) -> dict:
                                 user_input_id = str(uuid.uuid4())
                                 sess.run(
                                     """
-                                    MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                                    MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE toLower(d.name) = toLower($domain)
                                     MERGE (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     ON CREATE SET ui.source = 'OsintEnrichment',
                                                   ui.created_at = datetime(),
@@ -618,7 +619,7 @@ def run_osint_enrichment(config: dict) -> dict:
                                     SET ui.updated_at = datetime()
                                     MERGE (d)-[:HAS_USER_INPUT]->(ui)
                                     """,
-                                    domain=domain, uid=user_id, pid=project_id, ui_id=user_input_id,
+                                    domain=attach_org(domain), uid=user_id, pid=project_id, ui_id=user_input_id,
                                 )
                                 # Link each IP to UserInput
                                 for raw_ip in user_ips:

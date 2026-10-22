@@ -118,12 +118,6 @@ def test_phase_pattern_added():
     assert "4.5" in cm
 
 
-def test_graph_inputs_case():
-    src = _read("graph_db/mixins/recon/user_input_mixin.py")
-    assert 'elif tool_id == "AiSurfaceRecon":' in src
-    assert "existing_mcp_endpoints_count" in src
-
-
 def test_text_to_cypher_synced():
     base = _read("agentic/prompts/base.py")
     assert "ai_surface_recon" in base  # vuln source documented

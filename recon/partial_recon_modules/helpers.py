@@ -72,6 +72,16 @@ def host_in_roots(host: str, roots: list) -> bool:
     return root_for_host(host, roots) is not None
 
 
+def typed_host_ok(host: str, roots: list, groups) -> bool:
+    """A host the operator typed: the §4.6 partial rule when the run has scope
+    groups (an EXACT group's list, strictly under an ENUMERATE root, a root only
+    with Include Root), else under any root as before. The run's start already
+    applied it (filter_partial_user_input); this keeps a module honest on its own."""
+    if groups and all(isinstance(g, dict) and "mode" in g for g in groups):
+        return admits_partial_host(groups, host)
+    return host_in_roots(host, roots)
+
+
 def _group_for(root: str, groups: list):
     r = _norm_host(root)
     for group in groups or []:
@@ -117,6 +127,65 @@ def allowed_hosts_for(root: str, groups: list):
     if info["wildcard_mode"]:
         return None
     return {_norm_host(h) for h in info["full_subdomains"]}
+
+
+# Every scan root of the project, set once by partial_recon._prepare_scope from
+# the container's settings. A graph host belongs to the LONGEST scan root it
+# sits under across the whole project, not only the roots this run covers.
+_PROJECT_SCAN_ROOTS: list = []
+
+
+_ROOT_ORGS: dict = {}
+
+
+def scope_groups_payload(groups) -> list:
+    """Scope groups in the recon-file shape (snake_case) the graph writers read."""
+    out = []
+    for g in groups or []:
+        if isinstance(g, dict) and "scanRoot" in g:
+            out.append({"scan_root": g["scanRoot"], "org_domain": g.get("orgDomain") or g["scanRoot"],
+                        "mode": g["mode"], "include_root": bool(g.get("includeRoot")),
+                        "exact_hosts": list(g.get("exactHosts") or [])})
+    return out
+
+
+def set_project_scope(groups) -> None:
+    """Record the project's scan roots and each one's org, from the container's
+    settings (partial_recon._prepare_scope), for the builders and the writers.
+
+    The writers get the groups too, as the run's default for a recon dict that
+    carries none: a partial run builds its dicts in many places, and a writer
+    without the groups would attach a deeper scan root's hosts to a Domain
+    named after the root, which the org model never creates.
+    """
+    global _PROJECT_SCAN_ROOTS, _ROOT_ORGS
+    _PROJECT_SCAN_ROOTS, _ROOT_ORGS = [], {}
+    from graph_db.mixins.recon.scope import set_run_scope_groups
+    set_run_scope_groups(scope_groups_payload(groups))
+    for g in groups or []:
+        root = _norm_host(g.get("scanRoot")) if isinstance(g, dict) else ""
+        if root:
+            _PROJECT_SCAN_ROOTS.append(root)
+            _ROOT_ORGS[root] = _norm_host(g.get("orgDomain")) or root
+
+
+def project_scan_roots() -> list:
+    return list(_PROJECT_SCAN_ROOTS)
+
+
+def root_orgs(roots) -> dict:
+    """{scan root: org} for create_user_input_node, which attaches a UserInput
+    to the org of the root its first host sits under."""
+    return {r: attach_org(r) for r in roots or [] if r}
+
+
+def attach_org(root):
+    """The Domain a scan root's hosts attach to: its org (the graph names a
+    Domain after the org). The root itself when no group names it (IP mode,
+    a test); None stays None, so a host under no root attaches nowhere."""
+    if not root:
+        return root
+    return _ROOT_ORGS.get(_norm_host(root), root)
 
 
 def org_for_root(root: str, groups: list) -> str:

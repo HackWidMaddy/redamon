@@ -13,6 +13,7 @@ that did finish, instead of whatever the last completed group happened to write.
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -71,15 +72,19 @@ def batch_output_files(output_dir: Path, project_id: str) -> list[Path]:
     )
 
 
-def clear_batch_outputs(output_dir: Path, project_id: str) -> int:
-    """Drop the previous run's per-group files.
+def clear_batch_outputs(output_dir: Path, project_id: str, keep_roots=None) -> int:
+    """Drop the previous run's per-group files, except those of `keep_roots`.
 
     Without this a shrunk host list would resurrect a group the operator removed:
     the merge globs whatever is on disk, so a stale file keeps reappearing in the
-    canonical output run after run.
+    canonical output run after run. A run that skips discovery reads each
+    group's previous file as its input, so it keeps the current roots' files.
     """
+    keep = {recon_output_file(output_dir, project_id, r).name for r in keep_roots or ()}
     removed = 0
     for path in batch_output_files(output_dir, project_id):
+        if path.name in keep:
+            continue
         try:
             path.unlink()
             removed += 1
@@ -132,6 +137,13 @@ def _relocate_group_root(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# Identical in every group's file (recon/main.py _stamp_project_roots).
+_PROJECT_WIDE_KEYS = ('scope_groups', 'all_project_roots')
+# One group's scope; dropped from the merged batch metadata.
+_PER_GROUP_METADATA = ('include_root_domain', 'scope_mode', 'org_domain',
+                       'filtered_mode', 'wildcard_mode', 'subdomain_filter')
+
+
 def _merge_group_into(merged: dict[str, Any], group: dict[str, Any]) -> None:
     """Fold one group's result into the accumulating canonical structure.
 
@@ -171,6 +183,8 @@ def merge_batch_outputs(output_dir: Path, project_id: str) -> Optional[Path]:
 
     merged: dict[str, Any] = {}
     groups_covered: list[str] = []
+    org_domains: list[str] = []
+    project_wide: dict[str, Any] = {}
 
     for path in files:
         try:
@@ -183,6 +197,13 @@ def merge_batch_outputs(output_dir: Path, project_id: str) -> Optional[Path]:
             continue
         root = (data.get('metadata') or {}).get('root_domain') or path.stem
         groups_covered.append(str(root))
+        org = (data.get('metadata') or {}).get('org_domain')
+        if isinstance(org, str) and org and org not in org_domains:
+            org_domains.append(org)
+        for key in _PROJECT_WIDE_KEYS:
+            if key in data and key not in project_wide:
+                # A copy: the merge below extends the first group's lists in place.
+                project_wide[key] = copy.deepcopy(data[key])
         _merge_group_into(merged, _relocate_group_root(data))
 
     if not merged:
@@ -200,6 +221,17 @@ def merge_batch_outputs(output_dir: Path, project_id: str) -> Optional[Path]:
     # root, so the field is emptied and every root lives in dns.subdomains
     # instead; the batch's scope is in domain_batch_groups.
     metadata['root_domain'] = ''
+    # One group's scope means nothing for the whole batch (first-group-wins or
+    # concatenated); the batch's scope is scope_groups.
+    for key in _PER_GROUP_METADATA:
+        metadata.pop(key, None)
+    # Project-wide lists are the same in every group's file; the merge would
+    # concatenate them, so they are assigned.
+    merged.update(project_wide)
+    if org_domains:
+        metadata['org_domains'] = org_domains
+    if 'scope_groups' in project_wide:
+        metadata['scope_groups'] = project_wide['scope_groups']
 
     canonical = canonical_output_file(output_dir, project_id)
     try:

@@ -716,6 +716,14 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     ARJUN_CUSTOM_HEADERS = _merge_auth(ARJUN_CUSTOM_HEADERS, settings, _auth_hosts)
     KITERUNNER_HEADERS = _merge_auth(KITERUNNER_HEADERS, settings, _auth_hosts)
 
+    # An EXACT group scans its listed hosts: Hakrawler must not follow links
+    # into sibling subdomains, and ParamSpider keeps only the exact hosts.
+    from recon.helpers.recon_scope import recon_scope
+    _exact_group = recon_scope(recon_data).exact
+    if _exact_group and HAKRAWLER_INCLUDE_SUBS:
+        HAKRAWLER_INCLUDE_SUBS = False
+        print("[*][Hakrawler] Listed hosts only (exact scope): subdomain crawling off")
+
     print(f"\n[*][ResourceEnum] Target URLs: {len(target_urls)}")
     print(f"[*][ResourceEnum] Target domains (for GAU): {len(target_domains)}")
     # Katana settings
@@ -858,7 +866,12 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
         archives = [p for p in GAU_PROVIDERS if p in _ARCHIVE_PROBES] if GAU_ENABLED else []
         if PARAMSPIDER_ENABLED and "wayback" not in archives:
             archives.append("wayback")
-        _archive_preflight(recon_data.get("domain") or sorted(target_domains)[0], archives)
+        # IP mode's root is a synthetic name holding the project id: never
+        # send it to a public archive; probe with a real target host instead.
+        _probe_domain = recon_data.get("domain") or ""
+        if _probe_domain.startswith("ip-targets.") or (recon_data.get("metadata") or {}).get("ip_mode"):
+            _probe_domain = ""
+        _archive_preflight(_probe_domain or sorted(target_domains)[0], archives)
         if GAU_ENABLED:
             paused = [p for p in GAU_PROVIDERS if _gau_provider_paused(p)]
             if paused:
@@ -1464,6 +1477,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
             paramspider_urls,
             organized_data['by_base_url'],
             target_domains,
+            exact=_exact_group,
         )
 
         print(f"[+][ParamSpider] Total URLs: {paramspider_stats['paramspider_total']}")

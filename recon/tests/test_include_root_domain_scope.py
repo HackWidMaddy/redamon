@@ -70,8 +70,18 @@ class TestExtractTargetsHonorsMetadata(unittest.TestCase):
         ips, hostnames, _ = extract_targets_from_recon(self._recon(include_root=False))
         self.assertNotIn("example.com", hostnames)
         self.assertIn("www.example.com", hostnames)
-        # Apex IPs still flow through (user-explicit IPs aren't filtered)
-        self.assertIn("1.2.3.4", ips)
+        # The apex's addresses go with the apex: with the root out of scope
+        # they are no target either (REC-09; they used to flow through).
+        self.assertNotIn("1.2.3.4", ips)
+        self.assertIn("1.2.3.5", ips)
+
+    def test_a_current_file_without_the_flag_excludes_the_apex(self):
+        # Only a legacy file (no scope_mode) defaults the flag to True.
+        recon = self._recon(include_root=True)
+        recon["metadata"] = {"scope_mode": "enumerate"}
+        ips, hostnames, _ = extract_targets_from_recon(recon)
+        self.assertNotIn("example.com", hostnames)
+        self.assertNotIn("1.2.3.4", ips)
 
     def test_apex_included_when_metadata_true(self):
         ips, hostnames, _ = extract_targets_from_recon(self._recon(include_root=True))

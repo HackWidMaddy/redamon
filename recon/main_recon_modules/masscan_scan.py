@@ -67,10 +67,11 @@ def resolve_targets_to_ips(recon_data: dict) -> Tuple[List[str], Dict[str, List[
 
     dns_data = recon_data.get("dns", {})
 
-    # Root domain
+    # Root domain, only when it is a target (a legacy file keeps it)
+    from recon.helpers.recon_scope import recon_scope
     domain_dns = dns_data.get("domain", {})
     domain_name = recon_data.get("domain", "")
-    if domain_name:
+    if domain_name and recon_scope(recon_data).include_root:
         for ip in domain_dns.get("ips", {}).get("ipv4", []) + domain_dns.get("ips", {}).get("ipv6", []):
             unique_ips.add(ip)
             ip_to_hostnames.setdefault(ip, [])

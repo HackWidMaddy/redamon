@@ -8,6 +8,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.helpers import (
+    typed_host_ok,
+    root_orgs,
+    attach_org,
     _classify_ip,
     _is_ip_or_cidr,
     _is_valid_hostname,
@@ -67,7 +70,7 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
         # New structured format: {subdomains: [...], ips: [...], ip_attach_to: "..." | null}
         for entry in user_targets.get("subdomains", []):
             entry = entry.strip().lower()
-            if entry and _is_valid_hostname(entry) and host_in_roots(entry, roots):
+            if entry and _is_valid_hostname(entry) and typed_host_ok(entry, roots, config.get("domain_groups")):
                 user_hostnames.append(entry)
             elif entry and _is_valid_hostname(entry):
                 print(f"[!][Partial Recon] Skipping subdomain outside the project's domains: {entry}")
@@ -91,7 +94,7 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
                 continue
             if _is_ip_or_cidr(entry):
                 user_ips.append(entry)
-            elif _is_valid_hostname(entry) and host_in_roots(entry, roots):
+            elif _is_valid_hostname(entry) and typed_host_ok(entry, roots, config.get("domain_groups")):
                 user_hostnames.append(entry)
             else:
                 print(f"[!][Partial Recon] Skipping invalid or out-of-scope target: {entry}")
@@ -173,12 +176,12 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
                                 # hostname's own root.
                                 session.run(
                                     """
-                                    MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                                    MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE toLower(d.name) = toLower($domain)
                                     MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                                     MERGE (s)-[:BELONGS_TO]->(d)
                                     MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                     """,
-                                    domain=root_for_host(hostname, roots), sub=hostname,
+                                    domain=attach_org(root_for_host(hostname, roots)), sub=hostname,
                                     uid=user_id, pid=project_id,
                                 )
                                 # MERGE IP nodes + RESOLVES_TO relationships
@@ -339,6 +342,7 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             for ip_addr in user_ip_addrs:
                                 session.run(
@@ -734,6 +738,7 @@ def run_nmap(config: dict) -> None:
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             for ip_addr in user_ip_addrs:
                                 session.run(

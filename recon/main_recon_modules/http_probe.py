@@ -731,9 +731,10 @@ def build_targets_from_dns(recon_data: dict, settings: dict = None) -> List[str]
             for port in extra_https_ports:
                 urls.append(f"https://{host}:{port}")
 
-    # Add root domain
+    # Add root domain, only when it is a target (a legacy file keeps it)
+    from recon.helpers.recon_scope import recon_scope
     domain = recon_data.get("domain", "")
-    if domain:
+    if domain and recon_scope(recon_data).include_root:
         domain_dns = dns_data.get("domain", {})
         if domain_dns.get("ips", {}).get("ipv4") or domain_dns.get("ips", {}).get("ipv6"):
             _add_host(domain)
@@ -1015,7 +1016,8 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
 # Result Parsing
 # =============================================================================
 
-def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list = None, settings: dict = None) -> Dict:
+def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list = None, settings: dict = None,
+                       *, exact: bool = False, include_root: bool = True) -> Dict:
     """
     Parse httpx JSON Lines output into structured format.
 
@@ -1030,6 +1032,8 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
                   annotation runs against each captured URL entry (gated by
                   HTTP_PROBE_AI_HEADER_SCAN_ENABLED / FAVICON_HASH_ENABLED /
                   TITLE_DETECTION_ENABLED / WAPPALYZER_ENABLED).
+        exact, include_root: passed to is_host_in_scope (an EXACT group's list
+                  is authoritative even when empty; the root needs Include Root).
 
     Returns:
         Structured dictionary with by_url, by_host, technologies_found, and summary
@@ -1072,10 +1076,12 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
             # In filtered mode: only allow specific hosts from SUBDOMAIN_LIST
             # In full discovery mode: allow any host within root_domain scope
             # Also check the original input URL host (httpx may follow redirects to a different host)
-            if root_domain and not is_host_in_scope(host, root_domain, allowed_hosts):
+            in_scope = lambda h: is_host_in_scope(  # noqa: E731
+                h, root_domain, allowed_hosts, exact=exact, include_root=include_root)
+            if root_domain and not in_scope(host):
                 input_url = entry.get("input", "")
                 input_host = extract_host_from_url(input_url) if input_url else ""
-                if not input_host or not is_host_in_scope(input_host, root_domain, allowed_hosts):
+                if not input_host or not in_scope(input_host):
                     filtered_count += 1
                     # Collect external domain data for situational awareness
                     if host:
@@ -1308,7 +1314,8 @@ def httpx_scope_roots(recon_data: dict):
     return recon_data.get("domain", "") or (recon_data.get("metadata") or {}).get("root_domain", "")
 
 
-def is_host_in_scope(host: str, root_domain, allowed_hosts: list = None) -> bool:
+def is_host_in_scope(host: str, root_domain, allowed_hosts: list = None, *,
+                     exact: bool = False, include_root: bool = True) -> bool:
     """
     Check if a hostname is within the target scope.
     
@@ -1321,7 +1328,11 @@ def is_host_in_scope(host: str, root_domain, allowed_hosts: list = None) -> bool
                      over a Domain batch probes several roots at once.
         allowed_hosts: List of specific allowed hostnames (from SUBDOMAIN_LIST filter).
                       If None or empty, allows any host within root_domain scope.
-        
+        exact: the list is an EXACT group's whole scope, so an empty one allows
+               nothing (rather than falling back to the root's subdomains).
+        include_root: whether a root itself is a target; False keeps only its
+               strict subdomains (§4.6).
+
     Returns:
         True if host is in scope, False otherwise
     """
@@ -1335,8 +1346,8 @@ def is_host_in_scope(host: str, root_domain, allowed_hosts: list = None) -> bool
     # If allowed_hosts is specified (filtered mode), check against that list first.
     # This must come before the root_domain scope check because in IP-mode the
     # root_domain is a fake placeholder that real hostnames will never match.
-    if allowed_hosts:
-        allowed_set = {h.lower().strip() for h in allowed_hosts}
+    if allowed_hosts or exact:
+        allowed_set = {h.lower().strip() for h in allowed_hosts or []}
         return host in allowed_set
 
     # IP addresses bypass domain scope check
@@ -1344,7 +1355,7 @@ def is_host_in_scope(host: str, root_domain, allowed_hosts: list = None) -> bool
         return True
 
     # Check if host is within the root domain scope
-    return any(host == root or host.endswith(f".{root}") for root in roots)
+    return any((host == root and include_root) or host.endswith(f".{root}") for root in roots)
 
 
 def is_ip(value: str) -> bool:
@@ -1955,13 +1966,24 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
         metadata = recon_data.get("metadata", {})
         filtered_mode = metadata.get("filtered_mode", False)
         allowed_hosts = None
-        if filtered_mode:
+        from recon.helpers.recon_scope import recon_scope
+        scope = recon_scope(recon_data)
+        # An EXACT group keeps exactly its list, even an empty one; an
+        # ENUMERATE group keeps its root only with Include Root. IP mode and a
+        # legacy file (no scope_mode) keep the old rule.
+        exact = scope.exact and not scope.ip_mode
+        if exact:
+            allowed_hosts = scope.targets()
+            print(f"[*][httpx] Filtering to the group's hosts: {', '.join(allowed_hosts) or 'none'}")
+        elif filtered_mode:
             # Use the subdomain_filter which contains the full subdomain names
             allowed_hosts = metadata.get("subdomain_filter", [])
             if allowed_hosts:
                 print(f"[*][httpx] Filtering to allowed hosts: {', '.join(allowed_hosts)}")
-        
-        results = parse_httpx_output(str(httpx_output), root_domain=scope_roots, allowed_hosts=allowed_hosts, settings=settings)
+
+        results = parse_httpx_output(str(httpx_output), root_domain=scope_roots, allowed_hosts=allowed_hosts,
+                                     settings=settings, exact=exact,
+                                     include_root=scope.include_root or scope.mode is None)
 
         # Log if any URLs were filtered out
         filtered_count = results.get("summary", {}).get("filtered_out_of_scope", 0)

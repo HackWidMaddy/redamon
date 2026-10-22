@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.graph_builders import _build_graphql_data_from_graph
-from recon.partial_recon_modules.helpers import partial_settings, scope_roots
+from recon.partial_recon_modules.helpers import partial_settings, scope_roots, root_orgs
 
 
 def run_graphqlscan(config: dict) -> None:
@@ -138,6 +138,7 @@ def _link_user_urls(graph_client, user_urls, url_attach_to, roots, user_id, proj
             },
             user_id=user_id,
             project_id=project_id,
+            root_orgs=root_orgs(roots),
         )
         print(f"[*][Partial Recon][GraphQL] Created UserInput node {user_input_id} for {len(user_urls)} URL(s)")
     except Exception as e:

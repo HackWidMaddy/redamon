@@ -49,6 +49,7 @@ from recon.partial_recon_modules.helpers import (
     print_run_report,
     run_exit_code,
     scope_roots,
+    set_project_scope,
     settings_project_roots,
     settings_scope_groups,
 )
@@ -147,18 +148,32 @@ def _allowlist_overrides(overrides) -> dict:
 
 
 def _ownership_verified(root: str, settings: dict) -> bool:
-    """The full pipeline's ownership check, failing closed on any error."""
+    """The full pipeline's ownership rule (§4.8), failing closed on any error.
+
+    The token may sit at <prefix>.<scan root> or <prefix>.<registrable domain>;
+    either passes. A resolver failure on the first name ends the check: it is
+    not "no record", so the second name is not tried.
+    """
+    org = next((g.get("orgDomain") for g in settings_scope_groups(settings)
+                if str(g.get("scanRoot") or "").lower() == root.lower()), None)
+    names = [root] + ([org] if org and org.lower() != root.lower() else [])
     try:
         from recon.main_recon_modules.domain_recon import verify_domain_ownership
-        result = verify_domain_ownership(
-            root,
-            settings.get("OWNERSHIP_TOKEN", ""),
-            settings.get("OWNERSHIP_TXT_PREFIX") or "_redamon-verify",
-        )
+        for name in names:
+            result = verify_domain_ownership(
+                name,
+                settings.get("OWNERSHIP_TOKEN", ""),
+                settings.get("OWNERSHIP_TXT_PREFIX") or "_redamon-verify",
+            )
+            if result.get("verified"):
+                return True
+            if result.get("resolver_failed"):
+                print(f"[!][Partial Recon] Ownership check for {root}: {result.get('error')}")
+                return False
     except Exception as e:  # noqa: BLE001 - an unanswered check is a failed check
         print(f"[!][Partial Recon] Ownership check for {root} failed ({type(e).__name__})")
         return False
-    return bool(result.get("verified"))
+    return False
 
 
 def _refusal_reason(root: str, settings: dict, project_roots: list):
@@ -197,6 +212,9 @@ def _prepare_scope(config: dict, settings: dict, project_id: str):
     config["domains"] = kept
     config["domain"] = kept[0] if kept else ""
     config["domain_groups"] = partial_domain_groups(settings, kept)
+    # Every scan root of the project and its org, for the builders' longest-
+    # root rule and the writers' org attach (the graph names a Domain after the org).
+    set_project_scope(settings_scope_groups(settings))
     config["ip_mode"] = bool(settings.get("IP_MODE"))
     config["batch_mode"] = bool(settings.get("DOMAIN_BATCH_MODE"))
     config["settings_overrides"] = _allowlist_overrides(config.get("settings_overrides"))
@@ -220,9 +238,9 @@ def _typed_anything(config: dict) -> bool:
         targets.get(k) for k in ("subdomains", "urls", "ips"))
 
 
-# Which name the graph's Domain node carries. Until the org model ships it is
-# the scan root; mirrors GRAPH_DOMAIN_IS_ORG in webapp/src/lib/scopeGroups.ts.
-GRAPH_DOMAIN_IS_ORG = False
+# Which name the graph's Domain node carries: the org (registrable domain);
+# mirrors GRAPH_DOMAIN_IS_ORG in webapp/src/lib/scopeGroups.ts.
+GRAPH_DOMAIN_IS_ORG = True
 
 
 def _legacy_graph_refusal(settings: dict, user_id: str, project_id: str):

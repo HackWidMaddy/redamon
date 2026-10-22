@@ -456,41 +456,50 @@ def run_otx_enrichment(combined_result: dict, settings: dict[str, Any]) -> dict:
                 except Exception as exc:
                     logger.warning(f"OTX IP enrichment thread error: {type(exc).__name__}")
 
-        # ── Domain enrichment ────────────────────────────────────────────────
-        domain_answered = False
-        if domain and not is_ip_mode and general.allow():
-            rate_limiter.wait()
-            dg = _otx_call(general, f"/domain/{domain}/general", keys, admitted=True)
-            if dg.answered:
-                domain_answered = True
-                dg_body = dg.data if isinstance(dg.data, dict) else {}
-                whois = dg_body.get("whois")
-                if not isinstance(whois, dict):
-                    whois = {}
-                otx_data["domain_report"].update({
-                    "domain": domain,
-                    "pulse_count": _otx_pulse_count(dg_body),
-                    "pulse_details": _otx_pulse_details(dg_body),
-                    "whois": whois,
-                })
-                logger.info(
-                    f"  OTX domain: {domain} -- pulses {otx_data['domain_report']['pulse_count']}"
-                )
-            elif dg.outcome is not cb.Outcome.SKIPPED:
-                print(f"[!][OTX] Domain general skipped ({dg.detail})")
+        # ── Domain enrichment: the org, once per run ─────────────────────────
+        def _domain_report(d):
+            """The org's OTX domain report; its "domain" is "" without an answer."""
+            report = dict(otx_data["domain_report"], domain=d)
+            answered = False
+            if general.allow():
+                rate_limiter.wait()
+                dg = _otx_call(general, f"/domain/{d}/general", keys, admitted=True)
+                if dg.answered:
+                    answered = True
+                    dg_body = dg.data if isinstance(dg.data, dict) else {}
+                    whois = dg_body.get("whois")
+                    if not isinstance(whois, dict):
+                        whois = {}
+                    report.update({
+                        "domain": d,
+                        "pulse_count": _otx_pulse_count(dg_body),
+                        "pulse_details": _otx_pulse_details(dg_body),
+                        "whois": whois,
+                    })
+                    logger.info(f"  OTX domain: {d} -- pulses {report['pulse_count']}")
+                elif dg.outcome is not cb.Outcome.SKIPPED:
+                    print(f"[!][OTX] Domain general skipped ({dg.detail})")
+            if answered:
+                # domain/passive_dns -- IPs the domain has historically resolved to
+                report["historical_ips"] = _otx_domain_passive_dns_ips(
+                    _section(passive_dns, f"/domain/{d}/passive_dns"))
+                report["malware"] = _otx_malware_samples(
+                    _section(malware, f"/domain/{d}/malware"))
+                report["url_count"] = _otx_url_count(
+                    _section(url_list, f"/domain/{d}/url_list"))
+            else:
+                # The report is pre-filled with zeros, and the graph writer SETs
+                # whatever it holds for a named domain. With no answer from OTX
+                # there is nothing to write, so the domain name goes.
+                report["domain"] = ""
+            return report
 
-        if domain_answered:
-            # domain/passive_dns -- IPs the domain has historically resolved to
-            otx_data["domain_report"]["historical_ips"] = _otx_domain_passive_dns_ips(
-                _section(passive_dns, f"/domain/{domain}/passive_dns"))
-            otx_data["domain_report"]["malware"] = _otx_malware_samples(
-                _section(malware, f"/domain/{domain}/malware"))
-            otx_data["domain_report"]["url_count"] = _otx_url_count(
-                _section(url_list, f"/domain/{domain}/url_list"))
+        if domain and not is_ip_mode:
+            from recon.helpers.org_work import once_per_org, org_of
+            otx_data["domain_report"], _ = once_per_org(
+                "otx_domain", org_of(combined_result), _domain_report,
+                answered=lambda r: bool(r.get("domain")), label="OTX")
         else:
-            # The report is pre-filled with zeros, and the graph writer SETs
-            # whatever it holds for a named domain. With no answer from OTX
-            # there is nothing to write, so the domain name goes.
             otx_data["domain_report"]["domain"] = ""
 
         ip_count = len(otx_data["ip_reports"])

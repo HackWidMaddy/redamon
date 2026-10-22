@@ -11,10 +11,14 @@ from recon.partial_recon_modules.helpers import (
     STATUS_NO_RESULTS,
     STATUS_OK,
     _norm_host,
+    admits_partial_host,
+    attach_org,
     host_in_roots,
+    include_root_for,
     partial_settings,
     root_for_host,
     run_per_root,
+    scope_groups_payload,
     scope_roots,
 )
 from recon.helpers.roe_scope import _filter_roe_excluded
@@ -49,11 +53,13 @@ def _drop_roe_excluded_discoveries(result: dict, settings: dict) -> list:
 def _enumerable_roots(roots: list, config: dict, settings: dict) -> list:
     """The roots subdomain enumeration may run on.
 
-    A single-domain project always enumerates; a Domain batch enumerates only a
-    wildcard group, and scans a literal group exactly as uploaded (no
-    discovery). Decided by the same group_discovery_enabled the full pipeline
-    calls per group, with the run-wide toggle forced on because the operator
-    explicitly triggered this tool.
+    A group enumerates only in ENUMERATE mode, a single-domain project's
+    included: an EXACT group is scanned exactly as listed (no discovery).
+    Groups without a mode (a caller not yet migrated) follow the legacy rule: a
+    single-domain project always enumerates, a batch only a wildcard group.
+    Decided by the same group_discovery_enabled the full pipeline calls per
+    group, with the run-wide toggle forced on because the operator explicitly
+    triggered this tool.
     """
     from recon.helpers.batch_groups import group_discovery_enabled, parse_target
 
@@ -63,6 +69,10 @@ def _enumerable_roots(roots: list, config: dict, settings: dict) -> list:
     for root in roots:
         group = next((g for g in groups
                       if _norm_host(g.get("rootDomain")) == _norm_host(root)), None)
+        if group is not None and "mode" in group:
+            if group["mode"] == "enumerate":
+                enumerable.append(root)
+            continue
         info = parse_target(root, list(group.get("prefixes") or []) if group else [])
         info["root_domain"] = root
         if group_discovery_enabled(settings, batch_groups, info):
@@ -117,10 +127,13 @@ def run_subdomain_discovery(config: dict) -> dict:
     valid_user_subs = []
     for sub in user_inputs:
         sub = sub.strip().lower()
-        if sub and host_in_roots(sub, roots):
+        groups = config.get("domain_groups") or []
+        in_scope = (admits_partial_host(groups, sub) if groups and "mode" in groups[0]
+                    else host_in_roots(sub, roots))
+        if sub and in_scope:
             valid_user_subs.append(sub)
         elif sub:
-            print(f"[!][Partial Recon] Skipping invalid user input: {sub} (under no project root)")
+            print(f"[!][Partial Recon] Skipping invalid user input: {sub} (outside the scope)")
     # The full pipeline drops the operator's explicit hosts the same way before
     # any phase runs: an excluded host is never resolved, written or probed.
     valid_user_subs = _filter_roe_excluded(valid_user_subs, settings,
@@ -164,6 +177,20 @@ def run_subdomain_discovery(config: dict) -> dict:
             result["subdomain_status_map"] = subdomain_status_map
 
         result["domain"] = domain
+        groups = config.get("domain_groups") or []
+        if groups and "mode" in groups[0] and not include_root_for(domain, groups):
+            # The scan root itself is no target: the writer would make it a
+            # scan-root Subdomain (§4.6).
+            result["subdomains"] = [s for s in result.get("subdomains", []) if s != domain]
+            result["subdomain_count"] = len(result["subdomains"])
+            if isinstance(result.get("dns"), dict):
+                result["dns"]["domain"] = {}
+                (result["dns"].get("subdomains") or {}).pop(domain, None)
+        # The writers attach to the org and classify by the project's groups.
+        from recon.helpers.batch_groups import settings_scope_groups
+        result["scope_groups"] = scope_groups_payload(
+            settings_scope_groups(config.get("_settings") or {}) or config.get("domain_groups"))
+        result["all_project_roots"] = list(roots)
         final_count = len(result.get("subdomains", []))
         print(f"[+][Partial Recon] {domain}: final subdomain count: {final_count}")
 
@@ -189,6 +216,7 @@ def run_subdomain_discovery(config: dict) -> dict:
                     },
                     user_id=user_id,
                     project_id=project_id,
+                    root_orgs={domain: attach_org(domain)},
                 )
 
             stats = graph_client.update_graph_from_partial_discovery(
@@ -196,6 +224,7 @@ def run_subdomain_discovery(config: dict) -> dict:
                 user_id=user_id,
                 project_id=project_id,
                 user_input_id=user_input_id,
+                org_domain=attach_org(domain),
             )
 
             if user_input_id:

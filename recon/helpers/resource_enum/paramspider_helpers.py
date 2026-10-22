@@ -170,6 +170,7 @@ def merge_paramspider_into_by_base_url(
     paramspider_urls: List[str],
     by_base_url: Dict,
     target_domains: Set[str] = None,
+    exact: bool = False,
 ) -> Tuple[Dict, Dict[str, int]]:
     """
     Merge ParamSpider endpoints into existing by_base_url structure.
@@ -182,6 +183,8 @@ def merge_paramspider_into_by_base_url(
         paramspider_urls: List of ParamSpider-discovered URLs
         by_base_url: Existing by_base_url structure
         target_domains: Optional set of in-scope domains for filtering
+        exact: the hosts are an EXACT group's whole scope, so a URL on a
+            subdomain of one of them is out of scope, not covered by it
 
     Returns:
         Tuple of (updated by_base_url, merge stats)
@@ -200,7 +203,7 @@ def merge_paramspider_into_by_base_url(
             try:
                 host = urlparse(url).netloc.split(':')[0].lower()
                 in_scope = any(
-                    host == d or host.endswith('.' + d)
+                    host == d or (not exact and host.endswith('.' + d))
                     for d in target_domains
                 )
                 if not in_scope:

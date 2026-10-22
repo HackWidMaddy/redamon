@@ -224,16 +224,14 @@ def run_virustotal_enrichment(combined_result: dict, settings: dict) -> dict:
     breaker = _vt_breaker()
 
     try:
-        if domain and not is_ip_mode:
-            if need_sleep:
-                time.sleep(throttle)
-            need_sleep = True
-            print(f"[*][VirusTotal] Fetching domain report for {domain}...")
-            res = _vt_call(f"domains/{domain}", keys)
+        def _domain_report(d):
+            """The org's VirusTotal domain report, or None without one."""
+            print(f"[*][VirusTotal] Fetching domain report for {d}...")
+            res = _vt_call(f"domains/{d}", keys)
             parsed = _parse_domain_attrs(res.data if res.ok else None)
             if parsed:
-                vt_data["domain_report"] = {
-                    "domain": domain,
+                report = {
+                    "domain": d,
                     "reputation": parsed["reputation"],
                     "analysis_stats": parsed["analysis_stats"],
                     "categories": parsed["categories"],
@@ -247,9 +245,16 @@ def run_virustotal_enrichment(combined_result: dict, settings: dict) -> dict:
                     "last_dns_records_date": parsed["last_dns_records_date"],
                     "last_https_certificate_date": parsed["last_https_certificate_date"],
                 }
-                print(f"[+][VirusTotal] Domain report retrieved for {domain}")
-            else:
-                print(f"[!][VirusTotal] No domain report data for {domain}")
+                print(f"[+][VirusTotal] Domain report retrieved for {d}")
+                return report
+            print(f"[!][VirusTotal] No domain report data for {d}")
+            return None
+
+        if domain and not is_ip_mode:
+            # The org, once per run; only a request made spends a rate slot.
+            from recon.helpers.org_work import once_per_org, org_of
+            vt_data["domain_report"], need_sleep = once_per_org(
+                "virustotal_domain", org_of(combined_result), _domain_report, label="VirusTotal")
 
         def _enrich_single_ip(ip, rate_limiter):
             # Before the wait: each slot is 60/rate seconds, so a breaker checked

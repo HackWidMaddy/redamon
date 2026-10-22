@@ -150,7 +150,13 @@ def run_vhost_sni_enrichment(
     # 2. Resolve apex domain for wordlist expansion
     # --------------------------------------------------------------
     apex = _detect_apex_domain(combined_result)
-    if not apex:
+    from recon.helpers.recon_scope import recon_scope
+    if apex and recon_scope(combined_result).exact and not isinstance(combined_result.get("domains"), list):
+        # An EXACT group scans its listed hosts: no wordlist names under it.
+        print("[*][VhostSni] Listed hosts only (exact scope) -- wordlist disabled")
+        apex = None
+        use_default_wordlist = False
+    elif not apex:
         print("[!][VhostSni] Cannot determine apex domain -- wordlist disabled")
         use_default_wordlist = False
         # custom_wordlist still works since it can already contain FQDNs
@@ -300,6 +306,41 @@ def run_vhost_sni_enrichment_isolated(combined_result: dict, settings: dict) -> 
 # =============================================================================
 # Per-IP probing
 # =============================================================================
+def _scoped_candidates(
+    apex_domain: Optional[str],
+    default_prefixes: list[str],
+    custom_lines: list[str],
+    graph_candidates: list[str],
+    scope: Optional["_CandidateScope"],
+) -> tuple[list[str], int]:
+    """The sorted candidate hostnames for one IP, and how many were out of scope.
+
+    Graph names must sit under a project root; the wordlist and the user's
+    custom lines are deliberate, so only an RoE exclusion removes them, except
+    in an EXACT group, where nothing off its list is tried.
+    """
+    skipped: set[str] = set()
+    if scope is not None:
+        in_scope = [h for h in graph_candidates if _candidate_in_scope(h, scope)]
+        skipped |= {h.strip().strip(".").lower() for h in graph_candidates} - {h.strip().strip(".").lower() for h in in_scope}
+        graph_candidates = in_scope
+    candidate_set = _build_candidate_set(
+        apex_domain=apex_domain,
+        default_prefixes=default_prefixes,
+        custom_lines=custom_lines,
+        graph_candidates=graph_candidates,
+    )
+    if scope is not None and scope.roe_excluded:
+        excluded = {h for h in candidate_set if _is_roe_excluded(h, list(scope.roe_excluded))}
+        skipped |= excluded
+        candidate_set -= excluded
+    if scope is not None and scope.exact is not None:
+        outside = {h for h in candidate_set if h not in scope.exact}
+        skipped |= outside
+        candidate_set -= outside
+    return sorted(candidate_set), len(skipped)
+
+
 def _probe_single_ip(
     ip: str,
     ports: list[dict],
@@ -317,30 +358,13 @@ def _probe_single_ip(
 ) -> dict:
     """Run baseline + L7/L4 anomaly probes for one IP across all its ports."""
 
-    # Graph names must sit under a project root; the wordlist and the user's
-    # custom lines are deliberate, so only an RoE exclusion removes them.
-    skipped: set[str] = set()
-    if scope is not None:
-        in_scope = [h for h in graph_candidates if _candidate_in_scope(h, scope)]
-        skipped |= {h.strip().strip(".").lower() for h in graph_candidates} - {h.strip().strip(".").lower() for h in in_scope}
-        graph_candidates = in_scope
-    candidate_set = _build_candidate_set(
-        apex_domain=apex_domain,
-        default_prefixes=default_prefixes,
-        custom_lines=custom_lines,
-        graph_candidates=graph_candidates,
-    )
-    if scope is not None and scope.roe_excluded:
-        excluded = {h for h in candidate_set if _is_roe_excluded(h, list(scope.roe_excluded))}
-        skipped |= excluded
-        candidate_set -= excluded
-    out_of_scope_skipped = len(skipped)
+    candidates, out_of_scope_skipped = _scoped_candidates(
+        apex_domain, default_prefixes, custom_lines, graph_candidates, scope)
     if out_of_scope_skipped:
         print(f"[*][VhostSni] IP {ip}: skipped {out_of_scope_skipped} candidate(s) outside the project scope")
-    if len(candidate_set) > max_candidates:
+    if len(candidates) > max_candidates:
         # Deterministic cap (sorted) so repeated runs hit the same set
-        candidate_set = sorted(candidate_set)[:max_candidates]
-    candidates = sorted(candidate_set)
+        candidates = candidates[:max_candidates]
 
     print(f"[*][VhostSni] IP {ip}: {len(ports)} port(s), {len(candidates)} candidate(s)")
 
@@ -1042,9 +1066,15 @@ class _CandidateScope(NamedTuple):
     are not the target's vhosts, and on a shared CDN IP the probe reaches the
     third party's service. ``roots`` empty (IP mode) disables the root check,
     since an IP-mode project has no domain to compare against.
+
+    ``exact`` is an EXACT group's whole target list: then every candidate,
+    wordlist and custom lines included, must be on it. ``include_root`` False
+    keeps a root itself out (an ENUMERATE group whose root is not a target).
     """
     roots: tuple = ()
     roe_excluded: tuple = ()
+    exact: Optional[frozenset] = None
+    include_root: bool = True
 
 
 def _build_candidate_scope(combined_result: dict, settings: dict) -> _CandidateScope:
@@ -1058,10 +1088,20 @@ def _build_candidate_scope(combined_result: dict, settings: dict) -> _CandidateS
     if metadata.get("ip_mode") or any(r.startswith("ip-targets.") for r in roots):
         roots = []
     excluded = settings.get("ROE_EXCLUDED_HOSTS") if settings.get("ROE_ENABLED") else None
+    exact, include_root = None, True
+    if roots and not isinstance(declared, list):
+        from recon.helpers.recon_scope import recon_scope
+        group = recon_scope(combined_result)
+        if group.mode:
+            include_root = group.include_root
+            if group.exact:
+                exact = frozenset(group.targets())
     return _CandidateScope(
         roots=tuple(roots),
         # Candidates are lower-case without a trailing dot; so are the entries.
         roe_excluded=tuple(e.strip().strip(".").lower() for e in (excluded or []) if isinstance(e, str) and e.strip()),
+        exact=exact,
+        include_root=include_root,
     )
 
 
@@ -1071,9 +1111,11 @@ def _candidate_in_scope(hostname: str, scope: _CandidateScope) -> bool:
         return False
     if scope.roe_excluded and _is_roe_excluded(host, list(scope.roe_excluded)):
         return False
+    if scope.exact is not None:
+        return host in scope.exact
     if not scope.roots:
         return True
-    return any(host == r or host.endswith(f".{r}") for r in scope.roots)
+    return any((host == r and scope.include_root) or host.endswith(f".{r}") for r in scope.roots)
 
 
 def _build_candidate_set(
@@ -1266,8 +1308,10 @@ def _collect_ip_targets(combined_result: dict) -> dict[str, list[dict]]:
                 {"port": 80, "protocol": "tcp", "scheme": "http"},
             ])
 
-    # ---- 3. dns.domain.ips (apex Domain, also always-merged) --------------
-    domain_ips = ((dns.get("domain") or {}).get("ips") or {}).get("ipv4") or []
+    # ---- 3. dns.domain.ips (apex Domain, when it is a target) -------------
+    from recon.helpers.recon_scope import recon_scope
+    apex_dns = (dns.get("domain") or {}) if recon_scope(combined_result).include_root else {}
+    domain_ips = (apex_dns.get("ips") or {}).get("ipv4") or []
     for ip in domain_ips:
         ip_to_ports.setdefault(ip, []).extend([
             {"port": 443, "protocol": "tcp", "scheme": "https"},
@@ -1310,13 +1354,16 @@ def _looks_like_ip(value: str) -> bool:
 
 
 def _detect_apex_domain(combined_result: dict) -> Optional[str]:
+    # IP mode's root is a synthetic name: `www.ip-targets.<id>` is no vhost.
+    if (combined_result.get("metadata") or {}).get("ip_mode"):
+        return None
     candidates = [
         combined_result.get("domain"),
         (combined_result.get("metadata") or {}).get("target"),
         (combined_result.get("metadata") or {}).get("target_domain"),
     ]
     for c in candidates:
-        if isinstance(c, str) and c.strip() and "." in c:
+        if isinstance(c, str) and c.strip() and "." in c and not c.strip().lower().startswith("ip-targets."):
             return c.strip().lower().rstrip(".")
     return None
 

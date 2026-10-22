@@ -150,11 +150,13 @@ def extract_targets_from_recon(recon_data: dict) -> Tuple[Set[str], Set[str], Di
 
     dns_data = recon_data.get("dns", {})
 
-    # Extract from root domain
+    # The scan root (and its addresses) only when it is a target: a `*`-only
+    # group must never port-scan its apex. A legacy file keeps the apex.
+    from recon.helpers.recon_scope import recon_scope
     domain_dns = dns_data.get("domain", {})
     domain_name = recon_data.get("domain", "")
 
-    if domain_name:
+    if domain_name and recon_scope(recon_data).include_root:
         domain_ips = domain_dns.get("ips", {})
         ipv4_list = domain_ips.get("ipv4", [])
         ipv6_list = domain_ips.get("ipv6", [])

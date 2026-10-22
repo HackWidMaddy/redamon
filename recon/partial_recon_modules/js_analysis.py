@@ -7,8 +7,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from recon.partial_recon_modules.graph_builders import declared_only_unsafe
-from recon.partial_recon_modules.helpers import _is_valid_url, _scope_partial_urls, partial_settings, scope_roots
+from recon.partial_recon_modules.graph_builders import declared_only_unsafe, graph_scope_subdomains
+from recon.partial_recon_modules.helpers import _is_valid_url, _scope_partial_urls, partial_settings, scope_roots, root_orgs
 
 
 def run_jsrecon(config: dict) -> None:
@@ -107,18 +107,8 @@ def run_jsrecon(config: dict) -> None:
                         if url and url not in target_urls:
                             target_urls.append(url)
 
-                    result = session.run(
-                        """
-                        MATCH (d:Domain {user_id: $uid, project_id: $pid})
-                              -[:HAS_SUBDOMAIN]->(s:Subdomain)
-                        WHERE d.name IN $domains
-                        RETURN collect(DISTINCT s.name) AS subdomains
-                        """,
-                        domains=roots, uid=user_id, pid=project_id,
-                    )
-                    record = result.single()
-                    if record:
-                        graph_subdomains = record["subdomains"] or []
+                    graph_subdomains = graph_scope_subdomains(
+                        session, user_id, project_id, roots, config.get("domain_groups"))
 
                 print(f"[+][Partial Recon] Found {len(target_urls)} URLs from graph")
             else:
@@ -233,6 +223,7 @@ def run_jsrecon(config: dict) -> None:
                                 },
                                 user_id=user_id,
                                 project_id=project_id,
+                                root_orgs=root_orgs(roots),
                             )
                             for url in user_urls:
                                 parsed = _urlparse(url)

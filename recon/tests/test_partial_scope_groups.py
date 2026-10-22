@@ -195,12 +195,14 @@ class TestOldModelBackstop:
         with mock.patch.dict(sys.modules, {'graph_db': fake}):
             return pr._legacy_graph_refusal(settings, 'u1', 'p1')
 
-    def test_a_current_graph_passes_and_the_check_names_the_scan_roots(self, pr):
+    def test_a_current_graph_passes_and_the_check_names_the_orgs(self, pr):
+        # The graph names a Domain after the org (release D): a Domain named
+        # after a deeper scan root (api.example.com) is the older model.
         client = _Client()
         assert self._check(pr, client) is None
         uid, pid, expected, related = client.calls[0]
         assert (uid, pid) == ('u1', 'p1')
-        assert expected == ['acme.co.uk', 'api.example.com', 'example.com']
+        assert expected == ['acme.co.uk', 'example.com']
         assert related == ['acme.co.uk', 'api.example.com', 'example.com']
 
     def test_a_legacy_domain_refuses_the_run(self, pr):

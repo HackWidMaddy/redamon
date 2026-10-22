@@ -11,6 +11,7 @@ Results merge into the graph via `update_graph_from_origin_discovery`.
 import os
 
 from recon.partial_recon_modules.helpers import (
+    typed_host_ok,
     _is_valid_hostname,
     _resolve_hostname,
     _should_include_root_domain,
@@ -20,9 +21,8 @@ from recon.partial_recon_modules.helpers import (
     scope_roots,
 )
 from recon.partial_recon_modules.graph_builders import (
+    _GraphScope,
     _build_vuln_scan_data_from_graph,
-    _host_allowed,
-    _root_scope,
 )
 from recon.main_recon_modules.origin_discovery import _is_edge_cdn_label
 
@@ -38,7 +38,7 @@ def _inject_graph_fronted_hosts(by_url: dict, roots: list, user_id: str, project
     """
     from graph_db import Neo4jClient
 
-    _apex_roots, allowed = _root_scope(roots, domain_groups, include_root_domain=False)
+    scope = _GraphScope(roots, domain_groups, include_root_domain=False)
 
     with Neo4jClient() as client:
         if not client.verify_connection():
@@ -48,7 +48,7 @@ def _inject_graph_fronted_hosts(by_url: dict, roots: list, user_id: str, project
                 """
                 MATCH (d:Domain {user_id: $uid, project_id: $pid})
                       -[:HAS_SUBDOMAIN]->(s:Subdomain)
-                WHERE d.name IN $domains
+                WHERE toLower(d.name) IN $domains
                   AND (EXISTS { (s)-[:RESOLVES_TO]->(ci:IP) WHERE ci.is_cdn = true }
                    OR EXISTS { (s)-[:HAS_BASE_URL|HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(ep:Endpoint)
                                WHERE ep.is_cdn = true OR ep.favicon_hash IS NOT NULL })
@@ -60,12 +60,12 @@ def _inject_graph_fronted_hosts(by_url: dict, roots: list, user_id: str, project
                          + [x IN collect(DISTINCT i.cdn_name) WHERE x IS NOT NULL] AS cdns,
                        head(collect(DISTINCT i.address)) AS ip
                 """,
-                domains=roots, uid=user_id, pid=project_id,
+                domains=scope.orgs, uid=user_id, pid=project_id,
             )
             count = 0
             for record in result:
                 host = record["host"]
-                if not host or not _host_allowed(record["root"], host, allowed):
+                if not host or not scope.keeps(host, record["root"]):
                     continue
                 url = f"https://{host}"
                 entry = by_url.setdefault(url, {"url": url, "host": host})
@@ -112,7 +112,7 @@ def run_origin_discovery(config: dict) -> None:
         if not _is_valid_hostname(entry):
             print(f"[!][Partial Recon] Skipping invalid hostname: {entry}")
             continue
-        if host_in_roots(entry, roots):
+        if typed_host_ok(entry, roots, config.get("domain_groups")):
             user_subdomains.append(entry)
         else:
             print(f"[!][Partial Recon] Skipping out-of-scope subdomain: {entry}")

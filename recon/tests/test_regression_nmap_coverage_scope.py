@@ -104,7 +104,7 @@ class _Graph:
         self.prunes.append({"sources": list(sources), "keep_hosts": tuple(keep_hosts)})
         return {"pruned": 0, "stale": 0, "revived": 0}
 
-    def update_graph_coverage(self, user_id, project_id, domain, record):
+    def update_graph_coverage(self, user_id, project_id, domain, record, run_started_at=None):
         self.coverage.append(record)
         return 1
 
