@@ -8,6 +8,8 @@
  */
 
 import type { ReportData, VulnFinding, CveChain, ExploitRecord } from './reportData'
+import { type ScopeGroup, groupLabel, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
+import { projectTargetLabel } from '@/lib/projectSummary'
 
 // ── Narrative types (from LLM summarizer) ──────────────────────────────────
 
@@ -422,13 +424,45 @@ function renderAttackFlowChains(data: ReportData): string {
   </table>`
 }
 
+// ── Scope ───────────────────────────────────────────────────────────────────
+
+/**
+ * The project's scope groups, derived from the stored target fields. A row
+ * read without its host list (an older snapshot) falls back to the legacy
+ * domainBatchGroups record, so the deliverable never states its scope as N/A.
+ */
+function reportScopeGroups(p: ReportData['project']): ScopeGroup[] {
+  const derivable = p.domainBatchMode ? Array.isArray(p.domainBatchHosts) : Array.isArray(p.subdomainList)
+  if (derivable) return resolveScopeGroups(p).groups
+  if (!p.domainBatchMode) return []
+  const legacy = (Array.isArray(p.domainBatchGroups) ? p.domainBatchGroups : []) as
+    Array<{ rootDomain?: unknown; prefixes?: unknown } | null>
+  const groups: ScopeGroup[] = []
+  for (const g of legacy) {
+    const root = String(g?.rootDomain || '')
+    if (!root) continue
+    const prefixes = Array.isArray(g?.prefixes) ? g.prefixes.map(String) : []
+    groups.push({
+      scanRoot: root, orgDomain: root,
+      mode: prefixes.includes('*') ? 'enumerate' : 'exact',
+      includeRoot: prefixes.includes('.'),
+      exactHosts: prefixes.filter(x => x !== '*' && x !== '.').map(x => `${x}${root}`),
+      entries: [], notes: [],
+    })
+  }
+  return groups
+}
+
 // ── Main Generator ──────────────────────────────────────────────────────────
 
 export function generateReportHtml(data: ReportData, narratives: LLMNarratives | null): string {
   const { project, metrics } = data
   const n = narratives || {} as Partial<LLMNarratives>
   const projectName = project.name || 'Security Assessment'
-  const targetDomain = project.targetDomain || 'N/A'
+  // A batch project's targetDomain is empty: the cover names its scope groups.
+  const targetDomain = (project.domainBatchMode
+    ? scopeSummary(reportScopeGroups(project))
+    : projectTargetLabel(project)) || 'N/A'
   const generatedAt = formatDate(data.generatedAt)
 
   // RoE fields (optional)
@@ -714,26 +748,20 @@ function renderScope(data: ReportData, narrative?: string): string {
     }
   }
 
-  // Target info row. A Domain-batch project has NO targetDomain: its scope is the
-  // derived group roots, so without this branch the client-facing deliverable
-  // would state its scope as "N/A".
-  const batchRoots: string[] = isBatchMode
-    ? ((project.domainBatchGroups as Array<{ rootDomain?: string; prefixes?: string[] }> | null) || [])
-        // A wildcard group was enumerated; a literal one was scanned as listed.
-        // Stating both as a bare domain overstates the scope of one and
-        // understates the other, in the document the client reads.
-        .map(g => {
-          const root = String(g?.rootDomain || '')
-          return (g?.prefixes || []).includes('*') ? `${root} (enumerated)` : root
-        })
-        .filter(v => v && v !== ' (enumerated)')
-    : []
+  // Target rows: one per scope group. A Domain-batch project has NO targetDomain,
+  // and an enumerated group and a listed one differ in what was scanned, so each
+  // group is stated with its mode in the document the client reads.
+  const groups = isIpMode ? [] : reportScopeGroups(project)
+  const groupRows = groups
+    .map((g, i) => `<tr><td>Scope group ${i + 1}</td><td>${esc(groupLabel(g))}</td></tr>`)
+    .join('')
 
   const targetRow = isIpMode
     ? `<tr><td>Target IPs / CIDRs</td><td>${esc((project.targetIps || []).join(', ') || 'N/A')}</td></tr>`
     : isBatchMode
-      ? `<tr><td>Target Domains (batch)</td><td>${esc(batchRoots.join(', ') || 'N/A')}</td></tr>`
+      ? `<tr><td>Target scope (batch)</td><td>${esc(scopeSummary(groups) || 'N/A')}</td></tr>${groupRows}`
       : `<tr><td>Target Domain</td><td>${esc(project.targetDomain || 'N/A')}</td></tr>`
+        + (groups.length ? `<tr><td>Scope</td><td>${esc(groupLabel(groups[0]))}</td></tr>` : '')
 
   // Multi mutes are inside the people's count (P9) but were confirmed in bulk
   // from AI suggestions, so they are never worded as reviewed one by one.
