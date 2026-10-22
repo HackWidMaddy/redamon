@@ -3,34 +3,9 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { useAuth } from './AuthProvider'
+import { type ProjectSummary, toProjectSummary } from '@/lib/projectSummary'
 
-export interface ProjectSummary {
-  id: string
-  name: string
-  targetDomain: string
-  ipMode?: boolean
-  targetIps?: string[]
-  /** Domain batch: true, plus the derived group roots in run order. A batch
-   *  project has an EMPTY targetDomain, so anything rendering a target must
-   *  fall back to these. */
-  domainBatchMode?: boolean
-  domainBatchDomains?: string[]
-  /** Subset of domainBatchDomains whose group carries the '*' sentinel,
-   *  i.e. will be fully enumerated rather than scanned as listed. */
-  domainBatchWildcardDomains?: string[]
-  subdomainList?: string[]
-  description?: string
-  agentOpenaiModel?: string
-  agentToolPhaseMap?: Record<string, string[]>
-  stealthMode?: boolean
-  agentRequireToolConfirmation?: boolean
-  /** The three columns the engagement-limit derivation reads. Never the flag. */
-  roeGlobalMaxRps?: number
-  roeExcludedHosts?: string[]
-  roeTimeWindowEnabled?: boolean
-  createdAt: string
-  updatedAt: string
-}
+export type { ProjectSummary } from '@/lib/projectSummary'
 
 interface ProjectContextValue {
   currentProject: ProjectSummary | null
@@ -122,36 +97,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         .then(res => res.ok ? res.json() : null)
         .then(project => {
           if (project) {
-            setCurrentProjectState({
-              id: project.id,
-              name: project.name,
-              targetDomain: project.targetDomain,
-              ipMode: project.ipMode,
-              targetIps: project.targetIps,
-              domainBatchMode: project.domainBatchMode,
-              domainBatchDomains: Array.isArray(project.domainBatchGroups)
-                ? (project.domainBatchGroups as Array<{ rootDomain?: string }>)
-                    .map(g => String(g?.rootDomain || '')).filter(Boolean)
-                : [],
-              domainBatchWildcardDomains: Array.isArray(project.domainBatchGroups)
-                ? (project.domainBatchGroups as Array<{ rootDomain?: string; prefixes?: string[] }>)
-                    .filter(g => (g?.prefixes || []).includes('*'))
-                    .map(g => String(g?.rootDomain || '')).filter(Boolean)
-                : [],
-              subdomainList: project.subdomainList,
-              description: project.description,
-              agentOpenaiModel: project.agentOpenaiModel,
-              agentToolPhaseMap: typeof project.agentToolPhaseMap === 'string'
-                ? JSON.parse(project.agentToolPhaseMap)
-                : project.agentToolPhaseMap,
-              stealthMode: project.stealthMode,
-              agentRequireToolConfirmation: project.agentRequireToolConfirmation,
-              roeGlobalMaxRps: project.roeGlobalMaxRps,
-              roeExcludedHosts: project.roeExcludedHosts,
-              roeTimeWindowEnabled: project.roeTimeWindowEnabled,
-              createdAt: project.createdAt,
-              updatedAt: project.updatedAt
-            })
+            setCurrentProjectState(toProjectSummary(project))
             localStorage.setItem(STORAGE_KEY_PROJECT, project.id)
           } else {
             // Remove stale project ID from localStorage if project no longer exists

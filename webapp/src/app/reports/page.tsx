@@ -5,6 +5,7 @@ import { FileText, Download, ExternalLink, Trash2, Loader2, AlertCircle, Sparkle
 import { useAllReports, type ReportMeta } from '@/hooks/useReports'
 import { useProjects } from '@/hooks/useProjects'
 import { useProject } from '@/providers/ProjectProvider'
+import { projectTargetLabel } from '@/lib/projectSummary'
 import { useToast, WikiInfoButton } from '@/components/ui'
 import { FeatureModelLine } from '@/components/shared/FeatureModelGate'
 import styles from './page.module.css'
@@ -107,11 +108,14 @@ export default function ReportsPage() {
               disabled={isGenerating}
             >
               <option value="">Select project...</option>
-              {projects?.map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.name}{p.targetDomain ? ` (${p.targetDomain})` : ''}
-                </option>
-              ))}
+              {projects?.map(p => {
+                const target = projectTargetLabel(p)
+                return (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{target ? ` (${target})` : ''}
+                  </option>
+                )
+              })}
             </select>
             <ChevronDown size={12} className={styles.pickerChevron} />
           </div>
@@ -174,8 +178,8 @@ export default function ReportsPage() {
                   {report.project && (
                     <>
                       <span className={styles.projectName}>{report.project.name}</span>
-                      {report.project.targetDomain && (
-                        <span className={styles.projectDomain}>{report.project.targetDomain}</span>
+                      {projectTargetLabel(report.project) && (
+                        <span className={styles.projectDomain}>{projectTargetLabel(report.project)}</span>
                       )}
                       <span className={styles.sep}>|</span>
                     </>

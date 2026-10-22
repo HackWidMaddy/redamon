@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { ChevronDown, FolderOpen, Plus, Settings } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
 import { useProjects, type ProjectListItem } from '@/hooks/useProjects'
+import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
 import { useGuardedRouter, useNavigationGuard } from '@/context/NavigationGuardContext'
 import styles from './ProjectSelector.module.css'
 
@@ -32,15 +33,7 @@ export function ProjectSelector() {
     // Switching the active project abandons whatever dirty form is open, so
     // confirm before mutating context (not just before navigating).
     if (guard?.hasGuards() && !(await guard.confirmAllGuards())) return
-    setCurrentProject({
-      id: project.id,
-      name: project.name,
-      targetDomain: project.targetDomain,
-      subdomainList: project.subdomainList,
-      description: project.description || undefined,
-      createdAt: project.createdAt,
-      updatedAt: project.updatedAt
-    })
+    setCurrentProject(toProjectSummary(project))
     setIsOpen(false)
 
     // If on a project settings page, navigate to the new project's settings.
@@ -122,7 +115,7 @@ export function ProjectSelector() {
                 >
                   <div className={styles.itemContent}>
                     <span className={styles.itemName}>{project.name}</span>
-                    <span className={styles.itemDomain}>{project.targetDomain}</span>
+                    <span className={styles.itemDomain}>{projectTargetLabel(project)}</span>
                   </div>
                 </button>
               ))
