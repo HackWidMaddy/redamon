@@ -69,6 +69,40 @@ class DomainMixin:
             ).single()
         return int(result["n"]) if result else 0
 
+    def legacy_domain_nodes(self, user_id: str, project_id: str,
+                            expected, related) -> list:
+        """Domain nodes an older scope model left holding data; [] when none.
+
+        `expected` is the names the current scope's Domain nodes carry
+        (expectedDomainNames: the scan roots until the org model ships, the
+        orgs after); `related` is the orgs and scan roots. A Domain that is
+        neither expected nor unrelated to the scope (a removed root keeps its
+        ordinary stale semantics) but still holds subdomains or a coverage
+        record is old-model, e.g. `Domain(co.uk)` after the batch regrouped to
+        `acme.co.uk`. A partial run must not attach to it: refuse until a full
+        recon rebuilds the graph. Case-insensitive, because legacy
+        single-domain targets were stored with the case they were typed in.
+        Mirrored by the webapp's graph-inputs route (`legacy_graph`); both read
+        tests/fixtures/legacy_domain_vectors.json.
+        """
+        expected = sorted({str(n).strip().lower() for n in expected or [] if str(n).strip()})
+        related = sorted({str(n).strip().lower() for n in related or [] if str(n).strip()})
+        if not related:
+            return []
+        with self.driver.session() as session:
+            record = session.run(
+                """
+                MATCH (d:Domain {user_id: $uid, project_id: $pid})
+                WITH d, toLower(d.name) AS n
+                WHERE NOT n IN $expected AND coalesce(d.ip_mode, false) = false
+                  AND ANY(r IN $related WHERE n = r OR n ENDS WITH '.' + r OR r ENDS WITH '.' + n)
+                  AND (EXISTS { (d)-[:HAS_SUBDOMAIN]->() } OR d.recon_coverage_at IS NOT NULL)
+                RETURN collect(d.name) AS legacy
+                """,
+                uid=user_id, pid=project_id, expected=expected, related=related,
+            ).single()
+        return sorted(record["legacy"]) if record else []
+
     def update_graph_from_domain_discovery(self, recon_data: dict, user_id: str, project_id: str) -> dict:
         """
         Initialize the Neo4j graph database with reconnaissance data after domain_discovery.
