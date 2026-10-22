@@ -188,6 +188,10 @@ describe('P8: every tool named in an agent-facing string exists', () => {
       /daily mute budget/i,
       /within a daily budget/i,
       /MCP_MUTE_DAILY_BUDGET/,
+      // update_project_scope edits a batch's host list, and create_project
+      // honours settings.targetGuardrailEnabled.
+      /domain-batch configuration.*outside what any token may write/i,
+      /cannot change what RedAmon points at/i,
     ]
     const problems: string[] = []
     for (const file of AGENT_FACING) {

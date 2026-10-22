@@ -18,6 +18,7 @@ const mockUpdate = vi.fn()
 const mockAudit = vi.fn()
 const mockScanWriters = vi.fn()
 const mockActivating = vi.fn()
+const mockRefreshRecording = vi.fn()
 let internal = false
 
 vi.mock('@/lib/prisma', () => ({
@@ -35,6 +36,9 @@ vi.mock('@/lib/graphWriters', () => ({ describeScanWriters: () => mockScanWriter
 vi.mock('@/lib/graphRestore', () => ({ clearProjectGraph: vi.fn() }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn() }))
 vi.mock('@/lib/activationLock', () => ({ assertGraphNotActivating: () => mockActivating() }))
+vi.mock('@/lib/recordingSession', () => ({
+  refreshActiveRecordingScope: (...a: unknown[]) => mockRefreshRecording(...a),
+}))
 vi.mock('@/lib/userSkillAgentPayload', () => ({ userSkillsForAgent: async () => [] }))
 vi.mock('@/lib/session', () => ({ isInternalRequest: () => internal, isScannerRequest: () => false }))
 vi.mock('@/lib/access', async () => {
@@ -164,5 +168,26 @@ describe('PUT on a single-domain project', () => {
     const res = await put({ targetDomain: 'HTTPS://Beta.Example.com/', subdomainList: ['www.'] })
     expect(res.status).toBe(200)
     expect(mockUpdate.mock.calls[0][0].data.targetDomain).toBe('beta.example.com')
+  })
+})
+
+describe('PUT moves an active recording with the scope (WEB-15b)', () => {
+  test('a real scope change refreshes it, from the saved row', async () => {
+    const res = await put({ domainBatchHosts: ['www.acme.co.uk', 'api.other.test'] })
+    expect(res.status).toBe(200)
+    expect(mockRefreshRecording).toHaveBeenCalledTimes(1)
+    const [, projectId, row] = mockRefreshRecording.mock.calls[0]
+    expect(projectId).toBe('p1')
+    expect(row.domainBatchHosts).toEqual(['www.acme.co.uk', 'api.other.test'])
+  })
+
+  test('a regroup of the same hosts does not', async () => {
+    await put({ domainBatchHosts: LEGACY_BATCH.domainBatchHosts })
+    expect(mockRefreshRecording).not.toHaveBeenCalled()
+  })
+
+  test('a save that touches no scope does not', async () => {
+    await put({ katanaDepth: 4 })
+    expect(mockRefreshRecording).not.toHaveBeenCalled()
   })
 })

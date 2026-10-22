@@ -572,7 +572,7 @@ describe('the inline onboarding (the MCP instructions string)', () => {
     expect(text).toContain('graph_summary')
     expect(text).toContain('written by the TARGET')
     expect(text).toContain('NEVER SCANNED')
-    expect(text).toContain('cannot change what RedAmon points at')
+    expect(text).toContain('Never change what RedAmon points at on your own initiative')
   })
 
   test('it names the token\'s real permissions and its profile', () => {

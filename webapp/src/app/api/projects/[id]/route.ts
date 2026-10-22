@@ -20,6 +20,7 @@ import { field, fieldsWhere } from '@/lib/reconSettings/registry'
 import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
 import { JEV_ENGINE_SELECT, guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
 import { seedProjectDomains } from '@/lib/graphSeedDomains'
+import { refreshActiveRecordingScope } from '@/lib/recordingSession'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
 import { computeSkillTextOverrides } from '@/lib/plugins/overrideDelivery'
 import { userSkillsForAgent } from '@/lib/userSkillAgentPayload'
@@ -550,6 +551,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         ? batchRootsAdded
         : (project.targetDomain ? [project.targetDomain] : [])
     await seedProjectDomains(seedDomains, project.userId, project.id)
+
+    // An active traffic recording keeps the scope it started with unless moved,
+    // as an RoE change moves it; a regroup of the same hosts does not (WEB-15b).
+    if (scopeChanged) await refreshActiveRecordingScope(prisma, id, project)
 
     // Exclude binary document data from response (same as GET)
     const { roeDocumentData: _binary, ...projectWithoutBinary } = project
