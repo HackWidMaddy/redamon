@@ -7,7 +7,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-from recon.helpers.auth_profile import default_scope_hosts, host_in_scope
+from recon.helpers.auth_profile import host_in_scope
 from recon.helpers.roe_scope import _is_roe_excluded, _normalize_host as _roe_entry_host
 
 
@@ -85,18 +85,14 @@ class Scope:
         self.ip_networks = tuple(ip_networks)
         self.excluded_hosts = tuple(excluded_hosts)
         self._valid = _valid and bool(root or self.ip_networks)
-        defaults = default_scope_hosts({
-            'TARGET_DOMAIN': root,
-            'IP_MODE': not bool(root),
-            'TARGET_IPS': [str(network) for network in self.ip_networks],
-        })
-        # Auth defaults include the apex and every subdomain; serialized scan
-        # selection may authorize only explicit hosts, so narrow that default.
-        self._scope_hosts = tuple(self.hosts) + tuple(
-            entry for entry in defaults
-            if not root or (entry == root and include_root)
-            or (entry == f'*.{root}' and include_subdomains)
-        )
+        # The auth scope is exactly what this scope names: its hosts, the root
+        # only when included, its subdomains only when included, or, with no
+        # root, its networks.
+        if root:
+            named = ([root] if include_root else []) + ([f'*.{root}'] if include_subdomains else [])
+        else:
+            named = [str(network) for network in self.ip_networks]
+        self._scope_hosts = tuple(self.hosts) + tuple(named)
 
     @classmethod
     def from_payload(cls, payload: Any) -> "Scope":

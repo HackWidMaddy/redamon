@@ -106,8 +106,12 @@ class TestSanitizing:
 
 
 class TestScope:
-    def test_default_scope_is_root_plus_wildcard_plus_prefixes(self):
-        assert default_scope_hosts(SETTINGS) == ['example.test', '*.example.test', 'app.example.test']
+    def test_a_listed_single_domain_scope_is_exactly_its_hosts(self):
+        # §4.6: a single domain with a prefix list is an EXACT group. It used to
+        # authorise `*.example.test` too, so the session reached every
+        # subdomain discovery found although the operator listed one host.
+        assert default_scope_hosts(SETTINGS) == ['app.example.test', 'example.test']
+        assert not host_in_scope('admin.example.test', default_scope_hosts(SETTINGS))
 
     def test_default_scope_covers_discovered_subdomains(self):
         # The whole point of the feature: recon discovers subdomains that are NOT
@@ -117,7 +121,10 @@ class TestScope:
         scope = default_scope_hosts({'TARGET_DOMAIN': 'example.test', 'SUBDOMAIN_LIST': []})
         assert host_in_scope('cdn.example.test', scope)
         assert host_in_scope('deep.nested.example.test', scope)
-        assert host_in_scope('example.test', scope)
+        # The target itself is a target only with "." (Include Root).
+        assert not host_in_scope('example.test', scope)
+        scope = default_scope_hosts({'TARGET_DOMAIN': 'example.test', 'SUBDOMAIN_LIST': ['.']})
+        assert host_in_scope('example.test', scope) and host_in_scope('cdn.example.test', scope)
 
     def test_default_scope_still_excludes_foreign_hosts(self):
         scope = default_scope_hosts(SETTINGS)
@@ -130,7 +137,7 @@ class TestScope:
         # A batch project leaves TARGET_DOMAIN empty; without the group roots it
         # would have no scope at all and never attach auth.
         scope = default_scope_hosts({
-            'TARGET_DOMAIN': '',
+            'TARGET_DOMAIN': '', 'DOMAIN_BATCH_MODE': True,
             'DOMAIN_BATCH_GROUPS': [
                 {'rootDomain': 'a.test', 'prefixes': ['*']},
                 {'rootDomain': 'b.test', 'prefixes': ['.']},
@@ -147,7 +154,7 @@ class TestScope:
         # could not discover anything; a wildcard group makes it live, and would
         # hand the session to thousands of names the operator never listed.
         scope = default_scope_hosts({
-            'TARGET_DOMAIN': '',
+            'TARGET_DOMAIN': '', 'DOMAIN_BATCH_MODE': True,
             'DOMAIN_BATCH_GROUPS': [
                 {'rootDomain': 'lit.test', 'prefixes': ['api.']},
                 {'rootDomain': 'wild.test', 'prefixes': ['*']},
@@ -157,13 +164,14 @@ class TestScope:
         # The literal group named one host. Its siblings are NOT in scope.
         assert not host_in_scope('admin.lit.test', scope)
         assert not host_in_scope('lit.test', scope)
-        # The wildcard group asked for the whole domain, so it gets it.
-        assert host_in_scope('wild.test', scope)
+        # The wildcard group asked for everything under the domain, so it gets
+        # it; the domain itself only with Root on (§4.6).
         assert host_in_scope('anything.wild.test', scope)
+        assert not host_in_scope('wild.test', scope)
 
     def test_literal_batch_group_includes_the_apex_only_via_the_dot_sentinel(self):
         scope = default_scope_hosts({
-            'TARGET_DOMAIN': '',
+            'TARGET_DOMAIN': '', 'DOMAIN_BATCH_MODE': True,
             'DOMAIN_BATCH_GROUPS': [{'rootDomain': 'lit.test', 'prefixes': ['.', 'api.']}],
         })
         assert host_in_scope('lit.test', scope)
@@ -186,9 +194,19 @@ class TestScope:
         assert default_scope_hosts({}) == []
         assert auth_header_lines(_profile(), 'anything.test', {}) == []
 
-    def test_explicit_scope_overrides_default(self):
-        p = _profile(scopeHosts=['*.other.test'])
-        assert resolve_scope_hosts(p, SETTINGS) == ['*.other.test']
+    def test_explicit_scope_only_narrows_the_default(self):
+        # D-22: the intersection, never a replacement. An explicit scope used to
+        # REPLACE the default, so it could send the session off the project.
+        assert resolve_scope_hosts(_profile(scopeHosts=['*.other.test']), SETTINGS) == []
+        # *.example.test on a project listing app + the root meets at app only.
+        assert resolve_scope_hosts(_profile(scopeHosts=['*.example.test']), SETTINGS) == ['app.example.test']
+        enumerated = {'TARGET_DOMAIN': 'example.test', 'SUBDOMAIN_LIST': []}
+        assert resolve_scope_hosts(_profile(scopeHosts=['*.a.example.test', 'b.example.test']),
+                                   enumerated) == ['*.a.example.test', 'b.example.test']
+
+    def test_explicit_scope_is_roe_filtered(self):
+        s = dict(SETTINGS, ROE_ENABLED=True, ROE_EXCLUDED_HOSTS=['app.example.test'])
+        assert resolve_scope_hosts(_profile(scopeHosts=['app.example.test']), s) == []
 
     def test_wildcard_matches_subdomains_not_apex(self):
         assert host_in_scope('a.b.other.test', ['*.other.test'])
@@ -239,7 +257,7 @@ class TestMergeAuthHeaders:
     def test_auth_attached_to_discovered_subdomains(self):
         # Regression: the crawl hosts are whatever recon discovered, which is NOT
         # the configured SUBDOMAIN_LIST. These must be authenticated.
-        s = dict(SETTINGS, SUBDOMAIN_LIST=[],
+        s = dict(SETTINGS, SUBDOMAIN_LIST=['.'],
                  AUTH_PROFILE={'authType': 'cookie', 'authValue': 'sid=abc123'})
         out = merge_auth_headers([], s, ['example.test', 'api.example.test', 'cdn.example.test'])
         assert out == ['Cookie: sid=abc123']
@@ -299,7 +317,7 @@ class TestHttpxScopeUsesRealProbeHosts:
     def _settings(self, **kw):
         from recon.project_settings import DEFAULT_SETTINGS
         s = dict(DEFAULT_SETTINGS)
-        s.update({'TARGET_DOMAIN': 'example.test', 'SUBDOMAIN_LIST': [],
+        s.update({'TARGET_DOMAIN': 'example.test', 'SUBDOMAIN_LIST': ['.'],
                   'HTTPX_CUSTOM_HEADERS': [],
                   'AUTH_PROFILE': {'authType': 'cookie', 'authValue': 'sid=abc123'}})
         s.update(kw)

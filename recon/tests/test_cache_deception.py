@@ -61,7 +61,8 @@ class SafeStaticSession(DeceptionCacheSession):
 
 
 _SETTINGS = {
-    "TARGET_DOMAIN": "shop.test",
+    # "." puts shop.test itself in scope; without it only its subdomains get auth.
+    "TARGET_DOMAIN": "shop.test", "SUBDOMAIN_LIST": ["."],
     "AUTH_PROFILE": {"authType": "cookie", "authValue": "session=abc", "reconEnabled": True},
 }
 _URL = "https://shop.test/account"
