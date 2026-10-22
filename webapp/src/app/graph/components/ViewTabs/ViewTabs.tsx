@@ -165,6 +165,8 @@ interface DataFilterView {
   id: string
   name: string
   description?: string
+  /** Set when the view's Cypher names a Domain the graph no longer has. */
+  staleNote?: string | null
 }
 
 interface ViewTabsProps {
@@ -362,6 +364,15 @@ export const ViewTabs = memo(function ViewTabs({
                           <span className={styles.filterDropdownName}>{f.name}</span>
                           {f.description && (
                             <span className={styles.filterDropdownDesc}>{f.description}</span>
+                          )}
+                          {f.staleNote && (
+                            <span
+                              className={styles.filterDropdownDesc}
+                              style={{ color: 'var(--status-warning-text)' }}
+                              data-testid="graph-view-stale"
+                            >
+                              May need an update: {f.staleNote}
+                            </span>
                           )}
                         </div>
                         <button

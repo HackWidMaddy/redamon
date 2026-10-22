@@ -78,6 +78,7 @@ import { useNavigationGuard } from '@/context/NavigationGuardContext'
 import styles from './page.module.css'
 import { deriveRoeEnabled } from '@/lib/engagement'
 import { groupLabel } from '@/lib/scopeGroups'
+import { staleViewNote } from './utils/staleViewNote'
 
 // A saved (past) version is read-only, and GVM/GitHub-Hunt/TruffleHog write to the
 // LIVE/active graph. Starting one while viewing an old version would silently add
@@ -175,6 +176,11 @@ export default function GraphPage() {
 
   // Data filters (formerly graph views) -- used in tab selector, Graph Map, Data Table, AI drawer
   const { views: graphViews, deleteView, executeCypher, fetchViews } = useGraphViews(projectId)
+  // A saved view naming a Domain the org model renamed is flagged, never rewritten.
+  const dataFilterViews = useMemo(
+    () => graphViews.map(v => ({ ...v, staleNote: staleViewNote(v.cypherQuery, currentProject?.scopeGroups ?? []) })),
+    [graphViews, currentProject?.scopeGroups],
+  )
   const [selectedFilterId, setSelectedFilterId] = useState<string | null>(null)
   const [filterGraphData, setFilterGraphData] = useState<{ nodes: any[]; links: any[]; projectId: string } | null>(null)
   const [filterLoading, setFilterLoading] = useState(false)
@@ -1620,7 +1626,7 @@ export default function GraphPage() {
         filteredRows={textFilteredCount}
         sessionCount={activeSessions.totalCount}
         tunnelStatus={tunnelStatus}
-        dataFilters={graphViews}
+        dataFilters={dataFilterViews}
         selectedFilterId={selectedFilterId}
         onSelectFilter={setSelectedFilterId}
         onDeleteFilter={handleDeleteFilter}
