@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover - dependency guaranteed by the image
 from recon.main_recon_modules.ip_filter import is_non_routable_ip, is_url_safe_to_probe
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.helpers.cdn_ranges import is_reliable_edge_cdn_name
+from recon.helpers.public_suffix import org_domain
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -310,57 +311,6 @@ def _favicon_hash_for_host(host: str, existing: Any, ctx: _RunCtx) -> Optional[i
 # ---------------------------------------------------------------------------
 # Fronted-host selection
 # ---------------------------------------------------------------------------
-
-# Common multi-label public suffixes. A naive last-two-labels registrable domain
-# turns `www.acme.co.uk` into `co.uk`, so SPF/crt.sh/passive-DNS get queried for
-# the public suffix and the real origin is silently never a candidate — a whole
-# class of ccTLD targets. This is a curated subset of the Public Suffix List
-# (the image ships no PSL library); it covers the common cases, not every entry.
-_MULTI_LABEL_SUFFIXES = frozenset({
-    "co.uk", "org.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk", "ac.uk", "gov.uk", "nhs.uk",
-    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
-    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz", "school.nz", "geek.nz",
-    "co.za", "org.za", "net.za", "gov.za", "ac.za", "web.za",
-    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp", "ad.jp", "ed.jp", "gr.jp", "lg.jp",
-    "com.br", "net.br", "org.br", "gov.br", "edu.br",
-    "co.in", "net.in", "org.in", "gen.in", "firm.in", "ind.in", "gov.in", "ac.in", "edu.in", "res.in",
-    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
-    "co.kr", "or.kr", "ne.kr", "re.kr", "pe.kr", "go.kr", "ac.kr",
-    "com.ru", "net.ru", "org.ru", "msk.ru", "spb.ru",
-    "com.tr", "net.tr", "org.tr", "gov.tr", "edu.tr", "bel.tr",
-    "com.mx", "net.mx", "org.mx", "gob.mx", "edu.mx",
-    "com.ar", "net.ar", "org.ar", "gob.ar", "edu.ar",
-    "com.sg", "net.sg", "org.sg", "gov.sg", "edu.sg",
-    "com.hk", "net.hk", "org.hk", "gov.hk", "edu.hk", "idv.hk",
-    "co.il", "org.il", "net.il", "ac.il", "gov.il", "muni.il", "k12.il",
-    "co.id", "or.id", "net.id", "web.id", "ac.id", "go.id", "sch.id", "my.id",
-    "co.th", "or.th", "net.th", "in.th", "ac.th", "go.th",
-    "com.tw", "net.tw", "org.tw", "gov.tw", "edu.tw", "idv.tw",
-    "com.ua", "net.ua", "org.ua", "in.ua", "kiev.ua",
-    "com.pl", "net.pl", "org.pl", "edu.pl", "gov.pl",
-    "com.gr", "net.gr", "org.gr", "edu.gr", "gov.gr",
-    "com.pk", "net.pk", "org.pk", "gov.pk", "edu.pk",
-    "com.eg", "net.eg", "org.eg", "gov.eg", "edu.eg",
-    "com.sa", "net.sa", "org.sa", "gov.sa", "edu.sa",
-    "com.ph", "net.ph", "org.ph", "gov.ph", "edu.ph",
-    "com.my", "net.my", "org.my", "gov.my", "edu.my",
-    "com.ng", "net.ng", "org.ng", "gov.ng", "edu.ng",
-})
-
-
-def _registrable_domain(host: str) -> str:
-    """Registrable domain (unwaf extractMainDomain, PSL-aware for common ccTLDs).
-
-    `www.acme.co.uk` -> `acme.co.uk` (not `co.uk`); `a.b.acme.com` -> `acme.com`.
-    """
-    parts = (host or "").strip(".").split(".")
-    if len(parts) <= 2:
-        return ".".join(parts) if parts != [""] else host
-    last2 = ".".join(parts[-2:])
-    if last2 in _MULTI_LABEL_SUFFIXES:
-        return ".".join(parts[-3:])
-    return last2
-
 
 def _resolve_ips(host: str) -> Set[str]:
     try:
@@ -1155,7 +1105,10 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optio
 
 def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict) -> Dict[str, str]:
     """Run every enabled source for one host; map ip -> first source. Never raises."""
-    domain = _registrable_domain(host)
+    # The domain-keyed sources (SPF, crt.sh, passive DNS) query the org. An IP
+    # literal or a name on a public suffix has none, so only the host-keyed
+    # scanners run for it.
+    domain = org_domain(host)
     favicon = _favicon_hash_for_host(host, entry.get("favicon_hash"), ctx)
     if favicon is not None:
         entry["favicon_hash"] = favicon
@@ -1172,7 +1125,7 @@ def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict) -> Dict
             # surface it (e.g. an invalid API key) instead of a silent empty result
             _log("-", f"{host}: source '{name}' failed: {str(e)[:120]}")
 
-    if ctx.settings.get("ORIGIN_DISCOVERY_KEYLESS", True):
+    if domain and ctx.settings.get("ORIGIN_DISCOVERY_KEYLESS", True):
         # Keyed by the registrable domain so N fronted subdomains of one domain
         # don't each re-resolve the same ~30 subdomains / SPF+MX / up-to-500 crt.sh
         # SANs (F2). Cache stores only non-empty results (transient failures retry).
@@ -1184,9 +1137,10 @@ def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict) -> Dict
         _run("censys", "cert_san", lambda: _discover_via_censys(host, ctx))
         _run("fofa", "cert_san", lambda: _discover_via_fofa(host, favicon, ctx))
         _run("zoomeye", "cert_san", lambda: _discover_via_zoomeye(host, favicon, ctx))
-        _run("otx", "passive_dns", lambda: _discover_via_otx(domain, ctx))
-        _run("virustotal", "passive_dns", lambda: _discover_via_virustotal(domain, ctx))
-    if ctx.settings.get("ORIGIN_DISCOVERY_PASSIVE_DNS", True):
+        if domain:
+            _run("otx", "passive_dns", lambda: _discover_via_otx(domain, ctx))
+            _run("virustotal", "passive_dns", lambda: _discover_via_virustotal(domain, ctx))
+    if domain and ctx.settings.get("ORIGIN_DISCOVERY_PASSIVE_DNS", True):
         _run("securitytrails", "passive_dns", lambda: _discover_via_securitytrails(domain, ctx))
         _run("viewdns", "passive_dns", lambda: _discover_via_viewdns(domain, ctx))
 
