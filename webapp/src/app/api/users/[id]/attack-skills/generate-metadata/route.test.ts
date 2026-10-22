@@ -241,6 +241,16 @@ describe('generate-metadata: the audit row', () => {
     for (const leak of ['Pickle Flow', 'Tests pickle', 'A skill body', 'a.md', 'AKIA']) expect(text).not.toContain(leak)
   })
 
+  test('the audit names the caller even when the session ends during the agent call', async () => {
+    h.agentFetch.mockImplementation(async () => {
+      h.session = null
+      return new Response(JSON.stringify({ items: [{ key: 'a', name: 'Pickle Flow', description: 'Tests pickle.' }], model_used: MODEL }), { status: 200 })
+    })
+    await generate({ items: [item('a')] })
+    expect(h.audits).toHaveLength(1)
+    expect(h.audits[0]).toMatchObject({ actorId: 'alice', source: 'ui' })
+  })
+
   test('an admin simulating the owner is audited on behalf of the owner', async () => {
     h.session = { userId: 'root', role: 'admin' }
     await generate({ items: [item('a')] })

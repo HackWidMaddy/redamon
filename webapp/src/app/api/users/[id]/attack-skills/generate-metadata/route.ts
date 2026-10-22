@@ -108,6 +108,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
   const model = await readFeatureModel(eff.userId, 'skill_metadata')
   if (!model) return featureModelErrorResponse('model_required', 'skill_metadata')
+  // Read now: the agent call can outlast the session, and the audit row must still name the caller.
+  const actor = auditActorFor((await getSession())?.userId, id)
 
   const agent = await callFeatureAgent({
     featureId: 'skill_metadata',
@@ -142,7 +144,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   // The server's record of what the model wrote for: the model and each file's hash, which
   // matches the create row of the same file. No text: the proposals may never be saved.
   if (items.some((i) => i.name || i.description)) {
-    const actor = auditActorFor((await getSession())?.userId, id)
     await writeAudit({
       actorId: actor.actorId,
       source: actor.source,
