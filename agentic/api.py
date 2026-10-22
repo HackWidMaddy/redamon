@@ -2991,6 +2991,10 @@ async def generate_skill_metadata(body: SkillMetadataRequest):
         items = await asyncio.wait_for(asyncio.gather(*(one(i) for i in body.items)),
                                        skill_metadata.REQUEST_TIMEOUT_S)
     except asyncio.TimeoutError:
+        # Still one line per request: it is the operator's only record of a Generate call.
+        logger.info("skill_metadata user=%s model=%s items=%d ok=0 failed=%d ms=%d timeout",
+                    body.user_id, model, len(body.items), len(body.items),
+                    int((time.monotonic() - started) * 1000))
         return _feature_error("agent_timeout", model, 504, "The model took too long, try again")
 
     failed = sum(1 for i in items if "error" in i)

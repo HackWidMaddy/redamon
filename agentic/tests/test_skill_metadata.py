@@ -178,6 +178,18 @@ def test_a_request_past_its_cap_is_the_coded_timeout(api, monkeypatch):
                           "model_used": "gpt-5"}
 
 
+def test_a_request_past_its_cap_still_writes_its_log_line(api, monkeypatch, caplog):
+    import skill_metadata
+    monkeypatch.setattr(skill_metadata, "REQUEST_TIMEOUT_S", 0.2)
+    with caplog.at_level(logging.INFO, logger="api"):
+        with patch.object(logging.getLogger("api"), "propagate", True):
+            res = _post(api, {"items": [_item("a")]}, llm=_Llm(by_marker={"Body of a.": 2}))
+    assert res.status_code == 504
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("skill_metadata ")]
+    assert len(lines) == 1, [r.getMessage() for r in caplog.records]
+    assert re.fullmatch(r"skill_metadata user=alice model=gpt-5 items=1 ok=0 failed=1 ms=\d+ timeout", lines[0])
+
+
 def test_one_refused_key_makes_the_whole_request_model_unavailable(api):
     llm = _Llm(by_marker={"Body of b.": _Refused("invalid api key sk-live-LEAK")})
     res = _post(api, {"items": [_item("a"), _item("b")]}, llm=llm)
