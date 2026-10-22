@@ -4,8 +4,8 @@
  * Hosts group by their registrable domain (Public Suffix List), never by "the
  * last two labels": `foo.example.co.uk` belongs to `example.co.uk`, and `*.co.uk`
  * is refused. An entry is an EXACT host or a `*.X` wildcard; a wildcard below
- * its org stays refused until nested wildcards ship (NESTED_WILDCARDS_ENABLED),
- * and the collapse logic is exercised here through the `nestedWildcards` option.
+ * its org is a scan root of its own (NESTED_WILDCARDS_ENABLED); the refusal path
+ * and the collapse logic are exercised here through the `nestedWildcards` option.
  */
 import { describe, test, expect } from 'vitest'
 import {
@@ -81,13 +81,16 @@ describe('grouping by registrable domain', () => {
   })
 })
 
-describe('nested wildcards (behind NESTED_WILDCARDS_ENABLED)', () => {
-  test('the flag is off until the graph phases ship', () => {
-    expect(NESTED_WILDCARDS_ENABLED).toBe(false)
+describe('nested wildcards (NESTED_WILDCARDS_ENABLED)', () => {
+  test('the flag is on: the graph attaches a deeper scan root to its org', () => {
+    expect(NESTED_WILDCARDS_ENABLED).toBe(true)
+    const { groups, invalid } = groupHostsByScanRoot(['*.sub.example.com'])
+    expect(invalid).toEqual([])
+    expect(groups.map(g => [g.scanRoot, g.orgDomain, g.mode])).toEqual([['sub.example.com', 'example.com', 'enumerate']])
   })
 
   test('off: a wildcard below the org is refused with its own reason', () => {
-    const { groups, invalid } = groupHostsByScanRoot(['*.sub.example.com'])
+    const { groups, invalid } = groupHostsByScanRoot(['*.sub.example.com'], { nestedWildcards: false })
     expect(groups).toEqual([])
     expect(invalid).toEqual([{ entry: '*.sub.example.com', reason: 'nested_wildcard_disabled' }])
   })

@@ -24,11 +24,12 @@ export const ROOT_DOMAIN_PREFIX = '.'
 export const WILDCARD_PREFIX = '*'
 
 /**
- * `*.api.example.com` (a wildcard below the org) stays refused until the graph
- * and pipeline phases that attach a deeper scan root to its org have shipped.
- * Not a user setting.
+ * Whether `*.api.example.com` (a wildcard below the org) is a scan root of its
+ * own. It needs the graph to attach a deeper scan root to its org Domain, so
+ * it ships with GRAPH_DOMAIN_IS_ORG. Not a user setting; kept as a constant so
+ * the refusal path (nested_wildcard_disabled) stays testable.
  */
-export const NESTED_WILDCARDS_ENABLED = false
+export const NESTED_WILDCARDS_ENABLED = true
 
 /**
  * Caps on one batch. MAX_BATCH_GROUPS mirrors supplyChainOrgMaxRepos: without
@@ -153,7 +154,7 @@ export type ParsedEntry =
   | { ok: false; reason: InvalidReason }
 
 export interface GroupingOptions {
-  /** Defaults to NESTED_WILDCARDS_ENABLED; tests exercise the collapse before it ships. */
+  /** Defaults to NESTED_WILDCARDS_ENABLED; tests exercise both settings. */
   nestedWildcards?: boolean
 }
 
