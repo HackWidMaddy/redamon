@@ -281,6 +281,23 @@ def test_a_long_file_is_cut_and_the_cut_is_said(api):
     assert "x" * (skill_metadata.CONTENT_HEAD_CHARS + 1) not in human.content
 
 
+def test_the_webapp_contract_round_trips(api):
+    # The webapp's generate-metadata route.test.ts sends this same agent_request and reads
+    # this same agent_response, so a field renamed on either side fails one of the two suites.
+    contract = json.loads((Path(__file__).resolve().parent / "fixtures"
+                           / "skill_metadata_contract.json").read_text(encoding="utf-8"))
+    from api import SkillMetadataItem, SkillMetadataRequest
+    # Pydantic drops an unknown field silently, so a field renamed here would otherwise pass.
+    assert set(contract["agent_request"]) <= set(SkillMetadataRequest.model_fields)
+    for item in contract["agent_request"]["items"]:
+        assert set(item) <= set(SkillMetadataItem.model_fields)
+    answers = {item["content"].splitlines()[-1]: json.dumps({k: v for k, v in answer.items() if k != "key"})
+               for item, answer in zip(contract["agent_request"]["items"], contract["agent_response"]["items"])}
+    res = _post(api, contract["agent_request"], llm=_Llm(by_marker=answers))
+    assert res.status_code == 200, res.text
+    assert res.json() == contract["agent_response"]
+
+
 def test_the_outline_skips_headings_in_fenced_code():
     import skill_metadata
     content = "# Title\n```bash\n# not a heading\n```\n## Phase 1\n~~~\n### nope\n~~~\n#tag\n### Phase 2"

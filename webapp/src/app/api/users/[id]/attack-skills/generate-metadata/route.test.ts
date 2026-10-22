@@ -7,6 +7,8 @@
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { NextRequest, NextResponse } from 'next/server'
 
 const h = vi.hoisted(() => ({
@@ -127,6 +129,24 @@ describe('generate-metadata: the model and the agent', () => {
     expect(res.status).toBe(400)
     expect((await res.json()).code).toBe('items_invalid')
     expect(h.agentFetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('generate-metadata: the contract with the agent', () => {
+  // agentic/tests/test_skill_metadata.py posts the same agent_request and expects the same
+  // agent_response, so a field renamed on either side fails one of the two suites.
+  const CONTRACT = JSON.parse(readFileSync(
+    join(__dirname, '../../../../../../../../agentic/tests/fixtures/skill_metadata_contract.json'), 'utf8'))
+
+  test('the route sends agent_request and turns agent_response into route_response', async () => {
+    h.eff = { userId: CONTRACT.user_id }
+    h.session = { userId: CONTRACT.user_id, role: 'standard' }
+    h.settings.mockResolvedValue({ featureModels: { skill_metadata: CONTRACT.model } })
+    agentReply(CONTRACT.agent_response)
+    const res = await generate(CONTRACT.route_request, { id: CONTRACT.user_id })
+    expect(res.status).toBe(200)
+    expect(sentToAgent().body).toEqual(CONTRACT.agent_request)
+    expect(await res.json()).toEqual(CONTRACT.route_response)
   })
 })
 
