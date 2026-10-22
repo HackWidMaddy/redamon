@@ -317,6 +317,14 @@ def test_parse_answer_drops_a_field_not_asked_and_empty_values():
     assert skill_metadata.parse_answer('["a"]', True, True) == {}
 
 
+def test_a_deeply_nested_answer_is_unreadable_not_a_crash():
+    # json.loads raises RecursionError (not ValueError) past ~1000 levels; escaping parse_answer
+    # it failed the whole request with a 500 and left the other items' calls running.
+    import skill_metadata
+    nested = '{"name": ' + "[" * 5000 + "]" * 5000 + ', "description": "D"}'
+    assert skill_metadata.parse_answer(nested, True, True) == {}
+
+
 # ---------------------------------------------------------------- the timeout chain
 
 def test_the_webapp_waits_longer_than_the_agent_and_less_than_undici():

@@ -116,7 +116,8 @@ def parse_answer(text: str, want_name: bool, want_description: bool) -> dict:
         return {}
     try:
         data = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: about a thousand nested brackets, which a skill file can make the model write.
         return {}
     if not isinstance(data, dict):
         return {}
