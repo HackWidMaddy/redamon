@@ -179,3 +179,27 @@ describe.each([...PARTIAL_RECON_SUPPORTED_TOOLS])('every supported tool: %s', (t
     if (cypher.includes(':Domain')) expect(cypher).toMatch(/\bIN \$domains\b/)
   })
 })
+
+describe('old-model Domain nodes (§4.11.6)', () => {
+  test('are returned as legacy_graph, from the derived scope groups', async () => {
+    mockFindUnique.mockResolvedValue({
+      userId: 'u1', targetDomain: '', ipMode: false, domainBatchMode: true,
+      domainBatchHosts: ['*.alpha.test', 'www.beta.test'], domainBatchGroups: null,
+    })
+    mockRun.mockImplementation(async (cypher: string) => {
+      if (cypher.includes('AS hasData')) return { records: graphDomains.map(record) }
+      if (cypher.includes('AS legacy')) return { records: [record({ legacy: ['www.beta.test'] })] }
+      return { records: [record({ subdomains: [], subCount: 0, ipCount: 0, portCount: 0 })] }
+    })
+    const body = await (await call('Tlsx')).json()
+    expect(body.legacy_graph).toEqual(['www.beta.test'])
+    const legacyCall = mockRun.mock.calls.find(([c]) => String(c).includes('AS legacy'))!
+    expect(legacyCall[1]).toMatchObject({ uid: 'u1', pid: 'p1', expected: ['alpha.test', 'beta.test'] })
+  })
+
+  test('a project whose scope is not derivable asks nothing and reports none', async () => {
+    const body = await (await call('Tlsx')).json()
+    expect(body.legacy_graph).toEqual([])
+    expect(mockRun.mock.calls.some(([c]) => String(c).includes('AS legacy'))).toBe(false)
+  })
+})

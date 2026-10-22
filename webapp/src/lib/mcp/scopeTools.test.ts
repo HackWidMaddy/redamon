@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   userSettings: vi.fn(),
   live: vi.fn(),
   seed: vi.fn(),
+  legacy: vi.fn(),
   audit: vi.fn(),
   fetch: vi.fn(),
   recordingFind: vi.fn(),
@@ -51,6 +52,10 @@ vi.mock('@/lib/prisma', () => {
 })
 vi.mock('@/lib/graphWriters', () => ({ describeLiveGraphWriters: (...a: unknown[]) => h.live(...a) }))
 vi.mock('@/lib/graphSeedDomains', () => ({ seedProjectDomains: (...a: unknown[]) => h.seed(...a) }))
+vi.mock('@/lib/legacyGraph', async orig => ({
+  ...(await orig<typeof import('@/lib/legacyGraph')>()),
+  legacyGraphDomains: (...a: unknown[]) => h.legacy(...a),
+}))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
 
 import { McpScopeError, __resetRateLimiter, type McpScope } from '@/lib/mcpAuth'
@@ -103,6 +108,7 @@ beforeEach(() => {
   h.userSettings.mockResolvedValue(null)
   h.live.mockResolvedValue(null)
   h.seed.mockResolvedValue(true)
+  h.legacy.mockResolvedValue([])
   h.audit.mockResolvedValue(undefined)
   h.fetch.mockResolvedValue({ ok: true, json: async () => ({ allowed: true }) })
   vi.stubGlobal('fetch', h.fetch)
@@ -252,6 +258,19 @@ describe('the write itself', () => {
     expect(h.projectUpdateMany).toHaveBeenCalled()
     expect(h.seed.mock.calls[0]).toEqual([['example.org'], 'owner', 'p1'])
     expect(h.audit.mock.calls[0][0].after.graphSeeded).toBe(false)
+  })
+
+  test('on an old-model graph the new roots are not seeded, and the call says why', async () => {
+    h.legacy.mockResolvedValue(['co.uk'])
+    const r = await call({ domainBatchHosts: ['a.example.com', 'b.example.com', 'c.example.org'] })
+    expect(h.projectUpdateMany).toHaveBeenCalled()
+    expect(h.seed).not.toHaveBeenCalled()
+    expect(r.graphSeeded).toBe(false)
+    expect(r.legacyGraph).toEqual(['co.uk'])
+    expect(r.note).toMatch(/built before the current scope model; run a full recon first/)
+    // asked with the scope as it is after the write
+    expect(h.legacy.mock.calls[0][2].map((g: { scanRoot: string }) => g.scanRoot))
+      .toEqual(['example.com', 'example.org'])
   })
 
   test('it reports the queued scans the change parked, by id', async () => {

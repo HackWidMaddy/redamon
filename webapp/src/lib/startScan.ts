@@ -16,6 +16,8 @@ import { orchestratorFetch } from '@/lib/orchestrator'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { startFullScan } from '@/lib/startFullScan'
 import { parseScanMode, type ScanTrigger } from '@/lib/scanTimeline'
+import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
@@ -111,9 +113,22 @@ export async function dispatchStart(
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, userId: true, supplyChainInputMode: true },
+    select: {
+      id: true, userId: true, supplyChainInputMode: true,
+      targetDomain: true, subdomainList: true, ipMode: true, domainBatchMode: true, domainBatchHosts: true,
+    },
   })
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
+
+  // The writers that attach to Domain nodes refuse an old-model graph
+  // (§4.11.6). 422, not the routes' 409: the queue reads a 409 as "busy" and
+  // would requeue the job until a full recon happened to run.
+  if (kind === 'partial_recon' || kind === 'gvm' || kind === 'ai_attack') {
+    const legacy = await legacyGraphDomains(project.userId, projectId, resolveScopeGroups(project).groups)
+    if (legacy && legacy.length > 0) {
+      return { ok: false, status: 422, error: legacyGraphRefusal(legacy).error }
+    }
+  }
 
   // The engagement rule applies to the OTHER scanners too, and it has to be
   // checked here rather than only in startFullScan: GVM sweeps ports, the

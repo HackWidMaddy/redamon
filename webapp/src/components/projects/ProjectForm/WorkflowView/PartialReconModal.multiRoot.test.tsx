@@ -225,3 +225,21 @@ describe('settings overrides', () => {
     for (const key of sent) expect(PARTIAL_RECON_OVERRIDE_KEYS).toContain(key)
   })
 })
+
+describe('an old-model graph (§4.11.6)', () => {
+  test('shows the banner, names the old Domain nodes, and disables Run', async () => {
+    graphInputs = { ...(graphInputs as Record<string, unknown>), legacy_graph: ['co.uk'] }
+    renderModal('Naabu')
+    const banner = await screen.findByTestId('partial-recon-legacy-graph')
+    expect(banner.textContent).toMatch(/built before the current scope model/)
+    expect(banner.textContent).toContain('co.uk')
+    expect(banner.textContent).toMatch(/Run a full recon first/)
+    expect((await runButton()).disabled).toBe(true)
+  })
+
+  test('a current graph shows no banner and leaves Run enabled', async () => {
+    renderModal('Naabu')
+    await waitFor(async () => expect((await runButton()).disabled).toBe(false))
+    expect(screen.queryByTestId('partial-recon-legacy-graph')).toBeNull()
+  })
+})

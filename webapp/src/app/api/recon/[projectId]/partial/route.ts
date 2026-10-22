@@ -8,6 +8,8 @@ import { orchestratorFetch } from '@/lib/orchestrator'
 import { assertGraphNotActivating } from '@/lib/activationLock'
 import { describeNodeFilterWriter } from '@/lib/nodeFilterRun'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
+import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
@@ -41,11 +43,21 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Verify project exists
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { id: true, userId: true, targetDomain: true }
+      select: {
+        id: true, userId: true, targetDomain: true, subdomainList: true,
+        ipMode: true, domainBatchMode: true, domainBatchHosts: true,
+      },
     })
 
     if (!project) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    }
+
+    // A graph built under the old scope model would take this run's results
+    // under the wrong Domain node; only a full recon rebuilds it (§4.11.6).
+    const legacy = await legacyGraphDomains(project.userId, projectId, resolveScopeGroups(project).groups)
+    if (legacy && legacy.length > 0) {
+      return NextResponse.json(legacyGraphRefusal(legacy), { status: 409 })
     }
 
     // Forward to orchestrator

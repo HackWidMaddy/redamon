@@ -9,6 +9,8 @@ import path from 'path'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { assertGraphNotActivating } from '@/lib/activationLock'
+import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
@@ -34,7 +36,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       where: { id: projectId },
       select: {
         id: true, userId: true, name: true, targetDomain: true, ipMode: true, targetIps: true,
-        domainBatchMode: true, domainBatchHosts: true,
+        domainBatchMode: true, domainBatchHosts: true, subdomainList: true,
       }
     })
 
@@ -78,6 +80,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         { error: 'Recon data not found. Run a reconnaissance scan first before starting GVM vulnerability scan.' },
         { status: 400 }
       )
+    }
+
+    // GVM attaches its findings to Domain nodes: an old-model graph would take
+    // them under the wrong one (§4.11.6).
+    const legacy = await legacyGraphDomains(project.userId, projectId, resolveScopeGroups(project).groups)
+    if (legacy && legacy.length > 0) {
+      return NextResponse.json(legacyGraphRefusal(legacy), { status: 409 })
     }
 
     // Call recon orchestrator to start the GVM scan

@@ -8,6 +8,7 @@ import {
   resolveProjectRoots,
   type GraphDomainRow,
 } from '@/lib/partialReconScope'
+import { findLegacyDomains } from '@/lib/legacyGraph'
 
 interface RouteParams {
   params: Promise<{ projectId: string; toolId: string }>
@@ -358,8 +359,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const project = await prisma.project.findUnique({
       where: { id: projectId },
       select: {
-        userId: true, targetDomain: true, ipMode: true,
-        domainBatchMode: true, domainBatchGroups: true,
+        userId: true, targetDomain: true, ipMode: true, subdomainList: true,
+        domainBatchMode: true, domainBatchHosts: true, domainBatchGroups: true,
       },
     })
 
@@ -386,9 +387,13 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
           const fields = partialScopeFields(scope, graph)
 
           const result = await session.run(tool.cypher, { uid, pid: projectId, domains: fields.domains })
+          // Old-model Domain nodes (§4.11.6): the modal shows a banner and
+          // disables Run, as the partial route refuses the start.
+          const legacy = await findLegacyDomains(session, uid, projectId, scope.groups)
           return NextResponse.json({
             ...withDiscovery(fields),
             ...tool.respond(result.records[0]),
+            legacy_graph: legacy,
             ...(toolId === 'OpenAPI'
               ? { openapiSourceStatus: await openApiSourceStatus(session, uid, projectId) }
               : {}),

@@ -346,6 +346,10 @@ const noteStyle = {
   borderRadius: '6px', backgroundColor: 'var(--bg-secondary, #1e293b)',
   border: '1px solid var(--border-color, #334155)', overflowWrap: 'anywhere' as const,
 }
+const legacyGraphStyle = {
+  ...noteStyle, color: 'var(--status-warning-text)', backgroundColor: 'var(--status-warning-bg)',
+  border: '1px solid var(--status-warning)',
+}
 const errorBoxStyle = {
   fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
   backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
@@ -522,6 +526,10 @@ export function PartialReconModal({
   )
   const domain = domains[0] || ''
   const staleDomains = graphInputs?.stale_domains ?? []
+  // Domain nodes built under the old scope model (§4.11.6): the start route
+  // refuses until a full recon rebuilds the graph, so Run is off here too.
+  const legacyGraph = graphInputs?.legacy_graph ?? []
+  const oldModelGraph = !loadingInputs && legacyGraph.length > 0
   const emptyDomains = graphInputs?.empty_domains ?? []
   const isSubdomainDiscovery = toolId === 'SubdomainDiscovery'
   const enumerableDomains = useMemo(
@@ -853,6 +861,13 @@ export function PartialReconModal({
           </div>
         </div>
 
+        {oldModelGraph && (
+          <div style={legacyGraphStyle} role="alert" data-testid="partial-recon-legacy-graph">
+            This project&apos;s graph was built before the current scope model
+            (old domain nodes: <strong>{legacyGraph.join(', ')}</strong>). Run a full recon first;
+            partial recon is off until then.
+          </div>
+        )}
         {!loadingInputs && staleDomains.length > 0 && (
           <div style={noteStyle} data-testid="partial-recon-stale">
             <strong>{staleDomains.join(', ')}</strong>: not in this project any more, not scanned; the next full recon removes {staleDomains.length === 1 ? 'it' : 'them'}.
@@ -1420,14 +1435,14 @@ export function PartialReconModal({
           <button
             type="button"
             onClick={handleRun}
-            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted}
+            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph}
             style={{
               padding: '8px 16px', borderRadius: '6px', border: 'none',
               backgroundColor: '#3b82f6', color: '#fff',
-              cursor: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted ? 'not-allowed' : 'pointer',
+              cursor: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph ? 'not-allowed' : 'pointer',
               fontSize: '13px',
               display: 'flex', alignItems: 'center', gap: '6px',
-              opacity: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted ? 0.5 : 1,
+              opacity: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph ? 0.5 : 1,
             }}
           >
             {isStarting ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={14} />}

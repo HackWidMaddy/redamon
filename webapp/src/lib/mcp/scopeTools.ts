@@ -35,6 +35,7 @@ import { refreshActiveRecordingScope } from '@/lib/recordingSession'
 import { activationBusy } from '@/lib/activationLock'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { seedProjectDomains } from '@/lib/graphSeedDomains'
+import { LEGACY_GRAPH_MESSAGE, legacyGraphDomains } from '@/lib/legacyGraph'
 import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
 import { auditableKey, filterReconSettings } from '@/lib/reconSettings/filter'
@@ -273,7 +274,13 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   // nodes, so a new root without one could not be scanned on its own.
   // The owner is the token's user: assertMcpProjectAccess proved it, and the
   // row's own userId is not an MCP-readable column.
-  const graphSeeded = await seedProjectDomains(addedRoots, ctx.token.userId, args.projectId)
+  // Seeding attaches to Domain nodes too, so on a graph built under the old
+  // scope model (§4.11.6) it waits for the full recon that rebuilds it.
+  const legacyGraph = addedRoots.length > 0
+    ? (await legacyGraphDomains(ctx.token.userId, args.projectId, batchScope(data.domainBatchHosts))) ?? []
+    : []
+  const graphSeeded = legacyGraph.length === 0
+    && await seedProjectDomains(addedRoots, ctx.token.userId, args.projectId)
 
   const recordingScopeUpdated = batchRescoped && await refreshActiveRecordingScope(prisma, args.projectId, {
     domainBatchMode: true,
@@ -317,9 +324,11 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
     pausedSchedules,
     affectedSchedules,
     graphSeeded,
+    legacyGraph,
     recordingScopeUpdated,
     note:
       (graphSeeded ? '' : 'The new roots could not be added to the graph yet; the next full recon adds them. ') +
+      (legacyGraph.length > 0 ? `${LEGACY_GRAPH_MESSAGE} (old domain nodes: ${legacyGraph.join(', ')}). ` : '') +
       (pausedSchedules.count > 0
         ? `The batch gained hosts, so ${pausedSchedules.count} scheduled scan(s) were paused; a person ` +
           're-enables them in the Scans tab once they have reviewed the new scope. '

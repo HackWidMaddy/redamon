@@ -6,6 +6,8 @@ import { currentRoeTextSha256 } from '@/lib/engagement'
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
+import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
@@ -25,10 +27,19 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { id: true, userId: true },
+      select: {
+        id: true, userId: true, targetDomain: true, subdomainList: true,
+        ipMode: true, domainBatchMode: true, domainBatchHosts: true,
+      },
     })
     if (!project) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    }
+    // Its findings attach to the AI nodes' Domain: refused on an old-model
+    // graph (§4.11.6).
+    const legacy = await legacyGraphDomains(project.userId, projectId, resolveScopeGroups(project).groups)
+    if (legacy && legacy.length > 0) {
+      return NextResponse.json(legacyGraphRefusal(legacy), { status: 409 })
     }
 
     // Read before the start, so a RoE replaced mid-start cannot misattribute the run.
