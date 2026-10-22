@@ -604,8 +604,8 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             system_prompt += (
                 "\n\nIn scope:\n" + _scope_text + "\n\n"
                 "Nothing else is in scope. A Domain node in the graph names the organisation "
-                "(or the scan root) and is not automatically in scope: neither it nor a host "
-                "under it is a target unless the list above covers it."
+                "(the registrable domain) and is not automatically in scope: neither it nor a "
+                "host under it is a target unless the list above covers it."
             )
 
     # Rules of Engagement injection
