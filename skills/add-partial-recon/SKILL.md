@@ -50,9 +50,15 @@ graph-sourced inputs, the modal, and the single-phase re-run.
   `config["domains"]`; `config["domain"]` is only the first, so a tool reading it
   silently skips the rest. [test_partial_scope_guard.py](../../recon/tests/test_partial_scope_guard.py)
   fails the gate on a direct read. Pass `domain_groups=config.get("domain_groups")`
-  to the graph builders so each root keeps its group's scope (a literal group scans
-  only its listed hosts), validate custom hosts with `host_in_roots`, and attach
-  each host to `root_for_host(host, roots)`.
+  (built from the container's `SCOPE_GROUPS`) to the graph builders so each root
+  keeps its group's scope: an EXACT group, a single-domain prefix list included,
+  scans only its listed hosts. Attach each typed host to `root_for_host(host, roots)`.
+- **NEVER re-implement the typed-input scope check in a module.** The orchestrator
+  and `_prepare_scope` (`filter_partial_user_input`) already dropped every typed
+  host, URL host, over-wide CIDR and out-of-scope attach target, and a typed URL's
+  host joins the writer's scope only through `_scope_partial_urls`. The run is
+  also refused before your module runs while the graph holds an older scope
+  model's Domain (`_legacy_graph_refusal`, fails closed).
 - **ALWAYS loop an API that takes one domain per call through `run_per_root`**,
   never a bare `for`. It fails only the root that raised or called `sys.exit`,
   retries a rate-limited root once, and returns the `{root: status}` the run report

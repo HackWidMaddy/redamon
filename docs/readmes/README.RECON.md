@@ -715,33 +715,56 @@ afterwards, and all three run the **same** pipeline.
 | --- | --- | --- |
 | **Single Domain** | one root domain plus optional subdomain prefixes | the default; full OSINT and subdomain discovery are available |
 | **IP / CIDR** | a list of addresses or ranges | skips domain ownership, subdomain enumeration and domain WHOIS; runs reverse DNS and IP WHOIS instead |
-| **Domain batch** | a list of hostnames spanning several domains | groups them by domain and scans each group in turn, in one run; a `*.example.com` entry enumerates that domain instead of scanning it literally |
+| **Domain batch** | a list of hostnames spanning several domains | groups them by registrable domain and scans each group in turn, in one run; a `*.example.com` entry enumerates that domain instead of scanning it literally |
 
 ### Domain batch
 
 Paste or upload a flat hostname list. RedAmon groups it and scans the groups one
 after another.
 
-**The grouping rule is the last two labels.** `suba.sub3.domain3.com` belongs to
-`domain3.com`, with the prefix `suba.sub3`. This is deliberately not a public
-suffix list: it is exactly what an operator does by hand when filling the
-single-domain form (target = the domain, everything else = subdomain prefixes),
-so a batch and a hand-built project scan identically. The consequence worth
-knowing is that `foo.example.co.uk` groups under `co.uk`. The project form shows
-the computed groups before you save, so the grouping is never a surprise.
+**The grouping rule is the registrable domain**, read from the Public Suffix
+List with its private section (`tldts` in the webapp, `publicsuffixlist` in
+recon; both pinned and bumped together, README.DEV.md 5.8).
+`suba.sub3.domain3.com` belongs to `domain3.com`, `foo.example.co.uk` to
+`example.co.uk`, `alice.github.io` to itself. The webapp derives the project's
+**scope groups** from the stored hostname list on every read
+(`webapp/src/lib/domainBatch.ts` + `scopeGroups.ts`, returned as `scopeGroups`
+by `GET /api/projects/[id]`); they are never stored. Each group is
+`{scanRoot, orgDomain, mode: exact|enumerate, includeRoot, exactHosts}`: an EXACT
+group scans exactly its listed hosts (and its scan root only when listed), an
+ENUMERATE group runs subdomain discovery under its scan root. A single-domain
+project is one such group. While nested wildcards are off (this release) a batch
+scan root is always its registrable domain.
 
 **A `*` entry enumerates that domain.** `*.example.com` (or `*example.com`) is
 the one way to run subdomain discovery inside a batch: that group takes the same
 FULL DISCOVERY path a single-domain project takes, and every other group in the
-same run still scans exactly the hostnames it was given. The decision is per
-group, carried as a `*` sentinel in the group's prefix list beside the existing
-`.` ("the root domain itself"); the settings toggle can only say whether
-enumeration is permitted at all.
+same run still scans exactly the hostnames it was given. A plain line under a
+wildcard is seeded into its group. The settings toggle can only say whether
+enumeration is permitted at all; the per-group decision is the group's `mode`.
 
-Because a wildcard turns a naive registrable domain into a scan boundary, it is
-the one place the last-two-labels rule is NOT good enough: `*.co.uk` would mean
-"enumerate a public suffix", so a wildcard is refused on any multi-label suffix
-and on any name below the registrable domain. Literal entries keep the quirk.
+**What is refused**, with a reason per line: a public suffix (`co.uk`), a wildcard
+on one (`*.co.uk`, `*.github.io`), an IP literal (use IP mode) and, while nested
+wildcards are off, a wildcard below its registrable domain (`*.api.example.com`).
+
+**Recon re-validates, and fails closed.** `fetch_project_settings` reads
+`scopeGroups` into `SCOPE_GROUPS` (`recon/project_settings.py`,
+`_parse_scope_groups`): each name is re-checked against the hostname charset,
+and each scan root against recon's own Public Suffix List
+(`recon/helpers/public_suffix.py`); a suffix root or a malformed group is
+dropped. A batch with no usable group, a single-domain target that is a public
+suffix or not a hostname, or a suffix list that fails to import raises
+`ScopeRefused` before any tool starts. When the two suffix lists disagree on a
+name's org (one is newer), the webapp's org is kept and a warning is logged.
+`DOMAIN_BATCH_GROUPS` (the legacy `{rootDomain, prefixes}` shape) is derived from
+`SCOPE_GROUPS` for the readers that have not moved; only a webapp that sends no
+`scopeGroups` makes recon fall back to the stored record. Each run logs:
+
+```
+[*][PSL] publicsuffixlist <pinned version>
+[*][Scope] acme.co.uk org=acme.co.uk mode=enumerate root=true exact=0
+[*][Scope] example.com org=example.com mode=exact root=false exact=2
+```
 
 A wildcard group discovers hosts the list never names, so `MAX_BATCH_HOSTS` and
 `MAX_BATCH_GROUPS` stop bounding the run's length. The preview badges the group,
@@ -766,8 +789,9 @@ results before the next one starts, so all groups accumulate into a single graph
 and the run produces **one** new version covering every domain. Re-running works
 the same way it does in the other two modes.
 
-**Only the hostnames you list are scanned.** Subdomain discovery is forced off for
-a batch, including for a group that is just a bare root domain.
+**Only the hostnames you list are scanned**, except in a wildcard group.
+Subdomain discovery is forced off when no group enumerates, including for a
+group that is just a bare root domain.
 
 **A failing group does not stop the batch.** One unresolvable domain should not
 cost you the other nineteen: failures are reported at the end, and the run only
@@ -784,8 +808,27 @@ project's single scan slot for as long as it runs, so a very long list is a very
 long scan.
 
 Implementation: `_batch_groups()` / `run_domain_batch()` / `run_domain_group()` in
-`recon/main.py`, grouping in `webapp/src/lib/domainBatch.ts`, output handling in
-`recon/helpers/output_paths.py`.
+`recon/main.py` (a batch group runs on `target_info_from_group`,
+`recon/helpers/batch_groups.py`), grouping in `webapp/src/lib/domainBatch.ts`,
+output handling in `recon/helpers/output_paths.py`.
+
+### Authenticated scans: where the session goes
+
+An Authenticated Session profile's headers attach only to hosts in the auth
+scope (`recon/helpers/auth_profile.py`, `default_scope_hosts`), built from the
+scope groups: an ENUMERATE group gives `*.<scan root>` (its strict subdomains),
+an EXACT group gives exactly its listed hosts, and either gives its scan root
+only when `includeRoot` is set. A listed single-domain project therefore never
+authorises `*.<target>`. RoE exclusions are removed, and a tool that sends one
+header set for a whole target file gets no session at all if any host in it is
+out of scope.
+
+An explicit `scopeHosts` on the profile only **narrows** that scope
+(`resolve_scope_hosts` intersects the two, then applies RoE): `*.example.com` on
+a project listing only `www.example.com` resolves to `www.example.com`, and a host
+the project does not cover resolves to nothing. The agent's replay and curl and
+the webapp's recording default use the same rule (`agentic/scope_groups.py`,
+`webapp/src/lib/scopeGroups.ts` `authScopePatterns`).
 
 ---
 
