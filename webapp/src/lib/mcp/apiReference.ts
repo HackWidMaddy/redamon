@@ -132,8 +132,10 @@ const EXAMPLE_EXTRA_ARGS: Record<string, Record<string, unknown>> = {
   // Exactly one targeting mode is required, and the rule lives in the tool body
   // rather than the schema because "one of these three" is not expressible
   // there. A required-only example would be refused for naming none of them.
+  // A real-looking domain: the tool refuses a name that is not a hostname or is
+  // a public suffix, and the page should show a call that would be accepted.
   create_project: {
-    targetDomain: 'YOUR_TARGET_DOMAIN',
+    targetDomain: 'example.com',
     engagementKind: 'third_party',
     settings: { roeGlobalMaxRps: 3 },
     authorization: {
