@@ -310,10 +310,13 @@ describe('every mode is guarded on update, not only a batch host list', () => {
   })
 
   test('a prefix that makes a blocked host is refused too', async () => {
+    // org.jm is a public suffix, so the target itself is refused (400) before the
+    // guardrail (403) would name isa.org.jm; either way nothing is written.
     mockFindUnique.mockResolvedValue(SINGLE_ROW)
     const res = await put(fullFormBody({ targetDomain: 'org.jm', subdomainList: ['isa.'] }))
-    expect(res.status).toBe(403)
-    expect((await res.json()).error).toContain('isa.org.jm')
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('public suffix')
+    expect(mockUpdate).not.toHaveBeenCalled()
   })
 
   test('an unchanged single-domain save passes while a scan runs', async () => {

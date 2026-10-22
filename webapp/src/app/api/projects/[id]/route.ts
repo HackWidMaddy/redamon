@@ -20,6 +20,7 @@ import { field, fieldsWhere } from '@/lib/reconSettings/registry'
 import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
 import { JEV_ENGINE_SELECT, guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
 import { seedProjectDomains } from '@/lib/graphSeedDomains'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 import { computeSkillTextOverrides } from '@/lib/plugins/overrideDelivery'
 import { userSkillsForAgent } from '@/lib/userSkillAgentPayload'
 import type { ResolvedPart } from '@/lib/plugins/overrides'
@@ -124,6 +125,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
     const projectWithoutBinary = {
       ...rest,
+      // Every reader's one derivation of the scope (recon, orchestrator, agent,
+      // replay, the form): never stored, recomputed from the target fields.
+      scopeGroups: resolveScopeGroups(project).groups,
       authProfile: isServiceCaller ? authProfile : toAuthProfileMetadata(authProfile),
       ...(isServiceCaller
         ? {
@@ -250,8 +254,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       // Strip a leading wildcard for the same reason POST does: in single-domain
       // mode `*.example.com` already means what an empty prefix list means, and
       // left intact the star reaches tool arguments, filenames and the graph.
-      const { splitWildcard } = await import('@/lib/domainBatch')
-      updateData.targetDomain = splitWildcard(updateData.targetDomain.trim()).rest
+      const { normalizeHost, splitWildcard } = await import('@/lib/domainBatch')
+      updateData.targetDomain = splitWildcard(normalizeHost(updateData.targetDomain)).rest
     }
     if (Array.isArray(updateData.subdomainList)) {
       updateData.subdomainList = updateData.subdomainList.map((s: string) => s.trim()).filter(Boolean)
@@ -364,8 +368,24 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         { status: 400 },
       )
     }
+    const { sameScope, softGuardrailNames } = await import('@/lib/scopeGroups')
+    const nextGroups = resolveScopeGroups(nextScope)
+    // A single-domain target or prefix change gets the batch entry rules: no
+    // public suffix, no IP, no malformed prefix. Judged only when the request
+    // touches them, so a stored value the rules now refuse cannot block an
+    // unrelated partial save.
+    const touchesSingleScope = 'targetDomain' in updateData || 'subdomainList' in updateData || setsMode
+    if (!nextScope.ipMode && !nextScope.domainBatchMode && touchesSingleScope && nextGroups.invalid.length > 0) {
+      const { describeInvalid } = await import('@/lib/domainBatch')
+      return NextResponse.json({ error: describeInvalid(nextGroups.invalid) }, { status: 400 })
+    }
     const sameSet = (a: readonly string[], b: readonly string[]) =>
       JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
+    // Both sides derived from stored fields, so a legacy spelling (a mixed-case
+    // target, an un-normalised prefix) re-saved unchanged is no scope change.
+    const singleScopeChanged = () => !sameScope(resolveScopeGroups({
+      targetDomain: existing?.targetDomain ?? '', subdomainList: existing?.subdomainList ?? [],
+    }).groups, nextGroups.groups)
     const scopeChanged = existing != null && (
       nextScope.ipMode !== (existing.ipMode === true)
       || nextScope.domainBatchMode !== (existing.domainBatchMode === true)
@@ -373,11 +393,22 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         ? !sameSet(nextScope.targetIps, existing.targetIps ?? [])
         : nextScope.domainBatchMode
           ? batchScopeChanged
-          : nextScope.targetDomain !== (existing.targetDomain ?? '')
-            || !sameSet(nextScope.subdomainList, existing.subdomainList ?? []))
+          : singleScopeChanged())
     )
+    // An unchanged single target keeps its stored spelling: re-casing it would
+    // seed a second graph Domain beside the one a legacy scan named after it.
+    if (!scopeChanged && !nextScope.domainBatchMode && !nextScope.ipMode
+        && typeof updateData.targetDomain === 'string' && existing?.targetDomain) {
+      delete updateData.targetDomain
+    }
 
     if (scopeChanged) {
+      // A version activation clears and restores the graph; a scope written
+      // between the two would describe neither.
+      const { assertGraphNotActivating } = await import('@/lib/activationLock')
+      const activating = await assertGraphNotActivating(id)
+      if (activating) return activating
+
       // The container reads its settings ONCE at spawn, so this edit cannot
       // re-point a running scan - but it DOES re-point everything that reads
       // scope live from the row (the agent, the next guardrail, the report)
@@ -417,8 +448,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
             headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
             signal: AbortSignal.timeout(SOFT_GUARDRAIL_TIMEOUT_MS),
             body: JSON.stringify({
-              target_domain: !nextScope.ipMode && !nextScope.domainBatchMode ? nextScope.targetDomain : '',
-              target_domains: nextScope.domainBatchMode ? batchRootsAdded : [],
+              target_domain: !nextScope.ipMode && !nextScope.domainBatchMode
+                ? (nextGroups.groups[0]?.scanRoot ?? '') : '',
+              target_domains: nextScope.ipMode ? [] : softGuardrailNames(nextGroups.groups)
+                .filter(n => nextScope.domainBatchMode || n !== nextGroups.groups[0]?.scanRoot),
               target_ips: nextScope.ipMode ? nextScope.targetIps : [],
               user_id: existing?.userId ?? eff.userId,
             }),
@@ -478,8 +511,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // The UI's own audit row. Without it a person reverting an MCP agent's
     // change left no trace, while the agent's change did.
+    // A batch whose derived scope did not change only had its legacy group
+    // record rewritten (a row saved by an older writer, or a public-suffix
+    // regroup): that must not read as a scope change in the activity feed.
+    const regroupOnly = willBeBatch && !scopeChanged
     const changed = Object.keys(updateData).filter(k =>
-      k !== 'updatedById' && comparable(before[k]) !== comparable((project as Record<string, unknown>)[k]))
+      k !== 'updatedById' && !(regroupOnly && k === 'domainBatchGroups')
+      && comparable(before[k]) !== comparable((project as Record<string, unknown>)[k]))
     if (changed.length > 0) {
       const valued = changed.filter(auditsValue)
       void writeAudit({
@@ -515,7 +553,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // Exclude binary document data from response (same as GET)
     const { roeDocumentData: _binary, ...projectWithoutBinary } = project
-    return NextResponse.json(projectWithoutBinary)
+    return NextResponse.json({ ...projectWithoutBinary, scopeGroups: resolveScopeGroups(project).groups })
   } catch (error: unknown) {
     console.error('Failed to update project:', error)
 
