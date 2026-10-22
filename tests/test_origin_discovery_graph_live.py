@@ -9,10 +9,9 @@ only a real database proves the Cypher is VALID on Neo4j 5.x and that:
   * an origin exposure CONVERGES onto the same Vulnerability node the
     security-check producer writes for the same (type, url, ip) in one tenant -
     one node, not two (strategy row 3 + regression for the port-less-url fix);
-  * get_graph_inputs_for_tool('OriginDiscovery') counts a host as fronted from
-    the Endpoint node's is_cdn / favicon_hash (where httpx records it) and from a
-    CDN IP - NOT from BaseURL, which never carries those (strategy row 4 +
-    regression: the BaseURL query counted 0).
+  * the fronted-host count for the partial-recon modal lives in the webapp's
+    graph-inputs route now; the orchestrator query this file used to prove was
+    deleted with its endpoint (ORC-04).
 
 Self-skips unless the neo4j driver imports AND a database answers. To run it:
 
@@ -160,52 +159,6 @@ class TestOriginDiscoveryGraphLive(unittest.TestCase):
         self.assertEqual(n, 1, "security_check + origin_discovery did NOT converge -> report double-count (F4)")
 
     # -- row 4: fronted count reads Endpoint/IP, not BaseURL -----------------
-    def test_fronted_count_reads_endpoint_not_baseurl(self):
-        pid = "od-itest-fc-%s" % uuid.uuid4().hex[:8]
-        dom = "fc-%s.test" % uuid.uuid4().hex[:6]
-        try:
-            with self.client.driver.session() as s:
-                s.run("MERGE (d:Domain {name:$dom, user_id:$u, project_id:$p})", dom=dom, u=self.user, p=pid)
-                # s1: Endpoint is_cdn=true (the httpx CDN flag lives on Endpoint)
-                s.run("""
-                    MATCH (d:Domain {name:$dom, project_id:$p})
-                    MERGE (s1:Subdomain {name:$s1, user_id:$u, project_id:$p}) MERGE (d)-[:HAS_SUBDOMAIN]->(s1)
-                    MERGE (b1:BaseURL {url:'https://s1', user_id:$u, project_id:$p}) MERGE (s1)-[:HAS_BASEURL]->(b1)
-                    MERGE (e1:Endpoint {url:'https://s1/', user_id:$u, project_id:$p}) SET e1.is_cdn=true
-                    MERGE (b1)-[:HAS_ENDPOINT]->(e1)
-                """, dom=dom, u=self.user, p=pid, s1="s1."+dom)
-                # s2: Endpoint favicon_hash only (no is_cdn)
-                s.run("""
-                    MATCH (d:Domain {name:$dom, project_id:$p})
-                    MERGE (s2:Subdomain {name:$s2, user_id:$u, project_id:$p}) MERGE (d)-[:HAS_SUBDOMAIN]->(s2)
-                    MERGE (b2:BaseURL {url:'https://s2', user_id:$u, project_id:$p}) MERGE (s2)-[:HAS_BASEURL]->(b2)
-                    MERGE (e2:Endpoint {url:'https://s2/', user_id:$u, project_id:$p}) SET e2.favicon_hash=12345
-                    MERGE (b2)-[:HAS_ENDPOINT]->(e2)
-                """, dom=dom, u=self.user, p=pid, s2="s2."+dom)
-                # s3: resolves to a CDN IP
-                s.run("""
-                    MATCH (d:Domain {name:$dom, project_id:$p})
-                    MERGE (s3:Subdomain {name:$s3, user_id:$u, project_id:$p}) MERGE (d)-[:HAS_SUBDOMAIN]->(s3)
-                    MERGE (i:IP {address:'104.16.1.1', user_id:$u, project_id:$p}) SET i.is_cdn=true
-                    MERGE (s3)-[:RESOLVES_TO]->(i)
-                """, dom=dom, u=self.user, p=pid, s3="s3."+dom)
-                # s4: plain endpoint + non-CDN IP -> NOT fronted
-                s.run("""
-                    MATCH (d:Domain {name:$dom, project_id:$p})
-                    MERGE (s4:Subdomain {name:$s4, user_id:$u, project_id:$p}) MERGE (d)-[:HAS_SUBDOMAIN]->(s4)
-                    MERGE (b4:BaseURL {url:'https://s4', user_id:$u, project_id:$p}) MERGE (s4)-[:HAS_BASEURL]->(b4)
-                    MERGE (e4:Endpoint {url:'https://s4/', user_id:$u, project_id:$p})
-                    MERGE (b4)-[:HAS_ENDPOINT]->(e4)
-                    MERGE (i4:IP {address:'45.33.32.99', user_id:$u, project_id:$p})
-                    MERGE (s4)-[:RESOLVES_TO]->(i4)
-                """, dom=dom, u=self.user, p=pid, s4="s4."+dom)
-
-            res = self.client.get_graph_inputs_for_tool("OriginDiscovery", self.user, pid)
-            self.assertEqual(res.get("fronted_count"), 3,
-                             "fronted_count must read Endpoint.is_cdn/favicon + CDN IP (was 0 on BaseURL)")
-        finally:
-            with self.client.driver.session() as s:
-                s.run("MATCH (n) WHERE n.project_id = $p DETACH DELETE n", p=pid)
 
 
 if __name__ == "__main__":

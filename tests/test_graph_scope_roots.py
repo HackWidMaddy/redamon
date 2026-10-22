@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO)
 
-from graph_db.mixins.recon.scope import attach_roots, root_for_host, roots_are_ip_mode, scope_roots  # noqa: E402
+from graph_db.mixins.recon.scope import attach_roots, root_for_host, scope_roots  # noqa: E402
 from graph_db.mixins.recon.user_input_mixin import UserInputMixin, _user_input_root  # noqa: E402
 from graph_db.mixins.recon.domain_mixin import DomainMixin  # noqa: E402
 
@@ -81,15 +81,6 @@ class TestRootForHost(unittest.TestCase):
     def test_ip_mode(self):
         self.assertEqual(root_for_host("192-0-2-10", ["ip-targets.p1"], ip_mode=True), "ip-targets.p1")
         self.assertIsNone(root_for_host("192-0-2-10", ["ip-targets.p1"]))
-
-    def test_ip_mode_lookup_reads_the_domain_flag(self):
-        session = MagicMock()
-        session.run.return_value.single.return_value = {"ip_mode": True}
-        self.assertTrue(roots_are_ip_mode(session, ["ip-targets.p1"], "u1", "p1"))
-        cypher, kwargs = session.run.call_args[0][0], session.run.call_args[1]
-        self.assertIn("d.ip_mode = true", cypher)
-        self.assertEqual((kwargs["uid"], kwargs["pid"]), ("u1", "p1"))
-        self.assertFalse(roots_are_ip_mode(session, [], "u1", "p1"))
 
 
 class _Client(DomainMixin, UserInputMixin):

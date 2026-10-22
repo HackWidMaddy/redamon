@@ -144,12 +144,13 @@ class TestBuildQueries(unittest.TestCase):
         self.assertEqual(queries, ['example.com'])
 
     def test_with_whois_org(self):
-        queries = _build_queries('example.com', {'_WHOIS_ORG': 'Example Inc.'})
-        self.assertEqual(len(queries), 2)
-        self.assertIn('ssl:"Example Inc."', queries)
+        # The group's org is passed in, never read back from shared settings
+        # where an earlier group's org would linger.
+        queries = _build_queries('example.com', {'_WHOIS_ORG': 'Other Group Inc.'}, 'Example Inc.')
+        self.assertEqual(queries, ['example.com', 'ssl:"Example Inc."'])
 
     def test_skips_na_org(self):
-        queries = _build_queries('example.com', {'_WHOIS_ORG': 'N/A'})
+        queries = _build_queries('example.com', {}, 'N/A')
         self.assertEqual(len(queries), 1)
 
 

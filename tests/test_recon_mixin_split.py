@@ -36,8 +36,11 @@ EXPECTED_PLACEMENT = {
     "create_user_input_node":             "graph_db/mixins/recon/user_input_mixin.py",
     "update_user_input_status":           "graph_db/mixins/recon/user_input_mixin.py",
     "update_graph_from_partial_discovery":"graph_db/mixins/recon/user_input_mixin.py",
-    "get_graph_inputs_for_tool":          "graph_db/mixins/recon/user_input_mixin.py",
 }
+
+# In the snapshot, deleted since: the only backend of the orchestrator's legacy
+# /graph-inputs endpoint, removed with it (the webapp route answers the modal).
+RETIRED_METHODS = {"get_graph_inputs_for_tool"}
 
 SUB_MIXIN_FILES = sorted(set(EXPECTED_PLACEMENT.values()))
 
@@ -86,8 +89,12 @@ class TestSnapshotIntegrity(unittest.TestCase):
 
     def test_snapshot_has_all_methods(self):
         snap = _load_snapshot()
-        self.assertEqual(set(snap.keys()), set(EXPECTED_PLACEMENT.keys()),
+        self.assertEqual(set(snap.keys()) - RETIRED_METHODS, set(EXPECTED_PLACEMENT.keys()),
                          "Snapshot method set differs from EXPECTED_PLACEMENT")
+
+    def test_a_retired_method_is_gone(self):
+        for name in RETIRED_METHODS:
+            self.assertNotIn(name, _all_new_methods()[0])
 
 
 class TestSubMixinFilesExist(unittest.TestCase):
@@ -216,7 +223,7 @@ class TestReconMixinMROResolves(unittest.TestCase):
 
     def test_all_original_methods_resolvable(self):
         snap = _load_snapshot()
-        for name in snap:
+        for name in set(snap) - RETIRED_METHODS:
             with self.subTest(method=name):
                 self.assertTrue(
                     hasattr(self.ReconMixin, name),

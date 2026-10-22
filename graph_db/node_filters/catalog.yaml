@@ -597,7 +597,7 @@ asset_sources:
 
 # Shown on the page with the reason they cannot be filtered.
 locked:
-  - { label: Domain, reason: The engagement root; everything else hangs off it. }
+  - { label: Domain, reason: The organisation (registrable) domain; scan roots and hosts hang off it. }
   - { label: CVE, reason: Shared reference data for every project; filter the findings that link to it instead. }
   - { label: MitreData, reason: Shared reference data for every project. }
   - { label: Capec, reason: Shared reference data for every project. }

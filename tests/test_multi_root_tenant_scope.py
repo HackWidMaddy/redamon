@@ -35,8 +35,7 @@ TARGETS = [
     ("recon/partial_recon_modules/user_inputs.py", {"_create_user_subdomains_in_graph"}),
     ("recon/partial_recon_modules/vulnerability_scanning.py", None),
     ("recon/partial_recon_modules/subdomain_discovery.py", None),
-    ("graph_db/mixins/recon/domain_mixin.py", {"ensure_root_domains"}),
-    ("graph_db/mixins/recon/scope.py", {"roots_are_ip_mode"}),
+    ("graph_db/mixins/recon/domain_mixin.py", {"ensure_root_domains", "update_graph_coverage"}),
     ("graph_db/mixins/osint_mixin.py", {
         "update_graph_from_external_domains", "update_graph_from_urlscan_discovery",
         "update_graph_from_uncover"}),

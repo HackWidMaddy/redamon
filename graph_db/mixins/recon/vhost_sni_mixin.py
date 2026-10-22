@@ -48,7 +48,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from graph_db.mixins.recon.scope import attach_roots, root_for_host
+from graph_db.mixins.recon.scope import attach_roots, org_for_scan_root, root_for_host
 
 
 class VhostSniMixin:
@@ -277,8 +277,8 @@ class VhostSniMixin:
                             MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                             RETURN count(d) AS matched
                             """,
-                            domain=root_for_host(hostname, roots), hostname=hostname,
-                            uid=user_id, pid=project_id,
+                            domain=org_for_scan_root(root_for_host(hostname, roots), recon_data),
+                            hostname=hostname, uid=user_id, pid=project_id,
                         )
                         if res_d.single()["matched"] > 0:
                             stats["relationships_created"] += 2
@@ -324,15 +324,21 @@ class VhostSniMixin:
                         )
                         stats["relationships_created"] += 1
 
-                    # Attach to Domain too, when the hostname IS one of the apexes.
+                    # A finding on a scan root itself: on the org's Domain when the
+                    # root IS the org, else on the root's Subdomain, which exists
+                    # only when the root is a target.
                     if hostname in {r.lower() for r in roots}:
+                        org = org_for_scan_root(root_for_host(hostname, roots), recon_data)
+                        anchor = ("MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})"
+                                  if org.lower() == hostname else
+                                  "MATCH (d:Subdomain {name: $domain, user_id: $uid, project_id: $pid})")
                         session.run(
-                            """
-                            MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                            anchor + """
                             MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
                             MERGE (d)-[:HAS_VULNERABILITY]->(v)
                             """,
-                            domain=root_for_host(hostname, roots), uid=user_id, pid=project_id, id=vuln_id,
+                            domain=org if org.lower() == hostname else hostname,
+                            uid=user_id, pid=project_id, id=vuln_id,
                         )
                         stats["relationships_created"] += 1
                 except Exception as e:
