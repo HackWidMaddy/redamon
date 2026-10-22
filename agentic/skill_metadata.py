@@ -91,15 +91,27 @@ def build_messages(item, other_names: list[str]) -> list:
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content="\n\n".join(parts))]
 
 
+def _fit(text: str, cap: int) -> int:
+    """How many characters of `text` fit in `cap` UTF-16 units, the unit the webapp measures
+    names in (a character outside the BMP, like most emoji, counts 2)."""
+    units = 0
+    for i, ch in enumerate(text):
+        units += 2 if ord(ch) > 0xFFFF else 1
+        if units > cap:
+            return i
+    return len(text)
+
+
 def _clean(value: str, cap: int) -> str:
-    """One display-safe line, cut at a word boundary at or before `cap`."""
+    """One display-safe line, cut at a word boundary within `cap` UTF-16 units."""
     text = _BREAKS.sub(" ", value)
     text = "".join(ch for ch in text if unicodedata.category(ch) not in ("Cc", "Cf", "Cs", "Co"))
     text = _SPACES.sub(" ", text).strip()
-    if len(text) <= cap:
+    fit = _fit(text, cap)
+    if fit == len(text):
         return text
-    space = text.rfind(" ", 0, cap + 1)
-    return (text[:space] if space > 0 else text[:cap]).rstrip()
+    space = text.rfind(" ", 0, fit + 1)
+    return (text[:space] if space > 0 else text[:fit]).rstrip()
 
 
 def _unwrap(value: str) -> str:

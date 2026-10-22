@@ -9,6 +9,7 @@ the caller's model on the caller's keys, per item, with its own timeouts.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import sys
@@ -323,6 +324,15 @@ def test_a_deeply_nested_answer_is_unreadable_not_a_crash():
     import skill_metadata
     nested = '{"name": ' + "[" * 5000 + "]" * 5000 + ', "description": "D"}'
     assert skill_metadata.parse_answer(nested, True, True) == {}
+
+
+def test_a_generated_name_fits_the_webapps_100_utf16_unit_limit():
+    # The webapp counts a name in UTF-16 units (an emoji is 2) and refuses one over 100.
+    import skill_metadata
+    name = ("Session cookie \U0001F36A " * 6).strip()
+    out = skill_metadata.parse_answer(json.dumps({"name": name}), True, False)
+    assert out["name"].startswith("Session cookie \U0001F36A")
+    assert len(out["name"].encode("utf-16-le")) // 2 <= 100
 
 
 # ---------------------------------------------------------------- the timeout chain
