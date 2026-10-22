@@ -1,4 +1,5 @@
-import { splitWildcard } from './domainBatch'
+import { INVALID_REASON_TEXT, groupHostsByScanRoot } from './domainBatch'
+import { resolveScopeGroups } from './scopeGroups'
 import { REGEX_GITHUB_ORG } from '@/lib/reconSettings/validators'
 
 // === IP / Network ===
@@ -18,7 +19,8 @@ export function isValidIpOrCidr(value: string): boolean {
 
 // === Domain / Subdomain ===
 export const REGEX_DOMAIN = /^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/
-export const REGEX_SUBDOMAIN_PREFIX = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/
+// One label or several (`eu.api`): a single-domain prefix may name a host at any depth.
+export const REGEX_SUBDOMAIN_PREFIX = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
 
 export function isValidDomain(value: string): boolean {
   return REGEX_DOMAIN.test(value.trim())
@@ -92,23 +94,31 @@ export function validateProjectForm(data: Record<string, unknown>): ValidationEr
     if (nonEmpty.length === 0) {
       errors.push({ field: 'domainBatchHosts', message: 'At least one hostname is required in Domain batch mode' })
     }
-    for (const host of nonEmpty) {
-      // A batch entry may carry the wildcard marker. Strip it with the SAME
-      // helper the grouper uses, rather than widening REGEX_DOMAIN: this check
-      // and validateDomainBatch() run over the same list, so if they disagree
-      // about what a wildcard is, one of them blocks a submit the other allowed.
-      const { rest } = splitWildcard(host.trim().toLowerCase())
-      if (!isValidDomain(rest)) {
-        errors.push({ field: 'domainBatchHosts', message: `Invalid hostname: ${host.trim()}` })
-      }
+    // The SAME grouping the preview and every write path run, so this check and
+    // validateDomainBatch() can never disagree about an entry.
+    for (const { entry, reason } of groupHostsByScanRoot(nonEmpty).invalid) {
+      errors.push({ field: 'domainBatchHosts', message: `${entry}: ${INVALID_REASON_TEXT[reason]}` })
     }
   }
 
-  // Target domain (required when not IP mode)
+  // Target domain or hostname (required when not IP mode), and its prefixes:
+  // judged by the derivation the server stores, so a public suffix or an IP
+  // literal is refused here as it is on save.
   if (!ipMode && !domainBatchMode) {
     const domain = (data.targetDomain as string || '').trim()
-    if (domain && !isValidDomain(domain)) {
-      errors.push({ field: 'targetDomain', message: 'Invalid domain format (e.g., example.com)' })
+    const prefixes = (data.subdomainList as string[]) || []
+    if (domain && !isValidDomain(domain.replace(/^\*\.?/, ''))) {
+      errors.push({ field: 'targetDomain', message: 'Invalid domain format (e.g., example.com or api.example.com)' })
+    } else if (domain) {
+      for (const { entry, reason } of resolveScopeGroups({ targetDomain: domain, subdomainList: prefixes }).invalid) {
+        if (reason === 'public_suffix') {
+          errors.push({ field: 'targetDomain', message: `${entry} is a public suffix; enter a domain under it` })
+        } else if (reason === 'ip_literal') {
+          errors.push({ field: 'targetDomain', message: `${entry} is an IP address: use IP mode` })
+        } else {
+          errors.push({ field: 'subdomainList', message: `Invalid subdomain prefix: ${entry.replace(/\.$/, '')}` })
+        }
+      }
     }
   }
 
@@ -125,12 +135,14 @@ export function validateProjectForm(data: Record<string, unknown>): ValidationEr
     }
   }
 
-  // Subdomain prefixes
-  const subdomainList = data.subdomainList as string[] || []
-  for (const sub of subdomainList) {
-    const clean = sub.replace(/\.$/, '')
-    if (clean && !isValidSubdomainPrefix(clean)) {
-      errors.push({ field: 'subdomainList', message: `Invalid subdomain prefix: ${clean}` })
+  // Subdomain prefixes (single-domain mode is judged with its target above)
+  if (ipMode || domainBatchMode) {
+    const subdomainList = data.subdomainList as string[] || []
+    for (const sub of subdomainList) {
+      const clean = sub.replace(/\.$/, '')
+      if (clean && !isValidSubdomainPrefix(clean)) {
+        errors.push({ field: 'subdomainList', message: `Invalid subdomain prefix: ${clean}` })
+      }
     }
   }
 

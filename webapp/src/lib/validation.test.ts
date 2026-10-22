@@ -80,10 +80,10 @@ describe('REGEX_DOMAIN', () => {
 
 // === Subdomain prefix ===
 describe('REGEX_SUBDOMAIN_PREFIX', () => {
-  test.each(['www', 'api', 'a', 'test-host', 'a1b2'])
+  test.each(['www', 'api', 'a', 'test-host', 'a1b2', 'eu.api', 'a.b.c'])
     ('accepts valid: %s', (p) => expect(REGEX_SUBDOMAIN_PREFIX.test(p)).toBe(true))
 
-  test.each(['-start', 'end-', '', 'a'.repeat(64)])
+  test.each(['-start', 'end-', '', 'a'.repeat(64), 'a..b', '.a', 'a.', 'a.-b'])
     ('rejects invalid: %s', (p) => expect(REGEX_SUBDOMAIN_PREFIX.test(p)).toBe(false))
 })
 
@@ -213,6 +213,37 @@ describe('validateProjectForm', () => {
   test('validates agent lhost', () => {
     const errors = validateProjectForm({ ...baseData, agentLhost: 'not-an-ip' })
     expect(errors.some(e => e.field === 'agentLhost')).toBe(true)
+  })
+
+  test('a deeper target is accepted, with dotted prefixes', () => {
+    expect(validateProjectForm({ ...baseData, targetDomain: 'api.example.com', subdomainList: ['eu.v1.', '.'] })).toEqual([])
+  })
+
+  test('a public-suffix target is refused with its reason', () => {
+    const errors = validateProjectForm({ ...baseData, targetDomain: 'co.uk' })
+    expect(errors).toEqual([{ field: 'targetDomain', message: 'co.uk is a public suffix; enter a domain under it' }])
+  })
+
+  test('an IP literal target is refused: use IP mode', () => {
+    const errors = validateProjectForm({ ...baseData, targetDomain: '192.0.2.10' })
+    expect(errors.map(e => e.field)).toEqual(['targetDomain'])
+  })
+
+  test('a wildcard prefix or a full host as prefix is refused', () => {
+    const errors = validateProjectForm({ ...baseData, subdomainList: ['*', 'www.example.com.'] })
+    expect(errors.map(e => e.message)).toEqual([
+      'Invalid subdomain prefix: *', 'Invalid subdomain prefix: www.example.com',
+    ])
+  })
+
+  test('batch entries carry their own reason', () => {
+    const errors = validateProjectForm({
+      ...baseData, targetDomain: '', domainBatchMode: true,
+      domainBatchHosts: ['www.example.com', '*.co.uk', '192.0.2.10'],
+    })
+    expect(errors.map(e => e.field)).toEqual(['domainBatchHosts', 'domainBatchHosts'])
+    expect(errors[0].message).toMatch(/^\*\.co\.uk: a wildcard on a public suffix/)
+    expect(errors[1].message).toMatch(/^192\.0\.2\.10: an IP address/)
   })
 
   test('skips empty optional fields', () => {
