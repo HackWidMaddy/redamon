@@ -15,10 +15,10 @@ const SubdomainDiscovery = (
   <div style={wrapperStyle}>
     <div style={firstSectionTitleStyle}>How input is generated</div>
     <p style={paraStyle}>
-      The only graph input is the <strong>Domain</strong> node - the project's apex domain. Subdomain Discovery uses the domain name as the seed for multiple OSINT sources (Subfinder, Amass, certificate transparency logs, DNS bruteforce, etc., depending on the modules you have enabled).
+      The input is the scan root of each enumerated scope group (a <span style={codeStyle}>*.name</span> entry); the <strong>Domain</strong> node is its registrable domain. Subdomain Discovery uses the scan root as the seed for multiple OSINT sources (Subfinder, Amass, certificate transparency logs, DNS bruteforce, etc., depending on the modules you have enabled).
     </p>
     <p style={paraStyle}>
-      Each source returns a list of candidate hostnames. Candidates are merged, deduplicated, and validated to confirm they actually belong to the apex domain. Wildcard records and bogus mock subdomains are filtered out using puredns.
+      Each source returns a list of candidate hostnames. Candidates are merged, deduplicated, and validated to confirm they actually sit under the scan root. Wildcard records and bogus mock subdomains are filtered out using puredns.
     </p>
     <p style={paraStyle}>
       You can also paste custom subdomains in the partial recon modal. They are validated to be in-scope (must end with the project domain) and merged into the same candidate set.
@@ -26,13 +26,13 @@ const SubdomainDiscovery = (
 
     <div style={sectionTitleStyle}>How output transforms the graph</div>
     <p style={paraStyle}>
-      Each confirmed subdomain becomes a <strong>Subdomain</strong> node attached to the project Domain via a <span style={codeStyle}>HAS_SUBDOMAIN</span> relationship. Then each subdomain is resolved live and the result expands the graph:
+      Each confirmed subdomain becomes a <strong>Subdomain</strong> node attached to its registrable-domain Domain node via a <span style={codeStyle}>HAS_SUBDOMAIN</span> relationship. Then each subdomain is resolved live and the result expands the graph:
     </p>
     <ul style={listStyle}>
       <li><strong>IP nodes</strong> are created for every A/AAAA record, and linked to the Subdomain via <span style={codeStyle}>RESOLVES_TO</span> relationships (one per record type).</li>
       <li><strong>DNSRecord nodes</strong> are created for MX, NS, TXT, and CNAME records, attached via <span style={codeStyle}>HAS_DNS_RECORD</span>.</li>
       <li>The Subdomain node is tagged with its resolution state (resolved / unresolved / wildcard) and a discovery timestamp.</li>
-      <li>The apex Domain node is enriched with WHOIS data (registrar, organization, country, registration dates) when WHOIS lookup is enabled.</li>
+      <li>The Domain node (the registrable domain) is enriched with WHOIS data (registrar, organization, country, registration dates) when WHOIS lookup is enabled.</li>
     </ul>
     <p style={paraStyle}>
       Existing nodes are reused (deduplicated) - running the scan again only adds newly discovered subdomains, never duplicates.
@@ -164,7 +164,7 @@ const Shodan = (
   <div style={wrapperStyle}>
     <div style={firstSectionTitleStyle}>How input is generated</div>
     <p style={paraStyle}>
-      Shodan needs <strong>IP</strong> nodes. The list is built from every IP linked to the apex Domain plus every IP linked to any in-scope Subdomain (via <span style={codeStyle}>RESOLVES_TO</span>).
+      Shodan needs <strong>IP</strong> nodes. The list is built from every IP linked to the Domain (registrable domain) node plus every IP linked to any in-scope Subdomain (via <span style={codeStyle}>RESOLVES_TO</span>).
     </p>
     <p style={paraStyle}>
       Custom IPs/CIDRs entered in the partial recon modal are validated, expanded (CIDRs above /24 are rejected), and merged into the lookup list. Each one is queried against the Shodan API for its passive intelligence record.
@@ -191,8 +191,8 @@ const OsintEnrichment = (
       An orchestrator that runs whichever OSINT sources you have enabled (Shodan, Censys, AlienVault OTX, NetLAS, VirusTotal, ZoomEye, CriminalIP). It feeds each enabled source the appropriate inputs from the graph:
     </p>
     <ul style={listStyle}>
-      <li><strong>IP-based sources</strong> get every IP in scope (apex + resolved subdomains).</li>
-      <li><strong>Domain-based sources</strong> get the apex Domain and in-scope Subdomain names.</li>
+      <li><strong>IP-based sources</strong> get every IP in scope (the Domain node's + resolved subdomains').</li>
+      <li><strong>Domain-based sources</strong> get the registrable domain and the in-scope Subdomain names.</li>
     </ul>
 
     <div style={sectionTitleStyle}>How output transforms the graph</div>
@@ -224,7 +224,7 @@ const Naabu = (
     </p>
     <p style={paraStyle}>The graph sources are merged additively (no priority chain):</p>
     <ol style={listStyle}>
-      <li><strong>Apex Domain IPs</strong> - every IP linked to the root Domain node.</li>
+      <li><strong>Domain IPs</strong> - every IP linked to the Domain (registrable domain) node.</li>
       <li><strong>Subdomain IPs</strong> - every IP linked to any Subdomain (A/AAAA records).</li>
     </ol>
     <p style={paraStyle}>The merged list is deduplicated by IP. Custom inputs from the partial recon modal:</p>
@@ -258,7 +258,7 @@ const Masscan = (
   <div style={wrapperStyle}>
     <div style={firstSectionTitleStyle}>How input is generated</div>
     <p style={paraStyle}>
-      Masscan needs <strong>IP</strong> addresses. The input list is built from every IP linked to the apex Domain plus every IP linked to any Subdomain that successfully resolved (i.e. has at least one A or AAAA record).
+      Masscan needs <strong>IP</strong> addresses. The input list is built from every IP linked to the Domain (registrable domain) node plus every IP linked to any Subdomain that successfully resolved (i.e. has at least one A or AAAA record).
     </p>
     <p style={paraStyle}>
       DNS resolution must run first - Masscan does not accept hostnames. CIDR notation is supported and is the recommended format for large IP ranges.
@@ -288,7 +288,7 @@ const Nmap = (
       Nmap scans a list of IP addresses against a list of ports. Both come from the graph:
     </p>
     <ul style={listStyle}>
-      <li><strong>IPs</strong> - read from IP nodes that already have Port relationships (output of Naabu/Masscan). Falls back to apex Domain IPs if no port-scan data exists yet.</li>
+      <li><strong>IPs</strong> - read from IP nodes that already have Port relationships (output of Naabu/Masscan). Falls back to the Domain node's IPs if no port-scan data exists yet.</li>
       <li><strong>Ports</strong> - the union of every Port node discovered in earlier phases. If no Port nodes exist, Nmap falls back to its built-in top-ports list.</li>
     </ul>
     <p style={paraStyle}>
@@ -391,7 +391,7 @@ const Httpx = (
 
     <div style={sectionTitleStyle}>When the scan refuses to start</div>
     <p style={{ ...paraStyle, margin: 0 }}>
-      Only if the graph has no Port-mapped hosts <em>and</em> no resolved Subdomains <em>and</em> the apex Domain has no IPs <em>and</em> no custom targets were entered.
+      Only if the graph has no Port-mapped hosts <em>and</em> no resolved Subdomains <em>and</em> the Domain node has no IPs <em>and</em> no custom targets were entered.
     </p>
   </div>
 )
@@ -870,7 +870,7 @@ const SubdomainTakeover = (
       Crucially, <strong>unresolved subdomains are still scanned</strong>. A subdomain with a CNAME but no A record is exactly the takeover signal we're looking for. If a subdomain ever existed in the graph but no longer resolves, it stays in the test list.
     </p>
     <p style={paraStyle}>
-      BaseURL and Domain are listed as inputs but only used for context: the apex Domain bounds the scope filter, and existing BaseURLs help confirm the host was previously live. Custom subdomains from the partial recon modal must be in-scope (must end with the project domain) and are added to the scan list even if they don't resolve.
+      BaseURL and Domain are listed as inputs but only used for context: the scope groups bound the scope filter, and existing BaseURLs help confirm the host was previously live. Custom subdomains from the partial recon modal must be in scope (under an enumerated scan root, or one of a listed group's hosts) and are added to the scan list even if they don't resolve.
     </p>
 
     <div style={sectionTitleStyle}>How output transforms the graph</div>
@@ -902,7 +902,7 @@ const VhostSni = (
       <li>TLS Subject Alternative Names captured on each <strong>BaseURL</strong> served from this IP, plus any standalone <strong>Certificate</strong> nodes.</li>
       <li>CNAME targets recorded in <strong>DNSRecord</strong> entries.</li>
       <li>Reverse-DNS PTR record stored on the <strong>IP</strong> node.</li>
-      <li>The default wordlist (~2,300 admin / dev / staging / internal / modern-stack prefixes), expanded as <span style={codeStyle}>{`{prefix}.{target_apex}`}</span>.</li>
+      <li>The default wordlist (~2,300 admin / dev / staging / internal / modern-stack prefixes), expanded as <span style={codeStyle}>{`{prefix}.{scan_root}`}</span> for an enumerated scope group; a listed group gets no wordlist.</li>
       <li>Any custom wordlist provided in the section settings (newline-separated, prefixes or full hostnames).</li>
     </ul>
     <p style={paraStyle}>
@@ -976,7 +976,7 @@ const SecurityChecks = (
       <li><strong>BaseURLs</strong> → header checks (Referrer-Policy, COOP/CORP/COEP, Cache-Control, CSP), session/cookie checks, login form checks, insecure form action checks.</li>
       <li><strong>IPs</strong> → Direct IP Access checks, port-based checks (admin ports exposed, exposed databases, Redis without auth, Kubernetes API exposed, SMTP open relay), TLS expiry on direct IPs.</li>
       <li><strong>Subdomains</strong> → DNS checks (SPF missing, DMARC missing, DNSSEC missing, zone transfer), TLS expiry on hostnames.</li>
-      <li><strong>Domain (apex)</strong> → DNS-level checks scoped to the root domain (apex SPF, apex DMARC).</li>
+      <li><strong>Domain (registrable domain)</strong> → DNS-level checks run once per registrable domain (SPF, DMARC, DNSSEC).</li>
     </ul>
     <p style={paraStyle}>
       All four sources are <strong>additive</strong> - there's no priority chain. Disabling a specific toggle in the settings skips that check's input slice. Custom subdomains, IPs, and URLs from the partial recon modal merge into the appropriate pool.
