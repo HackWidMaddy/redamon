@@ -124,6 +124,40 @@ describe('restoreGraph — retired properties', () => {
   })
 })
 
+describe('restoreGraph — retired props are per label (GDB-13)', () => {
+  async function restored(nodes: ReturnType<typeof node>[]) {
+    const { session, calls } = fakeSession()
+    await restoreGraph(session, nodes, [], { projectId: 'p1' })
+    return calls
+      .filter(c => c.cypher.includes('apoc.merge.node') || c.cypher.includes('apoc.create.node'))
+      .flatMap(c => c.params.nodes as Array<{ properties: Record<string, unknown> }>)
+      .map(n => n.properties)
+  }
+
+  test("a Domain's flat per-run props are dropped; the latest scan_timestamp stays", async () => {
+    const [d] = await restored([node('Domain', {
+      name: 'example.com', target: 'api.example.com', filtered_mode: true, wildcard_mode: false,
+      subdomain_filter: ['www.api.example.com'], modules_executed: ['domain_discovery'], anonymous_mode: false,
+      bruteforce_mode: false, scan_type: 'full', scan_timestamp: 't1', registrar: 'R',
+    }, 'n1')])
+    for (const k of ['target', 'filtered_mode', 'wildcard_mode', 'subdomain_filter', 'modules_executed',
+      'anonymous_mode', 'bruteforce_mode', 'scan_type']) expect(d).not.toHaveProperty(k)
+    expect(d).toMatchObject({ scan_timestamp: 't1', registrar: 'R' })
+  })
+
+  test('a GithubHunt keeps its target', async () => {
+    const [g] = await restored([node('GithubHunt', { id: 'h1', target: 'acme-org', scan_type: 'org' }, 'n1')])
+    expect(g).toMatchObject({ target: 'acme-org', scan_type: 'org' })
+  })
+
+  test("an IP-mode Domain keeps its own scan_type and modules_executed", async () => {
+    const [d] = await restored([node('Domain', {
+      name: 'ip-targets.p1', ip_mode: true, scan_type: 'ip', modules_executed: ['ip_recon'],
+    }, 'n1')])
+    expect(d).toMatchObject({ scan_type: 'ip', modules_executed: ['ip_recon'] })
+  })
+})
+
 describe('restoreGraph — tenancy', () => {
   test('stamps the CALLER project id onto every node, overriding the payload', async () => {
     const { session, calls } = fakeSession()
