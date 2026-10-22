@@ -4649,9 +4649,11 @@ def _graph_exec_respond(final: str, params: dict) -> JSONResponse:
 _TRAFFIC_REPLAY_SENDS: dict[str, int] = {}
 
 
-# Short-TTL cache for the per-project auth profile. One proxy_brain run fans out
-# to many replays, and each was doing a full project GET with a 10s timeout on
-# the send path.
+# Cache for the project row behind replay auth. One proxy_brain run fans out to
+# many replays, and each was doing a full project GET with a 10s timeout on the
+# send path. An entry is reused for at most the TTL, and never once a settings
+# load has seen the project's updatedAt move: a rescope must not keep sending a
+# session to a host it no longer covers.
 _AUTH_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
 _AUTH_PROFILE_TTL_SEC = 60.0
 
@@ -4675,9 +4677,12 @@ async def _profile_auth_base(project_id: str, txn: dict) -> dict:
             r.raise_for_status()
             return r.json()
         import time as _time  # `time` is not imported at module scope in this file
+        from project_settings import seen_project_updated_at
         _now = _time.time()
         _hit = _AUTH_PROFILE_CACHE.get(project_id)
-        if _hit and (_now - _hit[0]) < _AUTH_PROFILE_TTL_SEC:
+        _seen = seen_project_updated_at(project_id)
+        if (_hit and (_now - _hit[0]) < _AUTH_PROFILE_TTL_SEC
+                and (_seen is None or _hit[1].get("updatedAt") == _seen)):
             project = _hit[1]
         else:
             project = await asyncio.to_thread(_fetch)
@@ -4685,36 +4690,17 @@ async def _profile_auth_base(project_id: str, txn: dict) -> dict:
         profile = project.get("authProfile")
         if not profile:
             return {}
-        # Scope: the profile's explicit hosts, else the project's target domains.
-        scope = list(profile.get("scopeHosts") or [])
-        if not scope:
-            if not project.get("ipMode"):
-                roots = []
-                root = (project.get("targetDomain") or "").strip()
-                if root:
-                    roots.append(root)
-                # A domain-batch project leaves targetDomain empty and keeps its
-                # scope in the derived groups.
-                for g in (project.get("domainBatchGroups") or []):
-                    if isinstance(g, dict):
-                        gr = str(g.get("rootDomain") or "").strip()
-                        if gr and gr not in roots:
-                            roots.append(gr)
-                for r in roots:
-                    # Subdomains are the project's own surface and are exactly what
-                    # the captured transactions hit. An apex-only scope left every
-                    # replay against a discovered host silently unauthenticated
-                    # (mirrors default_scope_hosts in recon/helpers/auth_profile.py).
-                    scope.append(r)
-                    scope.append(f"*.{r}")
-                if root:
-                    for pre in (project.get("subdomainList") or []):
-                        pre = str(pre).strip().rstrip(".")
-                        if pre:
-                            scope.append(f"{pre}.{root}")
-            scope += [str(ip) for ip in (project.get("targetIps") or [])]
+        # The same scope as the agent's curl session (§4.6), from the webapp's
+        # scope groups; the profile's explicit hosts only narrow it, and the
+        # request's host is RoE-checked.
         from auth_profile import auth_headers_for_host
-        return auth_headers_for_host(profile, host, scope)
+        from recon_settings.engagement import derive_roe_enabled
+        from scope_groups import auth_scope_patterns, scope_groups_from_project
+        groups = scope_groups_from_project(project)[0]
+        patterns = auth_scope_patterns(groups, ip_mode=bool(project.get("ipMode")),
+                                       target_ips=project.get("targetIps") or [])
+        roe = (project.get("roeExcludedHosts") or []) if derive_roe_enabled(project) else []
+        return auth_headers_for_host(profile, host, patterns, roe)
     except Exception:  # noqa: BLE001
         return {}
 

@@ -119,19 +119,67 @@ def host_in_scope(host, scope_hosts: Iterable[str]) -> bool:
     return False
 
 
-def resolve_scope_hosts(profile: Optional[dict], scope_domains: Iterable[str]) -> List[str]:
-    """Explicit ``scopeHosts`` if set, else the project's target domains.
+def _normalize_scope_entry(entry) -> str:
+    if not isinstance(entry, str):
+        return ''
+    entry = entry.strip()
+    if entry.startswith('*.'):
+        return '*.' + _normalize_host(entry[2:])
+    if '/' in entry and '://' not in entry:
+        return entry.lower()
+    return _normalize_host(entry)
 
-    Fails closed: an unconfigured project (empty domains, e.g. IP mode) yields no
-    scope, so no auth is attached.
+
+def is_roe_excluded(host, excluded_list) -> bool:
+    """True when ``host`` matches an RoE exclusion (mirrors ``_is_roe_excluded``
+    in ``recon/helpers/roe_scope.py``): an exact host or IP; a domain, which also
+    excludes its subdomains; ``*.domain``, its subdomains only; or a CIDR."""
+    host = _normalize_host(host)
+    if not host:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    for value in excluded_list or ():
+        entry = _normalize_scope_entry(value)
+        if not entry:
+            continue
+        if entry.startswith('*.'):
+            if host.endswith(entry[1:]):
+                return True
+        elif '/' in entry or address is not None:
+            try:
+                if address is not None and address in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except ValueError:
+                pass
+        elif host == entry or host.endswith('.' + entry):
+            return True
+    return False
+
+
+def resolve_scope_hosts(profile: Optional[dict], scope_patterns: Iterable[str],
+                        roe_excluded: Iterable[str] = ()) -> List[str]:
+    """The project's auth scope (``auth_scope_patterns``), NARROWED by the
+    profile's explicit ``scopeHosts`` when set (D-22: the intersection, never a
+    replacement), less the RoE-excluded hosts.
+
+    Fails closed: an unconfigured project yields no scope, so no auth is
+    attached. A wildcard survives the RoE filter; the per-request check in
+    ``auth_headers_for_host`` catches an excluded host under it.
     """
+    from scope_groups import intersect_explicit_scope
+
+    patterns = [e for e in (_normalize_scope_entry(p) for p in scope_patterns or ()) if e]
     explicit = (profile or {}).get('scopeHosts') or []
-    hosts = explicit if explicit else list(scope_domains or [])
+    scope = intersect_explicit_scope(explicit, patterns) if explicit else patterns
+    roe = list(roe_excluded or ())
     seen: Dict[str, None] = {}
-    for h in hosts:
-        n = _normalize_host(h) if not (isinstance(h, str) and (h.startswith('*.') or '/' in h)) else h.strip().lower()
-        if n:
-            seen.setdefault(n, None)
+    for entry in scope:
+        if roe and not entry.startswith('*.') and is_roe_excluded(entry, roe):
+            continue
+        seen.setdefault(entry, None)
     return list(seen)
 
 
@@ -140,15 +188,22 @@ def agent_enabled(profile: Optional[dict]) -> bool:
     return bool(profile) and profile.get('agentEnabled', True) is not False
 
 
-def auth_headers_for_host(profile: Optional[dict], target_host, scope_domains: Iterable[str]) -> Dict[str, str]:
+def auth_headers_for_host(profile: Optional[dict], target_host, scope_patterns: Iterable[str],
+                          roe_excluded: Iterable[str] = ()) -> Dict[str, str]:
     """The profile's headers for ``target_host``, or ``{}`` when out of scope.
+
+    ``roe_excluded`` is the project's RoE excluded-hosts list when RoE is on:
+    the request's own host is checked against it, since a pattern like
+    ``*.example.com`` survives an exclusion of ``admin.example.com``.
 
     Honors the independent agent consumer gate (default on): with it off the
     agent's replay/browser/curl all send anonymously, even if recon is authed.
     """
     if not profile or not agent_enabled(profile):
         return {}
-    scope = resolve_scope_hosts(profile, scope_domains)
+    if roe_excluded and is_roe_excluded(target_host, roe_excluded):
+        return {}
+    scope = resolve_scope_hosts(profile, scope_patterns, roe_excluded)
     if not host_in_scope(target_host, scope):
         return {}
     return build_auth_headers(profile)
