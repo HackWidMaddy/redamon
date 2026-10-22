@@ -1752,7 +1752,15 @@ RETURN t.name, t.version, c.id, c.severity, c.cvss
 ```
 
 ### Infrastructure Overview
+A Domain node is a registrable (organisation) domain: `example.com` for `api.example.com`. A
+project can hold several. A deeper scan root (`*.api.example.com` in the target list) is a
+Subdomain with `is_scan_root: true` under its organisation's Domain, never a Domain itself.
 ```cypher
+// Hosts under one scan root (a deeper scan root is a Subdomain, not a Domain)
+MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain {name: "example.com"})
+WHERE s.name = "api.example.com" OR s.name ENDS WITH ".api.example.com"
+RETURN s.name, s.status, s.is_scan_root
+
 // All subdomains for a domain with HTTP status
 MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain {name: "example.com"})
 RETURN s.name, s.status, s.status_codes

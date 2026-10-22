@@ -61,7 +61,8 @@ GUARDRAIL_DOMAINS_PROMPT = """Evaluate these target domains for a penetration te
 
 Target domains: {targets}
 
-These are ALL in scope for the same engagement. Block the WHOLE set if ANY ONE of
+These are ALL in scope for the same engagement: registrable domains, and the scan
+roots under them (api.example.com under example.com). Block the WHOLE set if ANY ONE of
 them is a well-known/public/government/major-company domain, and say which one.
 Allow only if every domain is obscure/custom/small-org."""
 
