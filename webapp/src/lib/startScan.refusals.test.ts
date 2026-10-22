@@ -1,7 +1,8 @@
 /**
- * The queue's start path refuses an old-model graph (§4.11.6) for the writers
- * that attach to Domain nodes, with a status the queue treats as permanent: a
- * 409 reads as "busy" there and would requeue the job until a full recon ran.
+ * The queue's start path refuses what only a person can fix with a status the
+ * queue treats as permanent: a 409 reads as "busy" there and would requeue the
+ * job forever. Two such refusals: an old-model graph (§4.11.6) for the writers
+ * that attach to Domain nodes, and a third-party engagement that is not startable.
  *
  * @vitest-environment node
  */
@@ -11,10 +12,11 @@ const h = vi.hoisted(() => ({
   findUnique: vi.fn(),
   legacy: vi.fn(),
   orchestratorFetch: vi.fn(),
+  engagement: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: (...a: unknown[]) => h.findUnique(...a) } } }))
-vi.mock('@/lib/engagement', () => ({ loadEngagement: async () => ({ blockers: [] }) }))
+vi.mock('@/lib/engagement', () => ({ loadEngagement: (...a: unknown[]) => h.engagement(...a) }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => h.orchestratorFetch(...a) }))
 vi.mock('@/lib/startFullScan', () => ({ startFullScan: vi.fn() }))
 vi.mock('@/lib/legacyGraph', async orig => ({
@@ -32,6 +34,7 @@ beforeEach(() => {
     domainBatchMode: true, domainBatchHosts: ['www.acme.co.uk'],
   })
   h.legacy.mockResolvedValue(['co.uk'])
+  h.engagement.mockResolvedValue({ blockers: [] })
   h.orchestratorFetch.mockResolvedValue({ ok: true, json: async () => ({ run_id: 'r1' }) })
 })
 
@@ -55,5 +58,15 @@ describe('dispatchStart on an old-model graph', () => {
     h.legacy.mockResolvedValue([])
     const r = await dispatchStart('partial_recon', 'p1', { payload: { tool_id: 'Tlsx' } })
     expect(r.ok).toBe(true)
+  })
+})
+
+describe('dispatchStart on a third-party engagement that is not startable', () => {
+  test('is refused permanently, so the queue does not retry it as busy', async () => {
+    h.engagement.mockResolvedValue({ blockers: ['No authorization record.'] })
+    const r = await dispatchStart('gvm', 'p1')
+    expect(r.status).toBe(422)
+    expect(classifyStartFailure(r.status, { error: r.error }).temporary).toBe(false)
+    expect(h.orchestratorFetch).not.toHaveBeenCalled()
   })
 })

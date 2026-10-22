@@ -141,9 +141,11 @@ export async function dispatchStart(
   // control.
   const engagement = await loadEngagement(projectId)
   if (engagement.blockers.length > 0) {
+    // 422 as in startFullScan: the queue reads a 409 as "busy" and would
+    // requeue this until a person fixed the engagement record.
     return {
       ok: false,
-      status: 409,
+      status: 422,
       error:
         'This is a third-party engagement and it is not startable: ' +
         engagement.blockers.join(' '),
