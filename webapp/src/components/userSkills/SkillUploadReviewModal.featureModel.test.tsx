@@ -166,6 +166,22 @@ describe('Generate with AI in the upload dialog', () => {
     expect(stub.calls(GENERATE_URL, 'POST')).toHaveLength(1)
   })
 
+  test('a row unchecked while Generate runs is not sent in a later request', async () => {
+    const releases: (() => void)[] = []
+    const stub = stubGateFetch({ skill_metadata: 'claude-haiku-4-5' }, route((items) => new Promise((resolve) => {
+      releases.push(() => resolve(filled(items)))
+    })))
+    draw(Array.from({ length: 7 }, (_, i) => plain(i)))
+    fireEvent.click(generateButton())
+    expect(await screen.findByText(/Writing 5 of 7/)).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Include s6.md'))
+    await act(async () => { releases[0]() })
+    await waitFor(() => expect(releases).toHaveLength(2))
+    await act(async () => { releases[1]() })
+    const sent = stub.calls(GENERATE_URL, 'POST').map(([, init]) => (JSON.parse(init!.body as string).items as Item[]).map((i) => i.fileName))
+    expect(sent).toEqual([['s0.md', 's1.md', 's2.md', 's3.md', 's4.md'], ['s5.md']])
+  })
+
   test('single mode reads "Generate with AI"; disabled with its title when every field is filled', async () => {
     stubGateFetch({ skill_metadata: 'claude-haiku-4-5' }, route(filled))
     draw([{ name: 'full.md', text: '---\nname: Full\ndescription: Done.\n---\n# Full' }], 'single')

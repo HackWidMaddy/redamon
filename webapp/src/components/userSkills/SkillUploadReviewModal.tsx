@@ -223,7 +223,8 @@ export function SkillUploadReviewModal({ mode, userId, existingCount, files, cut
         const current = new Map(rowsRef.current.map((r) => [r.key, r]))
         const items = chunk.flatMap(({ key }) => {
           const r = current.get(key)
-          if (!r) return []
+          // Re-read per request: a row the person excluded meanwhile is not sent.
+          if (!r || !r.include || r.problem) return []
           const fields = [...(r.name.trim() ? [] : ['name']), ...(r.description.trim() ? [] : ['description'])]
           return fields.length ? [{ key, fileName: r.fileName, content: r.content, name: r.name.slice(0, NAME_MAX_CHARS), fields }] : []
         })
