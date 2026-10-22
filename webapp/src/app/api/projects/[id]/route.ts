@@ -19,7 +19,7 @@ import { canonicalJson } from '@/lib/fingerprint'
 import { field, fieldsWhere } from '@/lib/reconSettings/registry'
 import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
 import { JEV_ENGINE_SELECT, guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
-import { seedProjectDomains } from '@/lib/graphSeedDomains'
+import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
 import { refreshActiveRecordingScope } from '@/lib/recordingSession'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
 import { computeSkillTextOverrides } from '@/lib/plugins/overrideDelivery'
@@ -305,7 +305,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // untouched. Without this guard the absent domainBatchHosts read as empty and
     // every field toggle on a batch project 400'd with "needs at least one hostname".
     const touchesBatchScope = 'domainBatchHosts' in updateData || 'domainBatchMode' in updateData
-    let batchRootsAdded: string[] = []
+    let batchSeedDomains: string[] = []
     let batchScopeChanged = false
     if (willBeBatch && touchesBatchScope) {
       const { validateDomainBatch } = await import('@/lib/domainBatch')
@@ -329,7 +329,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       )
       updateData.domainBatchHosts = batch.entries
       updateData.domainBatchGroups = batch.legacy
-      batchRootsAdded = batch.groups.map(g => g.scanRoot)
+      batchSeedDomains = seedDomainNames(batch.groups)
     }
 
     // A project that is not a batch keeps no batch scope. Recon's auth scope and
@@ -540,16 +540,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       source: 'api',
     })
 
-    // Ensure Domain node(s) exist in Neo4j (create if missing, update if changed).
-    // A batch project has an empty targetDomain and one root per group, so the
-    // single-domain condition skipped it entirely: a root added on edit had no
-    // Domain node, and the partial-recon picker (which lists Domain nodes) could
-    // never offer it.
+    // Ensure the Domain nodes (one per org) exist in Neo4j. A batch seeds only
+    // when its host list was part of this save; a single domain seeds its org.
     const seedDomains = project.ipMode
       ? []
       : project.domainBatchMode
-        ? batchRootsAdded
-        : (project.targetDomain ? [project.targetDomain] : [])
+        ? batchSeedDomains
+        : seedDomainNames(resolveScopeGroups(project).groups)
     await seedProjectDomains(seedDomains, project.userId, project.id)
 
     // An active traffic recording keeps the scope it started with unless moved,

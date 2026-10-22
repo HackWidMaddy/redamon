@@ -446,3 +446,16 @@ describe('a row already in both modes can still take an unrelated partial save',
     expect((await put({ katanaEnabled: false })).status).toBe(200)
   })
 })
+
+describe('WEB-12: a save seeds the org Domain', () => {
+  test('a deep single-domain target seeds its registrable domain, not the scan root', async () => {
+    const run = vi.fn()
+    mockGraphSession.mockReturnValue({ run, close: vi.fn() })
+    const res = await put(fullFormBody({ targetDomain: 'api.example.com', subdomainList: [] }))
+    expect(res.status).toBe(200)
+    const names = run.mock.calls
+      .filter(([q]) => String(q).includes('MERGE (d:Domain'))
+      .map(([, p]) => (p as { name: string }).name)
+    expect(names).toEqual(['example.com'])
+  })
+})

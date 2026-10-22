@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
-import { getGraphSession } from '@/app/api/graph/neo4j'
 import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmGate.logic'
 import { requireEffectiveUser, ownerScope } from '@/lib/access'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
 import { describeInvalid, normalizeHost, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
 import { resolveScopeGroups, scopeGuardrailNames, softGuardrailNames } from '@/lib/scopeGroups'
+import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { actingAdminId } from '@/lib/roe/actor'
@@ -150,7 +150,6 @@ export async function POST(request: NextRequest) {
     if (batch && !batch.ok) {
       return NextResponse.json({ error: batch.errors.join(' ') }, { status: 400 })
     }
-    const batchRoots = batch ? batch.groups.map(g => g.scanRoot) : []
 
     // Owner is the effective user, never the client-supplied body value.
     const userId = eff.userId
@@ -418,28 +417,9 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    // Create Domain nodes in Neo4j so the target is visible in the graph immediately.
-    // Batch mode has one per group; the MERGE key carries user_id + project_id so a
-    // shared domain name can never merge one project's node into another's.
-    const seedDomains = domainBatchMode ? batchRoots : (!ipMode && project.targetDomain ? [project.targetDomain] : [])
-    if (seedDomains.length > 0) {
-      try {
-        const session = getGraphSession()
-        try {
-          for (const name of seedDomains) {
-            await session.run(
-              `MERGE (d:Domain {name: $name, user_id: $userId, project_id: $projectId})
-               ON CREATE SET d.source = 'project_creation', d.updated_at = datetime()`,
-              { name, userId: project.userId, projectId: project.id }
-            )
-          }
-        } finally {
-          await session.close()
-        }
-      } catch (e) {
-        console.warn('Failed to create Domain node in Neo4j on project creation:', e)
-      }
-    }
+    // Create the Domain nodes (one per org) so the target is visible in the graph
+    // immediately. Best-effort; the first full recon writes them anyway.
+    await seedProjectDomains(seedDomainNames(resolveScopeGroups(project).groups), project.userId, project.id)
 
     // Sync JS Recon files uploaded during creation (before project existed in DB)
     if (clientId) {

@@ -34,7 +34,7 @@ import {
 import { refreshActiveRecordingScope } from '@/lib/recordingSession'
 import { activationBusy } from '@/lib/activationLock'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
-import { seedProjectDomains } from '@/lib/graphSeedDomains'
+import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
 import { LEGACY_GRAPH_MESSAGE, legacyGraphDomains } from '@/lib/legacyGraph'
 import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
@@ -279,8 +279,11 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   const legacyGraph = addedRoots.length > 0
     ? (await legacyGraphDomains(ctx.token.userId, args.projectId, batchScope(data.domainBatchHosts))) ?? []
     : []
+  // The orgs of the added scan roots: the graph names its Domain after the org.
+  const addedOrgs = seedDomainNames(
+    batchScope(data.domainBatchHosts).filter(g => addedRoots.includes(g.scanRoot)))
   const graphSeeded = legacyGraph.length === 0
-    && await seedProjectDomains(addedRoots, ctx.token.userId, args.projectId)
+    && await seedProjectDomains(addedOrgs, ctx.token.userId, args.projectId)
 
   const recordingScopeUpdated = batchRescoped && await refreshActiveRecordingScope(prisma, args.projectId, {
     domainBatchMode: true,

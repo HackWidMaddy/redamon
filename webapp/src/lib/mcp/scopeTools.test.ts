@@ -51,7 +51,10 @@ vi.mock('@/lib/prisma', () => {
   return { default: client }
 })
 vi.mock('@/lib/graphWriters', () => ({ describeLiveGraphWriters: (...a: unknown[]) => h.live(...a) }))
-vi.mock('@/lib/graphSeedDomains', () => ({ seedProjectDomains: (...a: unknown[]) => h.seed(...a) }))
+vi.mock('@/lib/graphSeedDomains', async orig => ({
+  ...(await orig<typeof import('@/lib/graphSeedDomains')>()),
+  seedProjectDomains: (...a: unknown[]) => h.seed(...a),
+}))
 vi.mock('@/lib/legacyGraph', async orig => ({
   ...(await orig<typeof import('@/lib/legacyGraph')>()),
   legacyGraphDomains: (...a: unknown[]) => h.legacy(...a),

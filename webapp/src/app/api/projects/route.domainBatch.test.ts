@@ -260,3 +260,26 @@ describe('a single-domain target gets the batch entry rules', () => {
     expect(body.target_domains).toEqual(['example.com'])
   })
 })
+
+describe('WEB-12: the seeded Domain nodes are the orgs', () => {
+  const seeded = () => mockRun.mock.calls
+    .filter(([q]) => String(q).includes('MERGE (d:Domain'))
+    .map(([q, p]) => {
+      expect(String(q)).toContain('user_id: $userId, project_id: $projectId')
+      return (p as { name: string }).name
+    })
+
+  test('a deep single-domain target seeds its registrable domain, not the scan root', async () => {
+    const res = await POST(postReq({ userId: 'user-1', name: 'Deep', targetDomain: 'api.example.com',
+      targetGuardrailEnabled: false }))
+    expect(res.status).toBe(201)
+    expect(seeded()).toEqual(['example.com'])
+  })
+
+  test('a batch seeds each org once', async () => {
+    const res = await POST(postReq({ ...BATCH_BASE, targetGuardrailEnabled: false,
+      domainBatchHosts: ['www.acme.co.uk', 'shop.acme.co.uk', 'sub2.domain2.it'] }))
+    expect(res.status).toBe(201)
+    expect(seeded()).toEqual(['acme.co.uk', 'domain2.it'])
+  })
+})

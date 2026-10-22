@@ -20,7 +20,10 @@ const h = vi.hoisted(() => ({
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn() }))
 vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: vi.fn(), close: vi.fn() }) }))
-vi.mock('@/lib/graphSeedDomains', () => ({ seedProjectDomains: vi.fn(async () => true) }))
+vi.mock('@/lib/graphSeedDomains', async orig => ({
+  ...(await orig<typeof import('@/lib/graphSeedDomains')>()),
+  seedProjectDomains: vi.fn(async () => true),
+}))
 vi.mock('@/lib/graphWriters', () => ({ describeScanWriters: async () => null }))
 vi.mock('@/lib/graphRestore', () => ({ clearProjectGraph: vi.fn() }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn() }))
