@@ -30,10 +30,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Import settings from project_settings (fetches from API or falls back to params.py)
-from recon.project_settings import get_settings
+from recon.project_settings import get_settings, log_scope
 
-# Load settings from API (if PROJECT_ID/WEBAPP_API_URL set) or params.py (CLI mode).
+# Load settings from the webapp API (PROJECT_ID/WEBAPP_API_URL set) or the
+# defaults (CLI mode). A scope recon refuses raises ScopeRefused here, before
+# any tool starts.
 # get_settings() now applies stealth + AI cascade overrides internally so every
 # downstream consumer (full pipeline + every partial recon module) gets them.
 _settings = get_settings()
@@ -107,6 +108,14 @@ def _batch_groups() -> list:
         return []
     groups = _settings.get('DOMAIN_BATCH_GROUPS') or []
     return groups if isinstance(groups, list) else []
+
+
+def _scope_group_for(root: str):
+    """The SCOPE_GROUPS entry whose scan root is `root`, or None."""
+    for group in _settings.get('SCOPE_GROUPS') or []:
+        if group.get('scanRoot') == root:
+            return group
+    return None
 
 
 # The batch roots the graph writers may attach a host to. Fixed once per batch
@@ -370,6 +379,7 @@ from recon.helpers.batch_groups import (  # noqa: E402
     _PREFIX_CHARSET,
     group_discovery_enabled,
     parse_target,
+    target_info_from_group,
 )
 
 
@@ -2592,11 +2602,18 @@ def _run_pipeline():
         print(f"[RoE] Reconnaissance aborted: outside Rules of Engagement time window.")
         return 1
 
+    log_scope(_settings)
+    groups = _batch_groups()
+    if DOMAIN_BATCH_MODE and not groups:
+        # The settings load refuses this already; a batch must never fall
+        # through to a single-domain run with an empty target.
+        print("[!][Batch] Domain batch with no group to run: refusing.")
+        return 1
+
     # ONCE per run, before any group: this is what lets a batch's groups
     # accumulate into a single graph instead of each wiping the last.
     _clear_recon_graph()
 
-    groups = _batch_groups()
     if groups:
         return run_domain_batch(groups, start_time)
 
@@ -2644,8 +2661,11 @@ def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) 
             print(f"[!][Pipeline] Set VERIFY_DOMAIN_OWNERSHIP = False in params.py to disable\n")
             return 1
 
-    # Parse target with this target's subdomain prefixes
-    target_info = parse_target(target_domain, subdomain_list)
+    # A batch group runs on its scope group, whose mode is explicit; the
+    # single-domain path (and a webapp that sent no scopeGroups) parses prefixes.
+    scope_group = _scope_group_for(target_domain) if _batch_groups() else None
+    target_info = (target_info_from_group(scope_group) if scope_group
+                   else parse_target(target_domain, subdomain_list))
     filtered_mode = target_info["filtered_mode"]
     root_domain = target_info["root_domain"]
     full_subdomains = target_info["full_subdomains"]

@@ -275,6 +275,7 @@ class TestGraphClearHappensOncePerRun:
     def test_a_single_domain_project_still_runs_one_group(self, recon_main):
         with mock.patch.object(recon_main, '_clear_recon_graph'), \
              mock.patch.object(recon_main, '_batch_groups', return_value=[]), \
+             mock.patch.object(recon_main, 'DOMAIN_BATCH_MODE', False), \
              mock.patch.object(recon_main, '_check_roe_time_window', return_value=(True, '')), \
              mock.patch.object(recon_main, 'IP_MODE', False), \
              mock.patch.object(recon_main, 'TARGET_DOMAIN', 'solo.com'), \
@@ -285,6 +286,18 @@ class TestGraphClearHappensOncePerRun:
         run.assert_called_once()
         assert run.call_args[0][0] == 'solo.com'
         assert run.call_args[0][1] == ['www.']
+
+    def test_a_batch_with_no_group_refuses_before_anything_is_cleared(self, recon_main):
+        # It used to fall through to a single-domain run with an empty target.
+        with mock.patch.object(recon_main, '_clear_recon_graph') as clear, \
+             mock.patch.object(recon_main, '_batch_groups', return_value=[]), \
+             mock.patch.object(recon_main, '_check_roe_time_window', return_value=(True, '')), \
+             mock.patch.object(recon_main, 'IP_MODE', False), \
+             mock.patch.object(recon_main, 'DOMAIN_BATCH_MODE', True), \
+             mock.patch.object(recon_main, 'run_domain_group', return_value=0) as run:
+            assert recon_main.main() == 1
+        clear.assert_not_called()
+        run.assert_not_called()
 
     def test_the_roe_time_window_blocks_before_anything_is_cleared(self, recon_main):
         # Blocking AFTER the clear would destroy the graph for a scan that never ran.
