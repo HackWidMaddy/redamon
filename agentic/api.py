@@ -308,8 +308,11 @@ async def check_target_guardrail(body: GuardrailRequest):
         )
         return result
     except Exception as e:
+        # A malformed or missing verdict lands here too. This check is the
+        # soft, user-disableable one and stays fail-open; the session-start
+        # check refuses on the same error.
         logger.error(f"Guardrail error: {e}")
-        return {"allowed": True, "reason": f"Guardrail error: {str(e)}"}
+        return {"allowed": True, "verdict": "unknown", "reason": f"Guardrail verdict unknown: {str(e)}"}
 
 
 # =============================================================================

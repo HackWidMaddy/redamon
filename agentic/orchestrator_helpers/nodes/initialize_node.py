@@ -75,14 +75,14 @@ async def _run_scope_guardrail(llm, user_id, project_id, session_id) -> dict | N
     Returns a state update dict if blocked, or None if allowed.
     """
     from orchestrator_helpers.guardrail import check_target_allowed
-    from project_settings import target_scope_domains
+    from project_settings import soft_guardrail_names
 
     ip_mode = get_setting('IP_MODE', False)
     target_ips = get_setting('TARGET_IPS', [])
-    # Every in-scope domain, whatever the target mode. A Domain-batch project has
-    # no TARGET_DOMAIN, so reading that field alone used to skip this check on the
-    # projects with the MOST targets.
-    scope_domains = target_scope_domains()
+    # The orgs and scan roots, whatever the target mode. A Domain-batch project
+    # has no TARGET_DOMAIN, so reading that field alone used to skip this check
+    # on the projects with the MOST targets.
+    scope_domains = soft_guardrail_names()
 
     # A batch project with no derivable scope is misconfigured, not unconstrained:
     # fail closed rather than fall through to "nothing to check".
@@ -110,7 +110,9 @@ async def _run_scope_guardrail(llm, user_id, project_id, session_id) -> dict | N
             target_ips=target_ips if ip_mode else [],
         )
 
-        if not result.get("allowed", True):
+        # Only an explicit True passes; check_target_allowed raises on a
+        # malformed verdict, which the except below refuses.
+        if result.get("allowed") is not True:
             reason = result.get("reason", "Target not authorized")
             logger.warning(
                 f"[{user_id}/{project_id}/{session_id}] GUARDRAIL BLOCKED: {reason}"
@@ -129,7 +131,112 @@ async def _run_scope_guardrail(llm, user_id, project_id, session_id) -> dict | N
     return None
 
 
+# `_scope_signature` of a session refused because its settings could not be
+# loaded: the refusal was about that turn's fetch, not the target, so the next
+# turn judges the scope afresh instead of staying blocked.
+_SETTINGS_UNAVAILABLE = "settings-unavailable"
+
+
+def _build_session_refusal(user_id, project_id, session_id, title, body, reason) -> dict:
+    return {
+        "messages": [AIMessage(content=f"**{title}**\n\n{body}")],
+        "task_complete": True,
+        "completion_reason": reason,
+        "_guardrail_blocked": True,
+        "user_id": user_id,
+        "project_id": project_id,
+        "session_id": session_id,
+    }
+
+
+async def _run_scope_checks(llm, user_id, project_id, session_id) -> dict | None:
+    """The session-start scope checks: a refusal update, or None to proceed."""
+    from orchestrator_helpers.hard_guardrail import first_hard_blocked
+    from project_settings import guardrail_names, target_scope_groups
+
+    ip_mode = get_setting('IP_MODE', False)
+    if not ip_mode:
+        dropped = get_setting('SCOPE_GROUPS_DROPPED', 0) or 0
+        configured = get_setting('DOMAIN_BATCH_MODE', False) or (get_setting('TARGET_DOMAIN', '') or '').strip()
+        if dropped or (configured and not target_scope_groups()):
+            # A group that failed validation, or a target with no valid group,
+            # is a scope the agent cannot verify: never "nothing to check".
+            return _build_session_refusal(
+                user_id, project_id, session_id, "Scope Guardrail: Scope Unverifiable",
+                "This project's target scope could not be read as valid scope groups, so the "
+                "agent cannot verify what it is authorized to test. Open the project, re-save "
+                "its target, and start a new message.",
+                "Guardrail blocked: scope unverifiable",
+            )
+        # Hard guardrail: deterministic, non-disableable. EVERY in-scope name,
+        # not just TARGET_DOMAIN: is_hard_blocked('') returns "not blocked", so
+        # checking the empty field of a batch project disarmed it entirely. One
+        # blocked name blocks the session.
+        hit = first_hard_blocked(guardrail_names())
+        if hit:
+            target_domain, reason = hit
+            logger.warning(f"[{user_id}/{project_id}/{session_id}] HARD GUARDRAIL BLOCKED: {reason}")
+            return _build_guardrail_block(user_id, project_id, session_id, target_domain, reason)
+
+    if get_setting('AGENT_GUARDRAIL_ENABLED', True):
+        return await _run_scope_guardrail(llm, user_id, project_id, session_id)
+    return None
+
+
+async def _scope_gate(state, llm, user_id, project_id, session_id) -> tuple[dict | None, dict]:
+    """(refusal, updates). The scope checks run at session start and again on any
+    later turn whose scope differs from the one last checked: a mid-session
+    rescope must not inherit the old scope's approval."""
+    from project_settings import SETTINGS_SOURCE_KEY, scope_signature
+
+    previous = state.get("_scope_signature")
+    retry = bool(state.get("_guardrail_blocked")) and previous == _SETTINGS_UNAVAILABLE
+    if state.get("_guardrail_blocked") and not retry:
+        return None, {}
+
+    if get_setting(SETTINGS_SOURCE_KEY) == "default":
+        # The defaults have no target: running on them would skip every scope
+        # check. Refuse rather than test an unverified scope.
+        logger.error(f"[{user_id}/{project_id}/{session_id}] Project settings unavailable; refusing the turn")
+        refusal = _build_session_refusal(
+            user_id, project_id, session_id, "Project Settings Unavailable",
+            "The agent could not load this project's settings, so it cannot verify the target "
+            "scope and will not run on defaults. Check that the webapp is reachable, then send "
+            "the message again.",
+            "Project settings unavailable",
+        )
+        refusal["_scope_signature"] = _SETTINGS_UNAVAILABLE
+        return refusal, {}
+
+    signature = scope_signature()
+    if state.get("execution_trace") and not retry and previous == signature:
+        return None, {"_scope_signature": signature}
+    if state.get("execution_trace") and not retry:
+        logger.warning(f"[{user_id}/{project_id}/{session_id}] Scope changed mid-session; re-running the guardrails")
+
+    refusal = await _run_scope_checks(llm, user_id, project_id, session_id)
+    if refusal is not None:
+        refusal["_scope_signature"] = signature
+        return refusal, {}
+    updates = {"_scope_signature": signature}
+    if retry:
+        updates["_guardrail_blocked"] = False
+    return None, updates
+
+
 async def initialize_node(state: AgentState, config, *, llm, neo4j_creds) -> dict:
+    """Initialize state, after the scope gate (_scope_gate) lets the turn run."""
+    user_id, project_id, session_id = get_config_values(config)
+    refusal, updates = await _scope_gate(state, llm, user_id, project_id, session_id)
+    if refusal is not None:
+        return refusal
+    if updates.get("_guardrail_blocked") is False:
+        state = {**state, "_guardrail_blocked": False}
+    result = await _initialize(state, config, llm=llm, neo4j_creds=neo4j_creds)
+    return {**result, **updates}
+
+
+async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
     """
     Initialize state for new conversation or update for continuation.
 
@@ -208,33 +315,6 @@ async def initialize_node(state: AgentState, config, *, llm, neo4j_creds) -> dic
             logger.warning(f"[{user_id}/{project_id}/{session_id}] RoE WARNING: {warning_text}")
             # Inject warning into state so it appears in the agent's prompt context
             state["_roe_warnings"] = warnings
-
-    # Hard guardrail: deterministic, non-disableable — always blocks government/public domains
-    # Runs unconditionally regardless of AGENT_GUARDRAIL_ENABLED setting
-    if not state.get("execution_trace") and not state.get("_guardrail_blocked"):
-        from orchestrator_helpers.hard_guardrail import first_hard_blocked
-        from project_settings import guardrail_names
-        ip_mode = get_setting('IP_MODE', False)
-        # EVERY in-scope name, not just TARGET_DOMAIN: a Domain-batch project
-        # keeps its scope in DOMAIN_BATCH_GROUPS, and is_hard_blocked('') returns
-        # "not blocked", so checking the empty field disarmed this guardrail
-        # entirely on batch projects. Its listed hosts are checked as well as
-        # its roots. One blocked name blocks the session.
-        if not ip_mode:
-            hit = first_hard_blocked(guardrail_names())
-            if hit:
-                target_domain, reason = hit
-                logger.warning(
-                    f"[{user_id}/{project_id}/{session_id}] HARD GUARDRAIL BLOCKED: {reason}"
-                )
-                return _build_guardrail_block(user_id, project_id, session_id, target_domain, reason)
-
-    # Soft guardrail (LLM-based): on first invocation, verify the project target is authorized
-    # Skip if already blocked (avoid redundant LLM calls on retry in same session)
-    if get_setting('AGENT_GUARDRAIL_ENABLED', True) and not state.get("execution_trace") and not state.get("_guardrail_blocked"):
-        guardrail_block = await _run_scope_guardrail(llm, user_id, project_id, session_id)
-        if guardrail_block is not None:
-            return guardrail_block
 
     # If resuming after approval/answer, preserve state for routing
     if state.get("user_approval_response") and state.get("phase_transition_pending"):

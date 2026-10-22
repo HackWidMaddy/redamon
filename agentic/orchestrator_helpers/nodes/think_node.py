@@ -587,23 +587,26 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     if get_setting('STEALTH_MODE', False):
         logger.info(f"[{user_id}/{project_id}/{session_id}] STEALTH MODE active — injected stealth rules into prompt")
 
-    # Scope guardrail: remind agent to stay within authorized targets
-    # Always inject for hard-blocked domains (government/public); also inject when soft guardrail is enabled
-    _inject_scope_guardrail = get_setting('AGENT_GUARDRAIL_ENABLED', True)
-    if not _inject_scope_guardrail:
-        from orchestrator_helpers.hard_guardrail import is_hard_blocked
-        _target_domain = get_setting('TARGET_DOMAIN', '')
-        _ip_mode = get_setting('IP_MODE', False)
-        if not _ip_mode and _target_domain:
-            _inject_scope_guardrail, _ = is_hard_blocked(_target_domain)
-
-    if _inject_scope_guardrail:
+    # Scope guardrail. The prompt is the only control on which hosts the agent's
+    # tools target (the guardrails judge the project, not each call), so the
+    # scope itself is listed whenever there is one; an EXACT project's limits
+    # exist nowhere else in the agent's view.
+    from project_settings import compact_scope_text
+    _scope_text = compact_scope_text()
+    if _scope_text or get_setting('AGENT_GUARDRAIL_ENABLED', True):
         system_prompt += (
             "\n\n## SCOPE GUARDRAIL\n\n"
             "You must ONLY operate against the project's configured target domain/IPs. "
             "Never scan, exploit, probe, or interact with domains or IPs outside the authorized scope. "
             "If the user asks you to target something outside the project scope, refuse and explain why."
         )
+        if _scope_text:
+            system_prompt += (
+                "\n\nIn scope:\n" + _scope_text + "\n\n"
+                "Nothing else is in scope. A Domain node in the graph names the organisation "
+                "(or the scan root) and is not automatically in scope: neither it nor a host "
+                "under it is a target unless the list above covers it."
+            )
 
     # Rules of Engagement injection
     if get_setting('ROE_ENABLED', False):
