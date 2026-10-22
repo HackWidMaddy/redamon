@@ -77,12 +77,14 @@ class UserInputMixin:
                 project_id=project_id,
             )
 
-            # Connect to Domain node (create Domain if needed via MERGE)
+        # A missing root Domain is created through ensure_root_domains, the only
+        # root-Domain MERGE outside the run's own domain write
+        # (tests/test_no_stray_domain_merge.py).
+        self.ensure_root_domains([domain], user_id, project_id)
+        with self.driver.session() as session:
             session.run(
                 """
-                MERGE (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
-                ON CREATE SET d.updated_at = datetime()
-                WITH d
+                MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
                 MATCH (ui:UserInput {id: $ui_id, user_id: $user_id, project_id: $project_id})
                 MERGE (d)-[:HAS_USER_INPUT]->(ui)
                 """,
@@ -154,13 +156,12 @@ class UserInputMixin:
             stats["errors"].append("No domain found in recon_data")
             return stats
 
+        self.ensure_root_domains([domain], user_id, project_id)
         with self.driver.session() as session:
-            # Ensure Domain node exists
             session.run(
                 """
-                MERGE (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})
-                ON CREATE SET d.updated_at = datetime()
-                ON MATCH SET d.updated_at = datetime()
+                MATCH (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})
+                SET d.updated_at = datetime()
                 """,
                 name=domain, user_id=user_id, project_id=project_id,
             )

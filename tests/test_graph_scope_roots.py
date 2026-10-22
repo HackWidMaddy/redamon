@@ -23,6 +23,7 @@ sys.path.insert(0, _REPO)
 
 from graph_db.mixins.recon.scope import attach_roots, root_for_host, roots_are_ip_mode, scope_roots  # noqa: E402
 from graph_db.mixins.recon.user_input_mixin import UserInputMixin, _user_input_root  # noqa: E402
+from graph_db.mixins.recon.domain_mixin import DomainMixin  # noqa: E402
 
 ROOTS = ["alpha.test", "beta.test", "gamma.test"]
 
@@ -91,7 +92,7 @@ class TestRootForHost(unittest.TestCase):
         self.assertFalse(roots_are_ip_mode(session, [], "u1", "p1"))
 
 
-class _Client(UserInputMixin):
+class _Client(DomainMixin, UserInputMixin):
     def __init__(self):
         session = MagicMock()
         session.__enter__ = MagicMock(return_value=session)
@@ -101,11 +102,15 @@ class _Client(UserInputMixin):
         self.session = session
 
     def merged_domain(self):
-        """The Domain name the HAS_USER_INPUT MERGE was given."""
+        """The Domain the UserInput was linked to; it must also be the one ensured."""
+        ensured = linked = None
         for call in self.session.run.call_args_list:
             if "MERGE (d:Domain" in call[0][0]:
-                return call[1]["domain"]
-        return None
+                ensured = call[1]["names"]
+            if "HAS_USER_INPUT" in call[0][0]:
+                linked = call[1]["domain"]
+        assert ensured == [linked], (ensured, linked)
+        return linked
 
 
 def _ui(values, input_type="subdomains"):

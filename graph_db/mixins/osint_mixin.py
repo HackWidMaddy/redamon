@@ -565,21 +565,27 @@ class OsintMixin:
                     root = root_for_host(subdomain, roots)
                     try:
                         if root:
-                            session.run(
+                            # MATCH, never MERGE: the run's domain write (or
+                            # ensure_root_domains, in a batch) made the root's
+                            # Domain, and creating one here could leave a Domain
+                            # the scope no longer names.
+                            rec = session.run(
                                 """
-                                MERGE (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                                MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
                                 SET d.updated_at = datetime()
                                 MERGE (s:Subdomain {name: $subdomain, user_id: $uid, project_id: $pid})
                                 ON CREATE SET s.discovered_by = 'urlscan', s.status = 'resolved',
                                               s.updated_at = datetime()
                                 MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                 MERGE (s)-[:BELONGS_TO]->(d)
+                                RETURN count(s) AS n
                                 """,
                                 domain=root, subdomain=subdomain,
                                 uid=user_id, pid=project_id
-                            )
-                            stats["subdomains_created"] += 1
-                            stats["relationships_created"] += 1
+                            ).single()
+                            if rec and rec["n"]:
+                                stats["subdomains_created"] += 1
+                                stats["relationships_created"] += 1
                         else:
                             session.run(
                                 """
