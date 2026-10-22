@@ -1485,68 +1485,6 @@ async def stream_partial_logs(project_id: str, run_id: str):
     return EventSourceResponse(event_generator())
 
 
-@app.get("/recon/{project_id}/graph-inputs/{tool_id}")
-async def get_graph_inputs(project_id: str, tool_id: str, user_id: str = ""):
-    """
-    Get existing graph inputs for a partial recon tool.
-
-    Queries Neo4j for relevant data (e.g., Domain node for SubdomainDiscovery).
-    Note: The neo4j Python driver is not installed in the orchestrator image.
-    This endpoint uses a raw Bolt connection via the neo4j library in graph_db
-    (which is volume-mounted read-only). If that fails, it falls back to
-    project settings from the webapp API.
-    """
-    if not container_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-
-    result = {"domain": None, "existing_subdomains_count": 0, "source": "settings"}
-
-    # Try querying Neo4j directly using the graph_db module (volume-mounted)
-    # This may fail if the neo4j Python package is not installed in the orchestrator
-    try:
-        import sys
-        from pathlib import Path
-        graph_parent = Path("/app")
-        if str(graph_parent) not in sys.path:
-            sys.path.insert(0, str(graph_parent))
-
-        from graph_db import Neo4jClient
-        with Neo4jClient() as client:
-            if client.verify_connection():
-                graph_result = client.get_graph_inputs_for_tool(tool_id, user_id, project_id)
-                # A Domain-batch project has SEVERAL Domain nodes. `domain` is
-                # populated only when there is exactly one, so returning on
-                # `domains` here hands the caller the full list to choose from
-                # instead of silently scanning an arbitrary one.
-                if graph_result.get("domain") or graph_result.get("domains"):
-                    return graph_result
-    except ImportError:
-        logger.info("neo4j package not available in orchestrator, falling back to webapp API")
-    except Exception as e:
-        logger.warning(f"Neo4j query failed for graph-inputs: {e}")
-
-    # Fallback: get domain from project settings via webapp API
-    webapp_url = os.environ.get("WEBAPP_API_URL", "")
-    if not webapp_url:
-        webapp_url = "http://localhost:3000"
-
-    try:
-        import urllib.request
-        import json as json_mod
-        url = f"{webapp_url}/api/projects/{project_id}"
-        req = urllib.request.Request(url)
-        req.add_header("X-Internal-Key", os.environ.get("INTERNAL_API_KEY", ""))
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            if resp.status == 200:
-                project = json_mod.loads(resp.read().decode())
-                result["domain"] = project.get("targetDomain", "")
-                result["source"] = "settings"
-    except Exception as e:
-        logger.warning(f"Could not fetch project settings for graph-inputs: {e}")
-
-    return result
-
-
 @app.get("/recon/running")
 async def list_running():
     """List all running recon processes"""
