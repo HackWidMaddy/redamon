@@ -5,11 +5,13 @@
  *
  * @vitest-environment node
  */
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, test, expect } from 'vitest'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
 import {
   LEGACY_DOMAINS_QUERY, LEGACY_GRAPH_MESSAGE, type DomainRow,
-  findLegacyDomains, legacyDomainNames, legacyGraphParams, legacyGraphRefusal,
+  findLegacyDomains, legacyDomainNames, legacyDomainNamesFor, legacyGraphParams, legacyGraphRefusal,
 } from './legacyGraph'
 
 const batch = (...hosts: string[]) => resolveScopeGroups({ domainBatchMode: true, domainBatchHosts: hosts }).groups
@@ -98,5 +100,24 @@ describe('legacyGraphRefusal', () => {
     expect(r.error.startsWith(LEGACY_GRAPH_MESSAGE)).toBe(true)
     expect(r.error).toContain('co.uk')
     expect(r).toMatchObject({ code: 'legacy_graph', legacyGraph: ['co.uk'] })
+  })
+})
+
+// The file graph_db's legacy_domain_nodes is tested against (tests/test_legacy_domain_nodes.py).
+const SHARED = join(process.cwd(), '..', 'tests', 'fixtures', 'legacy_domain_vectors.json')
+
+interface SharedCase {
+  name: string
+  domains: { name: string; has_subdomain?: boolean; coverage?: boolean; ip_mode?: boolean }[]
+  expected: string[]
+  related: string[]
+  legacy: string[]
+}
+
+describe.skipIf(!existsSync(SHARED))('legacy graph: the vectors graph_db shares', () => {
+  const cases: SharedCase[] = existsSync(SHARED) ? JSON.parse(readFileSync(SHARED, 'utf8')).cases : []
+  test.each(cases.map(c => [c.name, c] as const))('%s', (_name, c) => {
+    const rows = c.domains.map(d => ({ name: d.name, ipMode: !!d.ip_mode, hasData: !!(d.has_subdomain || d.coverage) }))
+    expect(legacyDomainNamesFor(rows, c.expected, c.related).sort()).toEqual([...c.legacy].sort())
   })
 })

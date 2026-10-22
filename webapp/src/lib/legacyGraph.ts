@@ -49,6 +49,13 @@ export interface DomainRow {
 /** The query's predicate in TypeScript, for the shared test vectors. */
 export function legacyDomainNames(rows: readonly DomainRow[], groups: readonly ScopeGroup[]): string[] {
   const { expected, related } = legacyGraphParams(groups)
+  return legacyDomainNamesFor(rows, expected, related)
+}
+
+/** The predicate on the query's own parameters (lower-cased names). */
+export function legacyDomainNamesFor(
+  rows: readonly DomainRow[], expected: readonly string[], related: readonly string[],
+): string[] {
   return rows.filter(d => {
     const n = d.name.toLowerCase()
     return !expected.includes(n) && !d.ipMode && d.hasData
