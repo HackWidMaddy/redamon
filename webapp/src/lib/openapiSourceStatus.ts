@@ -7,8 +7,8 @@
  * the row's current URL hashes to the stored one; an edited URL reads
  * "Not fetched yet" until the next run.
  */
-import { groupHostsByScanRoot, toLegacyRecord } from './domainBatch'
 import type { ProjectTargetFields } from './partialReconScope'
+import { authScopePatterns, resolveScopeGroups } from './scopeGroups'
 
 export interface OpenApiSourceStatus {
   hash: string
@@ -134,12 +134,12 @@ function normalizeScopeEntry(value: string): string {
 }
 
 /**
- * The hosts one target root admits, as recon's OpenAPI scope builds them
+ * The hosts one legacy group record admits, as recon's OpenAPI scope builds them
  * (scope_payload in recon/helpers/openapi/discovery.py): each listed prefix as
  * an exact host, the apex only through the "." prefix, and every subdomain
- * (`*.root`) through "*" or, outside a Domain batch, an empty prefix list.
+ * (`*.root`) through "*". Only for a batch whose host list the caller lacks.
  */
-function rootScopeEntries(rootValue: unknown, prefixValues: unknown, batch: boolean): string[] {
+function rootScopeEntries(rootValue: unknown, prefixValues: unknown): string[] {
   const root = typeof rootValue === 'string' ? normalizeHost(rootValue) : ''
   if (!root) return []
   const prefixes = strings(prefixValues).map(p => p.trim())
@@ -148,7 +148,7 @@ function rootScopeEntries(rootValue: unknown, prefixValues: unknown, batch: bool
     .map(p => `${p.replace(/\.+$/, '').toLowerCase()}.${root}`)
   const entries = [...listed]
   if (prefixes.some(p => !p.replace(/\.+$/, ''))) entries.push(root)
-  if (prefixes.includes('*') || (!listed.length && !batch)) entries.push(`*.${root}`)
+  if (prefixes.includes('*')) entries.push(`*.${root}`)
   return entries
 }
 
@@ -177,13 +177,26 @@ function roeExcluded(host: string, excluded: unknown): boolean {
 }
 
 /**
- * The Domain batch groups the next scan runs: grouped from the hostnames being
- * edited, as the project routes group them on save, else the stored groups.
+ * The hosts the next scan's OpenAPI scope admits. Derived from the target fields
+ * being edited, as the project routes derive them on save: the scope groups'
+ * hosts (`*.root` for an enumerated group, the listed hosts of an exact one,
+ * the root only with Root on) are exactly what recon's scope_payload admits.
+ * The stored legacy record only when a batch arrives without its host list.
  */
-function batchGroups(project: DocumentScopeFields): unknown[] {
+function scopeEntries(project: DocumentScopeFields): string[] {
   const hosts = strings(project.domainBatchHosts).filter(h => h.trim())
-  if (hosts.length) return groupHostsByScanRoot(hosts).groups.map(toLegacyRecord)
-  return Array.isArray(project.domainBatchGroups) ? project.domainBatchGroups : []
+  if (project.domainBatchMode && !hosts.length) {
+    const groups = Array.isArray(project.domainBatchGroups) ? project.domainBatchGroups : []
+    return groups.flatMap(group => (group && typeof group === 'object'
+      ? rootScopeEntries((group as Record<string, unknown>).rootDomain, (group as Record<string, unknown>).prefixes)
+      : []))
+  }
+  return authScopePatterns(resolveScopeGroups({
+    domainBatchMode: project.domainBatchMode,
+    domainBatchHosts: hosts,
+    targetDomain: project.targetDomain,
+    subdomainList: strings(project.subdomainList).filter(s => s.trim()),
+  }).groups)
 }
 
 export type DocumentScopeFields = ProjectTargetFields & {
@@ -215,11 +228,7 @@ export function documentInProjectScope(url: string, project: DocumentScopeFields
     const verdicts = strings(project.targetIps).map(target => inIpv4Target(host, target))
     if (!verdicts.includes(true)) return verdicts.includes(null) ? null : false
   } else {
-    const entries = project.domainBatchMode
-      ? batchGroups(project).flatMap(group => (group && typeof group === 'object'
-        ? rootScopeEntries((group as Record<string, unknown>).rootDomain, (group as Record<string, unknown>).prefixes, true)
-        : []))
-      : rootScopeEntries(project.targetDomain, strings(project.subdomainList).filter(s => s.trim()), false)
+    const entries = scopeEntries(project)
     if (!entries.length) return null
     if (!hostInScope(host, entries)) return false
   }

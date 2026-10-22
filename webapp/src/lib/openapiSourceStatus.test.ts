@@ -115,6 +115,20 @@ describe('the advisory scope hint', () => {
     expect(documentInProjectScope('https://three.test/spec', project)).toBe(false)
   })
 
+  test('a target below its org: everything under the target, nothing beside it', () => {
+    const project = { targetDomain: 'api.example.com', subdomainList: [] as string[] }
+    expect(documentInProjectScope('https://v1.api.example.com/spec', project)).toBe(true)
+    expect(documentInProjectScope('https://www.example.com/spec', project)).toBe(false)
+    expect(documentInProjectScope('https://api.example.com/spec', project)).toBe(false)
+  })
+
+  test('batch: hosts group by registrable domain, so a host under a multi-label suffix keeps its own scope', () => {
+    const project = { domainBatchMode: true, domainBatchHosts: ['www.acme.co.uk', '*.other.co.uk'] }
+    expect(documentInProjectScope('https://www.acme.co.uk/spec', project)).toBe(true)
+    expect(documentInProjectScope('https://api.acme.co.uk/spec', project)).toBe(false)
+    expect(documentInProjectScope('https://api.other.co.uk/spec', project)).toBe(true)
+  })
+
   test('a Rules of Engagement exclusion is outside, matched as recon matches it', () => {
     const project = {
       targetDomain: 'example.com',
