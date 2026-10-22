@@ -27,8 +27,19 @@ import { McpToolError } from '@/lib/mcp/errors'
 import { assertViewInProject } from '@/lib/mcp/childAccess'
 import { execCypher } from '@/lib/mcp/graphClient'
 import { enforceRate, guardGraphResult, type McpContext } from '@/lib/mcp/tools'
+import { assertReadableSelect } from '@/lib/mcpReadableFields'
+import { type ScopeGroup, resolveScopeGroups } from '@/lib/scopeGroups'
+import { viewMayNeedUpdate } from '@/lib/graphViewScope'
 
 export const VIEWS_MAX = 100
+
+/** The ids of a project's saved views that may need an update (WEB-30). Reads
+ *  the stored queries here and returns ids only, so the listing never holds one. */
+async function viewsNeedingUpdate(projectId: string, groups: readonly ScopeGroup[]): Promise<Set<string>> {
+  if (groups.length === 0) return new Set()
+  const rows = await prisma.graphView.findMany({ where: { projectId }, select: { id: true, cypherQuery: true } })
+  return new Set(rows.filter(r => viewMayNeedUpdate(r.cypherQuery, groups)).map(r => r.id))
+}
 
 /**
  * The saved views, by name.
@@ -50,6 +61,12 @@ export async function listGraphViews(ctx: McpContext, projectId: string) {
     orderBy: { name: 'asc' },
     take: VIEWS_MAX,
   })
+  // A view written for a Domain the graph no longer has (WEB-30). The helper
+  // reads the queries itself and hands back only view ids.
+  const scopeSelect = { ipMode: true, domainBatchMode: true, domainBatchHosts: true, targetDomain: true, subdomainList: true }
+  assertReadableSelect(scopeSelect, 'list_graph_views')
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: scopeSelect })
+  const stale = await viewsNeedingUpdate(projectId, project ? resolveScopeGroups(project).groups : [])
 
   return {
     projectId,
@@ -58,10 +75,14 @@ export async function listGraphViews(ctx: McpContext, projectId: string) {
       name: v.name,
       description: v.description,
       createdAt: v.createdAt.toISOString(),
+      mayNeedUpdate: stale.has(v.id),
     })),
     returned: views.length,
     notes: [
       'The query text is deliberately not shown. Run one with run_graph_view.',
+      "mayNeedUpdate: the view matches a Domain by a name this project's graph no longer gives " +
+        'one (Domain nodes are named after the registrable domain), so it may return nothing. ' +
+        'A person can update it in the app.',
       'A view saved in the app can still be refused here: this surface proves a query is ' +
         'tenant-scoped and read-only by stricter rules than the app applies, so a view that ' +
         'works in the UI is not guaranteed to run over MCP.',
