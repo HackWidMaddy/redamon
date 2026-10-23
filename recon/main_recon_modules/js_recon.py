@@ -639,6 +639,9 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
         'dev_references': [],
         'ai_sdk_findings': [],
     }
+    # Files an analyzer produced nothing for, so the prune keeps their hosts'
+    # findings. A list: workers still running after a timeout may append.
+    unanalyzed: list = []
 
     # Load custom extensions
     custom_patterns = None
@@ -679,6 +682,7 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
                         for k, v in file_filtered.items():
                             total_filtered[k] = total_filtered.get(k, 0) + v
                     except Exception as e:
+                        unanalyzed.append(js_file.get('url'))
                         print(f"[!][JsRecon] Pattern scan failed for {js_file.get('url', '?')}: {e}")
                 return all_findings, total_filtered
             futures['patterns'] = executor.submit(run_patterns)
@@ -725,6 +729,7 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
                             detect_dev_comments(content, url)
                         )
                 except Exception as e:
+                    unanalyzed.append(js_file.get('url'))
                     print(f"[!][JsRecon] Framework analysis failed for {js_file.get('url', '?')}: {e}")
             return fw_results
         futures['framework'] = executor.submit(run_framework_analysis)
@@ -748,6 +753,7 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
                             finding['source_url'] = url
                             all_findings.append(finding)
                     except Exception as e:
+                        unanalyzed.append(js_file.get('url'))
                         print(f"[!][JsRecon] AI SDK scan failed for {js_file.get('url', '?')}: {e}")
                 return all_findings
             futures['ai_sdk'] = executor.submit(run_ai_sdk_detection)
@@ -828,6 +834,7 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
                     results['ai_sdk_findings'] = result
 
             except Exception as e:
+                unanalyzed.extend(f.get('url') for f in js_files)
                 print(f"[!][JsRecon] Analyzer '{name}' failed: {type(e).__name__}: {e}")
     finally:
         # cancel_futures drops tasks that have not started yet; tasks already
@@ -835,6 +842,7 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
         # shortly after this function returns so the threads die with it.
         executor.shutdown(wait=False, cancel_futures=True)
 
+    results['_unanalyzed_urls'] = unanalyzed
     return results
 
 
@@ -1171,6 +1179,43 @@ def _count_by(items: list, key: str) -> dict:
     return out
 
 
+def _has_live_urls(combined_result: dict) -> bool:
+    """http_probe got an answer from at least one URL: a status under 500, as
+    subdomain_takeover._collect_alive_urls counts a URL live."""
+    http_probe = combined_result.get('http_probe') or {}
+    for url, info in (http_probe.get('by_url') or {}).items():
+        if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
+            continue
+        status = info.get('status_code') if isinstance(info, dict) else None
+        if status is None or (isinstance(status, int) and status < 500):
+            return True
+    return any(isinstance(h, dict) and h.get('live_urls')
+               for h in (http_probe.get('by_host') or {}).values())
+
+
+def _note_unchecked(reason: str, urls=None) -> None:
+    """Tell the end-of-run prune what this run did not re-check. Never raises.
+
+    run_js_recon catches its own errors, so main's _note_phase_error never sees
+    them, and the prune reads "not reported this run" as "gone". With `urls`,
+    only their hosts keep their js_recon findings, so a capped run still prunes
+    the hosts it analyzed; with none, the whole source is kept.
+    """
+    try:
+        from recon.helpers import circuit_breaker as cb
+        if urls is None:
+            cb.note_degraded('js_recon', sources=['js_recon'], reason=reason)
+            return
+        hosts = {cb.host_key(u) for u in urls
+                 if isinstance(u, str) and u.startswith(('http://', 'https://'))}
+        hosts.discard('')
+        if hosts:
+            cb.note_degraded('js_recon', hosts=sorted(hosts), host_source='js_recon',
+                             source_only_hosts=True, reason=reason)
+    except Exception:  # noqa: BLE001 - coverage bookkeeping never fails the scan
+        pass
+
+
 def run_js_recon(combined_result: dict, settings: dict) -> dict:
     """
     Run JS Recon analysis on JS files from the recon pipeline.
@@ -1241,15 +1286,22 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         js_urls = _collect_js_urls(combined_result, settings)
 
         # 3. Download JS files from pipeline URLs
+        max_files = settings.get('JS_RECON_MAX_FILES', 500)
         js_files = []
         if js_urls:
             js_files = _download_js_files(
                 js_urls,
                 work_dir,
-                max_files=settings.get('JS_RECON_MAX_FILES', 500),
+                max_files=max_files,
                 concurrency=settings.get('JS_RECON_CONCURRENCY', 10),
                 timeout=settings.get('JS_RECON_TIMEOUT', 900),
             )
+            if len(js_urls) > max_files:
+                _note_unchecked("file cap", js_urls[max_files:])
+        # Uploads do not count: they re-check none of the pipeline's files. A
+        # run with no live target at all had nothing to re-check, so no gap.
+        if not js_files and _has_live_urls(combined_result):
+            _note_unchecked("no JS input")
 
         # 4. Merge uploaded files with downloaded files
         js_files.extend(uploaded_files)
@@ -1267,6 +1319,9 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
 
         # 3. Run all analysis modules
         results = _run_analysis(js_files, settings)
+        unanalyzed = results.pop('_unanalyzed_urls', None)
+        if unanalyzed:
+            _note_unchecked("analyzer failed or timed out", unanalyzed)
         _downgrade_third_party_findings(results, combined_result)
 
         # 4. Log false-positive filter stats
@@ -1406,6 +1461,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         print(f"[!][JsRecon] Fatal error: {e}")
         import traceback
         traceback.print_exc()
+        _note_unchecked(f"fatal: {type(e).__name__}")
         combined_result.setdefault('js_recon', {
             'scan_metadata': {'mode': 'post_recon', 'js_files_analyzed': 0, 'error': str(e)},
             'secrets': [], 'endpoints': [], 'summary': {},

@@ -1456,7 +1456,9 @@ def _aggregate(notes: list[dict]) -> CoverageReport:
                 per_source_hosts.setdefault(note["host_source"], set()).update(note["hosts"])
             else:
                 every_source_hosts.update(note["hosts"])
-            _gap(note["host_source"], module, "unreachable host(s) skipped",
+            # A host can be cut for a reason other than being down (js_recon's
+            # file cap): the note's own reason, when it gives one, says which.
+            _gap(note["host_source"], module, note["reason"] or "unreachable host(s) skipped",
                  hosts=len(note["hosts"]))
         if not note["sources"]:
             for entry in note["entries"]:
