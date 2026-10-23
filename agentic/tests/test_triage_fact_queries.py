@@ -127,6 +127,33 @@ class TestQueryInvariants(unittest.TestCase):
                 self.assertNotIn("OPTIONAL MATCH", query_def["query"])
 
 
+class TestGoneHostsQuery(unittest.TestCase):
+    """`gone_hosts` drops a host from the board, so it must test what it says.
+    The live counterpart is tests/test_fix_fact_queries_graph_live.py."""
+
+    QUERY = next(q for q in PROJECT_FACT_QUERIES if q["name"] == "gone_hosts")["query"]
+
+    def test_resolution_is_read_in_the_direction_the_edge_runs(self):
+        # RESOLVES_TO runs Subdomain -> IP, so an outgoing pattern from an IP
+        # never matched and the "nothing resolves" clause was always true.
+        self.assertIn("n:Subdomain AND EXISTS { MATCH (n)-[:RESOLVES_TO]->(:IP) }", self.QUERY)
+        self.assertIn("n:IP AND EXISTS { MATCH (n)<-[:RESOLVES_TO]-(:Subdomain) }", self.QUERY)
+        self.assertNotIn("MATCH (n)-[:RESOLVES_TO]->()", self.QUERY)
+
+    def test_hosts_the_run_skipped_are_not_gone(self):
+        # Read from every org Domain of THIS tenant, never another project's.
+        self.assertIn("(d:Domain {user_id: $userId, project_id: $projectId})", self.QUERY)
+        self.assertIn("d.recon_skipped_hosts", self.QUERY)
+        self.assertRegex(self.QUERY, r"NOT toLower\(coalesce\(n\.name, n\.address, ''\)\) IN skipped")
+
+    def test_skipped_keys_are_normalised_as_the_prune_does(self):
+        # circuit_breaker.hostname_of: lower-case, IPv6 brackets and the port
+        # stripped, a bare IPv6 literal left whole.
+        self.assertIn("toLower(trim(toString(x)))", self.QUERY)
+        self.assertIn("WHEN k STARTS WITH '[' THEN substring(split(k, ']')[0], 1)", self.QUERY)
+        self.assertIn("WHEN size(split(k, ':')) = 2 THEN split(k, ':')[0]", self.QUERY)
+
+
 # ---------------------------------------------------------------------------
 # Reducers
 # ---------------------------------------------------------------------------

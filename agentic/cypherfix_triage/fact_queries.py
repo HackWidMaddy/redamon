@@ -203,7 +203,17 @@ RETURN collect(DISTINCT b.url) AS hosts
     {
         "name": "gone_hosts",
         "description": "no live endpoint, no open port, nothing resolves",
+        # RESOLVES_TO runs Subdomain -> IP, so each label reads its own end of
+        # it. A host the run skipped (a tripped breaker: the coverage record's
+        # `host:port` keys, normalised as circuit_breaker.hostname_of does for
+        # the prune) was not re-checked, so its absence proves nothing.
         "query": """
+OPTIONAL MATCH (d:Domain {user_id: $userId, project_id: $projectId})
+WITH reduce(acc = [], hs IN collect(d.recon_skipped_hosts) | acc + coalesce(hs, [])) AS keys
+WITH [k IN [x IN keys | toLower(trim(toString(x)))] |
+      CASE WHEN k STARTS WITH '[' THEN substring(split(k, ']')[0], 1)
+           WHEN size(split(k, ':')) = 2 THEN split(k, ':')[0]
+           ELSE k END] AS skipped
 MATCH (n {user_id: $userId, project_id: $projectId})
 WHERE (n:Subdomain OR n:IP)
   AND NOT EXISTS {
@@ -213,8 +223,10 @@ WHERE (n:Subdomain OR n:IP)
   AND NOT EXISTS {
     MATCH (n)-[:HAS_PORT]->(p:Port) WHERE toLower(coalesce(p.state, 'open')) = 'open'
   }
-  AND NOT EXISTS { MATCH (n)-[:RESOLVES_TO]->() }
+  AND NOT (n:Subdomain AND EXISTS { MATCH (n)-[:RESOLVES_TO]->(:IP) })
+  AND NOT (n:IP AND EXISTS { MATCH (n)<-[:RESOLVES_TO]-(:Subdomain) })
   AND coalesce(n.is_live, false) = false
+  AND NOT toLower(coalesce(n.name, n.address, '')) IN skipped
 RETURN collect(DISTINCT coalesce(n.name, n.address)) AS hosts
 """,
     },

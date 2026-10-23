@@ -128,6 +128,57 @@ class LiveFactQueriesCase(unittest.TestCase):
         rows = {r["id"]: r for r in self._run(query)}
         self.assertEqual(rows["sec"]["validation_info"], VALIDATION_INFO)
 
+    def _gone(self):
+        from cypherfix_triage.fact_queries import PROJECT_FACT_QUERIES
+
+        query = next(q for q in PROJECT_FACT_QUERIES if q["name"] == "gone_hosts")["query"]
+        rows = self._run(query)
+        self.assertEqual(len(rows), 1)
+        return set(rows[0]["hosts"])
+
+    def test_an_ip_a_subdomain_resolves_to_is_not_gone(self):
+        # No open port and no endpoint, but DNS still points at it.
+        with self.driver.session() as s:
+            s.run("""
+                CREATE (sd:Subdomain {name: 'www.factq.test', user_id: $u, project_id: $p})
+                CREATE (ip:IP {address: '192.0.2.10', user_id: $u, project_id: $p})
+                CREATE (sd)-[:RESOLVES_TO]->(ip)
+                CREATE (:IP {address: '192.0.2.11', user_id: $u, project_id: $p})
+                CREATE (:Subdomain {name: 'old.factq.test', user_id: $u, project_id: $p})
+                """, u=self.uid, p=self.pid)
+        gone = self._gone()
+        self.assertNotIn("192.0.2.10", gone)
+        self.assertNotIn("www.factq.test", gone)
+        # Controls: nothing resolves to or from these, no port, no endpoint.
+        self.assertIn("192.0.2.11", gone)
+        self.assertIn("old.factq.test", gone)
+
+    def test_a_host_the_run_skipped_is_unknown_not_gone(self):
+        with self.driver.session() as s:
+            s.run("""
+                CREATE (:Domain {name: 'factq.test', user_id: $u, project_id: $p,
+                                 recon_skipped_hosts: ['Skipped.factq.test:443',
+                                                       '[2001:db8::5]:8443', '192.0.2.12']})
+                CREATE (:Subdomain {name: 'skipped.factq.test', user_id: $u, project_id: $p})
+                CREATE (:IP {address: '2001:db8::5', user_id: $u, project_id: $p})
+                CREATE (:IP {address: '192.0.2.12', user_id: $u, project_id: $p})
+                CREATE (:Subdomain {name: 'unskipped.factq.test', user_id: $u, project_id: $p})
+                """, u=self.uid, p=self.pid)
+            # Another project's coverage record must not shelter this one's hosts.
+            s.run("""
+                CREATE (:Domain {name: 'factq.test', user_id: $u, project_id: $other,
+                                 recon_skipped_hosts: ['unskipped.factq.test:443']})
+                """, u=self.uid, other=self.pid + "_other")
+        try:
+            gone = self._gone()
+        finally:
+            with self.driver.session() as s:
+                s.run("MATCH (n {project_id: $other}) DETACH DELETE n", other=self.pid + "_other")
+        self.assertNotIn("skipped.factq.test", gone)
+        self.assertNotIn("2001:db8::5", gone)
+        self.assertNotIn("192.0.2.12", gone)
+        self.assertIn("unskipped.factq.test", gone)
+
 
 if __name__ == "__main__":
     unittest.main()
