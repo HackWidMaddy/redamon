@@ -341,6 +341,7 @@ Additional properties present on this node type, not yet described:
 - redirect_chain_codes (list[integer]): the status of each hop, first to last; one entry when nothing redirected
 - final_url (string): the URL the answer came from after redirects; equals url when nothing redirected
 - redirected_off_host (boolean): the last hop is on another host. When that host is out of scope the probe keeps no title, technologies, server, favicon or body hash for this Endpoint (they describe someone else's page) and records the host as an ExternalDomain
+- shared_body_cluster (integer): set by http_probe on a root Endpoint (path "/") whose exact body (body_sha256) 3 or more distinct BaseURLs serve with status 200 or 403: that number of BaseURLs. It marks one deny, parking or gateway page shared by many hosts, not each host's own content. Recomputed over the whole project on every http_probe write, full or partial; absent when the page is not shared
 - is_graphql (boolean): True if the endpoint is a GraphQL endpoint
 - graphql_introspection_enabled (boolean): True if __schema introspection query succeeded
 - graphql_schema_extracted (boolean): True if full schema was retrieved

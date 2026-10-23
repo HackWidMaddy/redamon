@@ -31,6 +31,11 @@ from graph_db.technology_identity import (  # noqa: F401  re-exported for caller
 )
 
 
+#: A root page whose exact body this many distinct BaseURLs serve (200 or 403)
+#: is one shared deny or parking page, not each host's own content.
+SHARED_BODY_MIN_BASEURLS = 3
+
+
 def _split_url(url: str) -> tuple[str, str]:
     """Return ``(base_url, path)`` where ``base_url = scheme://host:port``
     and ``path`` is the URL path (defaults to ``'/'``). Query string and
@@ -759,6 +764,8 @@ class HttpMixin:
                     hosts=list(no_response_hosts), user_id=user_id, project_id=project_id
                 )
 
+            self._mark_shared_body_clusters(session, user_id, project_id, stats)
+
             print(f"[+][graph-db] Created {stats['baseurls_created']} BaseURL nodes")
             print(f"[+][graph-db] Created/Updated {stats['services_created']} Service nodes")
             print(f"[+][graph-db] Created {stats['technologies_created']} Technology nodes")
@@ -770,3 +777,43 @@ class HttpMixin:
                 print(f"[!][graph-db] {len(stats['errors'])} errors occurred")
 
         return stats
+
+    @staticmethod
+    def _mark_shared_body_clusters(session, user_id: str, project_id: str, stats: dict) -> None:
+        """Mark root Endpoints whose body many BaseURLs share (shared_body_cluster).
+
+        Recomputed over the whole project on every http_probe write, full or
+        partial, because a partial run does not recreate Endpoints: an Endpoint
+        whose host now serves its own page loses the mark here. The mark tracks
+        target state, so it moves no `updated_at`.
+        """
+        try:
+            row = session.run(
+                """
+                MATCH (bu:BaseURL {user_id: $user_id, project_id: $project_id})-[:HAS_ENDPOINT]->
+                      (e:Endpoint {user_id: $user_id, project_id: $project_id, path: '/'})
+                WHERE e.body_sha256 IS NOT NULL AND e.status_code IN $statuses
+                WITH e.body_sha256 AS body, collect(DISTINCT bu.url) AS bases, collect(DISTINCT e) AS eps
+                WHERE size(bases) >= $min_bases
+                UNWIND eps AS e
+                SET e.shared_body_cluster = size(bases)
+                RETURN collect(elementId(e)) AS clustered
+                """,
+                user_id=user_id, project_id=project_id, statuses=[200, 403],
+                min_bases=SHARED_BODY_MIN_BASEURLS,
+            ).single()
+            clustered = list((row or {}).get("clustered") or [])
+            session.run(
+                """
+                MATCH (e:Endpoint {user_id: $user_id, project_id: $project_id})
+                WHERE e.shared_body_cluster IS NOT NULL AND NOT elementId(e) IN $clustered
+                REMOVE e.shared_body_cluster
+                """,
+                user_id=user_id, project_id=project_id, clustered=clustered,
+            )
+            stats["shared_body_endpoints"] = len(clustered)
+            if clustered:
+                print(f"[+][graph-db] {len(clustered)} root Endpoint(s) serve a page "
+                      f"{SHARED_BODY_MIN_BASEURLS}+ BaseURLs share (shared_body_cluster)")
+        except Exception as e:
+            stats["errors"].append(f"shared body cluster pass failed: {e}")
