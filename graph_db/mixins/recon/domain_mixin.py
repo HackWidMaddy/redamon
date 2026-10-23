@@ -567,18 +567,23 @@ class DomainMixin:
 
                     for ip in all_ips:
                         # Get WHOIS info for this IP if available
-                        whois_info = ip_whois.get(ip, {})
+                        whois_info = ip_whois.get(ip) or {}
 
                         ip_props = {
                             "address": ip,
                             "user_id": user_id,
                             "project_id": project_id,
-                            "version": "v6" if ":" in ip else "v4",
+                            "version": "ipv6" if ":" in ip else "ipv4",
                             "ip_mode": True,
                         }
-                        if whois_info:
-                            ip_props["organization"] = whois_info.get("org", "")
-                            ip_props["country"] = whois_info.get("country", "")
+                        # A blank whois field is left unset: "" reads as present
+                        # to every IS NOT NULL / coalesce() reader. Nothing to
+                        # REMOVE: a full run clears IP nodes before this first
+                        # writer, and a REMOVE could erase an OSINT country.
+                        if whois_info.get("org"):
+                            ip_props["organization"] = whois_info["org"]
+                        if whois_info.get("country"):
+                            ip_props["country"] = whois_info["country"]
 
                         session.run(
                             """

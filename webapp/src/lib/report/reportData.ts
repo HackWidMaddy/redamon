@@ -8,6 +8,7 @@ import { getGraphSession } from '@/app/api/graph/neo4j'
 import { RISK_TOP_N, projectRisk } from '@/lib/projectRisk'
 import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
 import { DECLARED_ONLY } from '@/lib/declaredOnly'
+import { ipVersionIs } from '@/lib/ipVersion'
 import { type CoverageGap, currentScanRoots, gapInScope } from '@/lib/scanCoverage'
 import type { Project, Remediation } from '@prisma/client'
 import { corroborateAttackFindings } from './aiAttackFindings'
@@ -1023,8 +1024,8 @@ export async function queryGraphOverview(session: any, pid: string) {
   const infraRes = await session.run(
     `MATCH (ip:IP {project_id: $pid})
      RETURN count(ip) AS total,
-            count(CASE WHEN ip.version = 'ipv4' THEN 1 END) AS ipv4,
-            count(CASE WHEN ip.version = 'ipv6' THEN 1 END) AS ipv6,
+            count(CASE WHEN ${ipVersionIs('ip', 'ipv4')} THEN 1 END) AS ipv4,
+            count(CASE WHEN ${ipVersionIs('ip', 'ipv6')} THEN 1 END) AS ipv6,
             count(CASE WHEN ip.is_cdn = true THEN 1 END) AS cdnCount,
             count(DISTINCT CASE WHEN ip.asn IS NOT NULL THEN ip.asn END) AS uniqueAsns,
             count(DISTINCT CASE WHEN ip.cdn_name IS NOT NULL THEN ip.cdn_name END) AS uniqueCdns`,

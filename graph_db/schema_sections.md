@@ -101,7 +101,8 @@ Additional properties present on this node type, not yet described:
 
 **IP** - Resolved IP addresses
 - address (string): "192.168.1.1"
-- is_ipv6 (boolean)
+- version (string): "ipv4" or "ipv6". IP-mode nodes from older scans may hold "v4" / "v6"; match both, e.g. `ip.version IN ['ipv4', 'v4']`
+- organization (string): whois organization of the address (IP-mode scans); absent when whois names none
 - asn, isp, country (IP enrichment data)
 - shodan_enriched, censys_enriched, fofa_enriched, netlas_enriched, zoomeye_enriched (boolean): which OSINT tools enriched this IP
 - zoomeye_last_seen (string): ISO timestamp of the ZoomEye host record update_time (e.g. "2026-03-01T12:00:00")
