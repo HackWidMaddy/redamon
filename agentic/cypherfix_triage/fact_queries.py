@@ -34,7 +34,8 @@ These queries READ ONLY. Nothing here writes; publishing is Step E.
 
 from __future__ import annotations
 
-from .score_model import ProjectFacts
+from .score_model import (AGENT_CONFIDENCE_DEFAULT, PROOF_MIN_AGENT_CONFIDENCE,
+                          ProjectFacts, agent_proof_counts)
 
 # ===========================================================================
 # Project fact sets
@@ -116,11 +117,12 @@ RETURN collect(DISTINCT coalesce(n.name, n.address, n.url)) AS hosts
     {
         "name": "proof",
         "description": "what the agent actually demonstrated (K1)",
-        "query": """
-MATCH (cf:ChainFinding {user_id: $userId, project_id: $projectId})
+        "query": f"""
+MATCH (cf:ChainFinding {{user_id: $userId, project_id: $projectId}})
 WHERE cf.finding_type IN ['exploit_success', 'access_gained',
                           'privilege_escalation', 'credential_found',
                           'vulnerability_confirmed']
+  AND coalesce(toInteger(cf.confidence), {AGENT_CONFIDENCE_DEFAULT}) >= {PROOF_MIN_AGENT_CONFIDENCE}
 OPTIONAL MATCH (cf)-[:FINDING_RELATES_CVE]->(c:CVE)
 OPTIONAL MATCH (cf)-[:CONFIRMS]->(f)
 OPTIONAL MATCH (cf)-[:FOUND_ON]->(t)
@@ -128,7 +130,8 @@ RETURN cf.id AS chain_id, cf.finding_type AS finding_type,
        collect(DISTINCT c.id) AS cve_ids,
        collect(DISTINCT coalesce(f.id, f.finding_id)) AS finding_ids,
        collect(DISTINCT coalesce(t.name, t.address, t.url)) AS hosts,
-       coalesce(cf.target_host, cf.target_url, '') AS target_host
+       coalesce(cf.target_host, cf.target_url, '') AS target_host,
+       cf.confidence AS confidence
 """,
     },
     {
@@ -623,6 +626,8 @@ def build_project_facts(raw: dict) -> ProjectFacts:
         facts.proven_cve_ids |= {c.upper() for c in _clean(row.get("cve_ids"))}
 
     for row in raw.get("proof") or []:
+        if not agent_proof_counts(row.get("confidence")):
+            continue
         facts.proven_cve_ids |= {c.upper() for c in _clean(row.get("cve_ids"))}
         facts.proven_finding_ids |= _clean(row.get("finding_ids"))
         hosts = _clean(row.get("hosts"))

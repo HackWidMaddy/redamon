@@ -397,3 +397,39 @@ class TestDetectorLearningFilters(unittest.TestCase):
         """An unattended agent over MCP must not retune detectors everywhere."""
         self.assertIn("coalesce(n.triage_verdict_channel, 'app') = 'app'", self.Q)
 
+
+
+class TestAgentProofConfidence(unittest.TestCase):
+    """A ChainFinding proves a finding only at confidence >= 70; a missing value
+    is the writer's default 80. A low-confidence "confirmation" read off a
+    status code must not make a finding T1 and immune to review."""
+
+    PROOF = next(q for q in PROJECT_FACT_QUERIES if q["name"] == "proof")["query"]
+
+    def test_the_rule(self):
+        for value, counts in ((None, True), (80, True), (70, True), (69, False), (50, False),
+                              (0, False), ("85", True), ("40", False), (75.9, True),
+                              ("high", True), (100, True)):
+            with self.subTest(confidence=value):
+                self.assertIs(sm.agent_proof_counts(value), counts)
+
+    def test_the_proof_query_filters_on_the_model_s_threshold(self):
+        self.assertIn(
+            f"coalesce(toInteger(cf.confidence), {sm.AGENT_CONFIDENCE_DEFAULT}) "
+            f">= {sm.PROOF_MIN_AGENT_CONFIDENCE}", self.PROOF)
+        self.assertIn("cf.confidence AS confidence", self.PROOF)
+
+    def test_a_low_confidence_proof_row_proves_nothing(self):
+        facts = build_project_facts({"proof": [
+            {"chain_id": "c1", "finding_type": "vulnerability_confirmed", "confidence": 50,
+             "finding_ids": ["f-low"], "hosts": ["h-low"], "cve_ids": ["CVE-2020-0001"]},
+            {"chain_id": "c2", "finding_type": "vulnerability_confirmed", "confidence": None,
+             "finding_ids": ["f-old"], "hosts": ["h-old"], "cve_ids": []},
+            {"chain_id": "c3", "finding_type": "exploit_success", "confidence": 90,
+             "finding_ids": ["f-high"], "hosts": [], "cve_ids": []},
+        ]})
+        self.assertEqual(facts.proven_finding_ids, {"f-old", "f-high"})
+        self.assertNotIn("h-low", facts.compromised_hosts)
+        self.assertNotIn("CVE-2020-0001", facts.proven_cve_ids)
+        self.assertFalse(sm.is_proven({"id": "f-low"}, facts))
+        self.assertTrue(sm.is_proven({"id": "f-old"}, facts))

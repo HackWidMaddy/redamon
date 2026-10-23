@@ -62,7 +62,7 @@ class TestJsReconClasses(unittest.TestCase):
                 self.assertIn(result.tier, ("T3", "T4"))
 
     def test_the_model_version_moved_with_the_tables(self):
-        self.assertNotIn(sm.SCORE_MODEL_VERSION, ("v3.2.0", "v3.3.0"))
+        self.assertNotIn(sm.SCORE_MODEL_VERSION, ("v3.2.0", "v3.3.0", "v3.4.0"))
 
 
 def shodan_cve(**kw):

@@ -52,7 +52,7 @@ from typing import Any, Iterable, Optional
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.4.0"
+SCORE_MODEL_VERSION = "v3.5.0"
 
 
 # ===========================================================================
@@ -1068,6 +1068,21 @@ def _security_check_confidence(finding: dict) -> Factor:
         return Factor(value, why)
     return Factor(CONFIDENCE_BY_SOURCE["security_check"],
                   "a deterministic check, not a detection")
+
+
+#: An agent's ChainFinding proves the finding it CONFIRMS only at this
+#: confidence (0-100) or above: below it the agent itself called the
+#: confirmation a guess. A missing value is the writer's default
+#: (chain_graph_writer.fire_record_finding), so older proof keeps counting.
+#: The proof fact query and triage_mixin._LIVE_PROOF apply the same numbers.
+PROOF_MIN_AGENT_CONFIDENCE = 70
+AGENT_CONFIDENCE_DEFAULT = 80
+
+
+def agent_proof_counts(confidence: Any) -> bool:
+    """Is a ChainFinding of this confidence proof? Mirrors Cypher's
+    `coalesce(toInteger(cf.confidence), 80) >= 70`."""
+    return as_int(confidence, AGENT_CONFIDENCE_DEFAULT) >= PROOF_MIN_AGENT_CONFIDENCE
 
 
 def is_proven(finding: dict, facts: ProjectFacts) -> bool:

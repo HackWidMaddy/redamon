@@ -307,6 +307,13 @@ _PERSON_DECIDED = ("(coalesce(n.triage_source, '') = 'human' "
 #: here would lift every finding on a compromised host to T1 "proven".
 _PROOF_TYPES = ("['exploit_success', 'access_gained', 'privilege_escalation', "
                 "'credential_found', 'vulnerability_confirmed']")
+#: score_model.PROOF_MIN_AGENT_CONFIDENCE and AGENT_CONFIDENCE_DEFAULT, pinned
+#: equal by a test: a confirmation the agent rated below 70 is not proof, and a
+#: missing confidence is the writer's default.
+_PROOF_MIN_CONFIDENCE = 70
+_PROOF_DEFAULT_CONFIDENCE = 80
+_PROOF_CONFIDENCE = (f"coalesce(toInteger(cf.confidence), {_PROOF_DEFAULT_CONFIDENCE}) "
+                     f">= {_PROOF_MIN_CONFIDENCE}")
 #: score_model.PUBLIC_CLIENT_KEY_TYPES. graph_db cannot import the agent's
 #: model, so a test pins the two lists equal.
 _PUBLIC_CLIENT_KEY_TYPES = sorted({
@@ -326,7 +333,8 @@ _LIVE_PROOF = f"""(n:ExploitGvm
           OR toUpper(coalesce(n.finding_id, n.id, '')) STARTS WITH 'MAL-'
           OR EXISTS {{ MATCH (cf:ChainFinding)-[:CONFIRMS]->(n)
                       WHERE cf.user_id = n.user_id AND cf.project_id = n.project_id
-                        AND cf.finding_type IN {_PROOF_TYPES} }})"""
+                        AND cf.finding_type IN {_PROOF_TYPES}
+                        AND {_PROOF_CONFIDENCE} }})"""
 
 #: Which layer set the final values. A node no v3.2 publish has touched has no
 #: `triage_decided_by`, so it is derived the way a tolerant reader must.
@@ -1304,7 +1312,8 @@ class TriageMixin:
                {_LIVE_PROOF}                       AS proven_now,
                [(cf:ChainFinding)-[:CONFIRMS]->(n)
                   WHERE cf.user_id = n.user_id AND cf.project_id = n.project_id
-                    AND cf.finding_type IN {_PROOF_TYPES} | cf.finding_type] AS proof_types"""
+                    AND cf.finding_type IN {_PROOF_TYPES}
+                    AND {_PROOF_CONFIDENCE} | cf.finding_type] AS proof_types"""
         query = f"""
         MATCH (n:{label_expr})
         WHERE {_BY_ID} AND n.user_id = $user_id AND n.project_id = $project_id
