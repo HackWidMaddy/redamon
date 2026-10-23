@@ -610,7 +610,11 @@ SECURITY_CHECK_CONFIDENCE = {
 #: was written before the writer stored it, and keeps the 1.0 it was scored
 #: with until a rescan says how the bypass was found.
 WAF_BYPASS_CONFIDENCE = {
-    "payload_differential": (1.0, "the edge blocked a probe that the origin served"),
+    # Not 1.0 while the producer counts any non-block answer under 500 from the
+    # origin (a 302 to login, a 401, a 404) as "served"; plan 03.5 raises it
+    # once only a real 2xx page counts.
+    "payload_differential": (0.75, "the edge blocked a probe the origin answered without blocking; "
+                                   "that answer may be a redirect or an error page"),
     "static_headers": (0.75, "the edge's Server header names a WAF and the origin's does not"),
     "ai_classifier": (0.6, "an AI classifier saw a WAF on the edge but not on the origin"),
     "jev_classifier": (0.6, "a Jev classifier saw a WAF on the edge but not on the origin"),

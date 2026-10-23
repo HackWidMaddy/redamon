@@ -127,11 +127,13 @@ class TestSecurityCheckConfidence(unittest.TestCase):
     def test_waf_bypass_confidence_follows_the_detection_method(self):
         def c(method):
             return self.c_of(check("waf_bypass", "high", detection_method=method))
-        self.assertEqual(c("payload_differential"), 1.0)
+        # Not a fact: the producer still reads any origin answer under 500 that
+        # is not a block code (a 302 to login, a 401, a 404, a 421) as "served".
+        self.assertEqual(c("payload_differential"), 0.75)
         self.assertEqual(c("static_headers"), 0.75)
         self.assertEqual(c("ai_classifier"), 0.6)
         self.assertEqual(c("jev_classifier"), 0.6)
-        self.assertGreater(c("payload_differential"), c("static_headers"))
+        self.assertGreaterEqual(c("payload_differential"), c("static_headers"))
         self.assertGreater(c("static_headers"), c("ai_classifier"))
 
     def test_a_waf_bypass_written_before_the_method_was_stored_keeps_one(self):
@@ -641,10 +643,11 @@ GUARD = {
         {'host': 'h1', 'id': 'x', 'label': 'Vulnerability', 'severity': 'medium', 'source': 'security_check', 'type': 'waf_bypass'},
         ('open', 'T3', 27.25),
         ('open', 'T3', 26.8)),
+    # Moved on purpose: C 1.0 -> 0.75 until the producer requires a 2xx page.
     'waf_bypass_payload_differential': (
         {'detection_method': 'payload_differential', 'host': 'h1', 'id': 'x', 'label': 'Vulnerability', 'severity': 'high', 'source': 'security_check', 'type': 'waf_bypass'},
-        ('open', 'T3', 27.25),
-        ('open', 'T3', 26.8)),
+        ('open', 'T3', 26.6875),
+        ('open', 'T3', 26.35)),
     'direct_ip_http_medium': (
         {'host': 'h1', 'id': 'x', 'label': 'Vulnerability', 'severity': 'medium', 'source': 'security_check', 'type': 'direct_ip_http'},
         ('open', 'T3', 27.25),
