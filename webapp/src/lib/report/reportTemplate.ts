@@ -767,6 +767,9 @@ function renderScope(data: ReportData, narrative?: string): string {
   // from AI suggestions, so they are never worded as reviewed one by one.
   const byMultiMute = graphOverview.suppressedByMultiMute ?? 0
   const reviewedOneByOne = Math.max(0, (graphOverview.suppressedByPeople ?? 0) - byMultiMute)
+  // An AI review alone never removes a finding (it reads target-controlled
+  // text), so its line says the finding is still counted.
+  const judged = graphOverview.judged
 
   return `
 <div class="page-break"></div>
@@ -814,6 +817,15 @@ function renderScope(data: ReportData, narrative?: string): string {
             graphOverview.suppressedRules.length
               ? ` (${graphOverview.suppressedRules.map(r => `${esc(r.name)}: ${r.count}`).join('; ')})`
               : ''}</td></tr>`
+        : ''}
+      ${judged?.personFalsePositive
+        ? `<tr><td>Judged false positive by a person</td><td>${judged.personFalsePositive} finding(s) excluded from this report</td></tr>`
+        : ''}
+      ${judged?.resolved
+        ? `<tr><td>Resolved (fixed, gone, inactive)</td><td>${judged.resolved} finding(s) excluded from this report</td></tr>`
+        : ''}
+      ${judged?.aiFlagged
+        ? `<tr><td>Flagged as likely false positive by AI review</td><td>${judged.aiFlagged} finding(s), still counted in this report</td></tr>`
         : ''}
     </tbody>
   </table>

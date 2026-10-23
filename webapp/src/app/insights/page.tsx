@@ -17,6 +17,7 @@ import {
 import { DashboardHeader } from './components/DashboardHeader'
 import { KPICards } from './components/KPICards'
 import { SeverityDonut } from './components/SeverityDonut'
+import { JudgedFindingsNote } from './components/JudgedFindingsNote'
 import { CvssHistogram } from './components/CvssHistogram'
 import { NodeTypeBar } from './components/NodeTypeBar'
 import { ConnectedNodesBar } from './components/ConnectedNodesBar'
@@ -274,6 +275,7 @@ export default function InsightsPage() {
           <CvssHistogram data={vulns.data?.cvssHistogram} isLoading={vulns.isLoading} />
           <VulnSourcePie data={vulns.data?.findings} isLoading={vulns.isLoading} />
         </div>
+        <JudgedFindingsNote judged={vulns.data?.judged} />
         <div className={styles.grid4}>
           <FindingsBySource data={vulns.data?.findings} isLoading={vulns.isLoading} />
           <FindingsByCategory data={vulns.data?.findings} isLoading={vulns.isLoading} />

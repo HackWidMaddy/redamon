@@ -883,9 +883,14 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'Use it to orient before asking anything specific - it costs one query where the same ' +
         'picture assembled from natural-language questions costs many and is easy to get subtly ' +
         'wrong.\n\n' +
-        'Counts exclude suppressed findings and findings a later scan stopped reporting, so they ' +
-        'agree with graph_summary. A category at zero can mean that surface was never scanned; ' +
+        'Counts exclude suppressed findings and findings a later scan stopped reporting, as ' +
+        'graph_summary does. A category at zero can mean that surface was never scanned; ' +
         'graph_summary and get_project_activity are how you tell those apart.\n\n' +
+        'Finding counts also leave out what a person judged a false positive on the Priority ' +
+        'Board and what the board resolved (fixed, gone, inactive), as the client report does; ' +
+        'for vulnerabilities those are counted separately, as judgedFalsePositiveVulnerabilities ' +
+        'and resolvedVulnerabilities. A finding only an AI review flagged as a false positive is ' +
+        'still counted; aiFlaggedVulnerabilities says how many.\n\n' +
         'Endpoints and parameters known only from an API specification are counted apart, as ' +
         'declaredEndpoints and declaredParameters: documented, not observed.\n\n' +
         `${UNTRUSTED_DATA_NOTE}`,
@@ -908,7 +913,8 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'guessed from a severity label.\n\n' +
         '`cisaKev` means an exploit record for that CVE exists in THIS project\'s graph, not that ' +
         'the CVE appears on a public exploited list. `reachedBy` counts how many web origins, ' +
-        'services and ports run the technology: it is exposure, not severity.\n\n' +
+        'services and ports run the technology: it is exposure, not severity. An exploit record ' +
+        'a person judged a false positive, or the Priority Board resolved, does not count.\n\n' +
         `${UNTRUSTED_DATA_NOTE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
@@ -926,7 +932,8 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'technology and version, how many CVEs affect it, the worst CVSS among them, how many ' +
         'known exploits exist, and how many web origins, services and ports run it.\n\n' +
         'The top row is usually the highest-leverage single fix, which is a different question ' +
-        'from "what is the worst finding" and often has a different answer.\n\n' +
+        'from "what is the worst finding" and often has a different answer. An exploit record a ' +
+        'person judged a false positive, or the Priority Board resolved, is not counted.\n\n' +
         `${UNTRUSTED_DATA_NOTE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),

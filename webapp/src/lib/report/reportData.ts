@@ -7,6 +7,7 @@ import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { RISK_TOP_N, projectRisk } from '@/lib/projectRisk'
 import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
+import { type JudgedFindingCounts, queryJudgedFindings, reportCountable } from '@/lib/triage/reportable'
 import { DECLARED_ONLY } from '@/lib/declaredOnly'
 import { ipVersionIs } from '@/lib/ipVersion'
 import { type CoverageGap, currentScanRoots, gapInScope } from '@/lib/scanCoverage'
@@ -255,6 +256,8 @@ export interface MalwareRecord {
   ipAddress: string | null
 }
 
+export type { JudgedFindingCounts }
+
 export interface SubdomainMapping {
   subdomain: string
   ips: { address: string; version: string | null; isCdn: boolean; cdnName: string | null }[]
@@ -308,6 +311,11 @@ export interface ReportData {
     /** The rules behind `suppressedByRules`, largest first. Names are operator
      *  input and are escaped by the template. */
     suppressedRules: { name: string; count: number }[]
+    /** Unmuted findings the Priority Board judged, so never in the counts above
+     *  (a person's False positive, or resolved by a rule), and AI-only false
+     *  positives, which ARE still counted. Null when they could not be read:
+     *  the template then prints no line rather than a made-up 0. */
+    judged: JudgedFindingCounts | null
     subdomainStats: { total: number; resolved: number; uniqueIps: number }
     endpointCoverage: { baseUrls: number; endpoints: number; parameters: number; declaredEndpoints?: number; declaredParameters?: number }
     certificateHealth: { total: number; expired: number; expiringSoon: number; selfSigned: number; mismatched: number }
@@ -1133,6 +1141,8 @@ export async function queryGraphOverview(session: any, pid: string) {
     .sort((a, b) => b.count - a.count)
     .slice(0, 10)
 
+  const judged = await queryJudgedFindings(session, pid)
+
   return {
     totalNodes: nodeCounts.reduce((s: number, n: { count: number }) => s + n.count, 0),
     nodeCounts,
@@ -1142,6 +1152,7 @@ export async function queryGraphOverview(session: any, pid: string) {
     suppressedRules,
     suppressedByAgents,
     suppressedByMultiMute,
+    judged,
     subdomainStats: subRec
       ? { total: toNum(subRec.get('total')), resolved: toNum(subRec.get('resolved')), uniqueIps: toNum(subRec.get('uniqueIps')) }
       : { total: 0, resolved: 0, uniqueIps: 0 },
@@ -1262,16 +1273,16 @@ export async function queryAttackSurface(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryVulnerabilities(session: any, pid: string) {
+export async function queryVulnerabilities(session: any, pid: string) {
   const sevRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid})
-    WHERE ${notMuted('v')} AND ${agentCandidateConfirmedOrNA('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')} AND ${agentCandidateConfirmedOrNA('v')}
      RETURN v.severity AS severity, count(v) AS count`,
     { pid }
   )
   const findingsRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid})
-    WHERE ${notMuted('v')} AND ${agentCandidateConfirmedOrNA('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')} AND ${agentCandidateConfirmedOrNA('v')}
      OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
      OPTIONAL MATCH (v)-[:FOUND_AT]->(ep:Endpoint)
      OPTIONAL MATCH (v)-[:AFFECTS_PARAMETER]->(param:Parameter)
@@ -1310,7 +1321,7 @@ async function queryVulnerabilities(session: any, pid: string) {
   )
   const gvmRemRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'gvm'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN CASE WHEN v.remediated = true THEN 'Remediated' ELSE 'Open' END AS status,
             count(v) AS count`,
     { pid }
@@ -1369,7 +1380,7 @@ async function queryCveIntelligence(session: any, pid: string) {
   )
   const exploitRes = await session.run(
     `MATCH (ex:ExploitGvm {project_id: $pid})
-    WHERE ${notMuted('ex')}
+    WHERE ${notMuted('ex')} AND ${reportCountable('ex')}
      OPTIONAL MATCH (ex)-[:EXPLOITED_CVE]->(c:CVE)
      RETURN ex.name AS name, ex.severity AS severity, ex.target_ip AS targetIp,
             ex.target_port AS targetPort, ex.cvss_score AS cvssScore,
@@ -1381,9 +1392,9 @@ async function queryCveIntelligence(session: any, pid: string) {
   const ghRes = await session.run(
     `OPTIONAL MATCH (d:Domain {project_id: $pid})-[:HAS_GITHUB_HUNT]->()-[:HAS_REPOSITORY]->(r:GithubRepository)
      OPTIONAL MATCH (r)-[:HAS_PATH]->()-[:CONTAINS_SECRET]->(sec:GithubSecret)
-       WHERE ${notMuted('sec')}
+       WHERE ${notMuted('sec')} AND ${reportCountable('sec')}
      OPTIONAL MATCH (r)-[:HAS_PATH]->()-[:CONTAINS_SENSITIVE_FILE]->(sf:GithubSensitiveFile)
-       WHERE ${notMuted('sf')}
+       WHERE ${notMuted('sf')} AND ${reportCountable('sf')}
      RETURN count(DISTINCT r) AS repos, count(DISTINCT sec) AS secrets, count(DISTINCT sf) AS sensitiveFiles`,
     { pid }
   )
@@ -1499,7 +1510,7 @@ async function queryTrufflehog(session: any, pid: string) {
     `OPTIONAL MATCH (d:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
      OPTIONAL MATCH (ts)-[:HAS_ASSET]->(a)
      OPTIONAL MATCH (a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
-       WHERE ${notMuted('tf')}
+       WHERE ${notMuted('tf')} AND ${reportCountable('tf')}
      RETURN count(DISTINCT tf) AS total,
             count(DISTINCT CASE WHEN tf.verified = true THEN tf END) AS verified,
             count(DISTINCT CASE WHEN tf.validation_status = 'validated' THEN tf END) AS live,
@@ -1512,7 +1523,7 @@ async function queryTrufflehog(session: any, pid: string) {
     `MATCH (:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
      WITH DISTINCT ts
      OPTIONAL MATCH (ts)-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
-       WHERE ${notMuted('tf')}
+       WHERE ${notMuted('tf')} AND ${reportCountable('tf')}
      RETURN ts.source AS source, ts.target AS target, ts.status AS status,
             count(DISTINCT tf) AS total,
             count(DISTINCT CASE WHEN tf.validation_status = 'validated' THEN tf END) AS live,
@@ -1522,7 +1533,7 @@ async function queryTrufflehog(session: any, pid: string) {
   )
   const findingsRes = await session.run(
     `MATCH (:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->()-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
-    WHERE ${notMuted('tf')}
+    WHERE ${notMuted('tf')} AND ${reportCountable('tf')}
      WITH DISTINCT a, tf
      RETURN tf.detector_name AS detectorName, tf.verified AS verified,
             tf.validation_status AS validationStatus, tf.source AS source,
@@ -1575,34 +1586,34 @@ async function queryTrufflehog(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function querySecrets(session: any, pid: string) {
+export async function querySecrets(session: any, pid: string) {
   const totalRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')}
      RETURN count(s) AS total`,
     { pid }
   )
   const bySevRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')}
      RETURN s.severity AS severity, count(s) AS count ORDER BY count DESC`,
     { pid }
   )
   const bySrcRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')}
      RETURN s.source AS source, count(s) AS count ORDER BY count DESC`,
     { pid }
   )
   const byTypeRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')}
      RETURN s.secret_type AS secretType, count(s) AS count ORDER BY count DESC LIMIT 20`,
     { pid }
   )
   const findingsRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')}
      RETURN s.secret_type AS secretType, s.severity AS severity,
             s.source AS source, s.source_url AS sourceUrl,
             s.sample AS sample, s.validation_status AS validationStatus,
@@ -1649,13 +1660,13 @@ async function querySupplyChain(session: any, pid: string) {
   )
   const verdictRes = await session.run(
     `MATCH (:Package {project_id: $pid})-[:FLAGGED_AS]->(f:MalPackageFinding {project_id: $pid})
-    WHERE ${notMuted('f')}
+    WHERE ${notMuted('f')} AND ${reportCountable('f')}
      RETURN f.verdict AS verdict, count(f) AS count`,
     { pid }
   )
   const findingsRes = await session.run(
     `MATCH (p:Package {project_id: $pid})-[:FLAGGED_AS]->(f:MalPackageFinding {project_id: $pid})
-    WHERE ${notMuted('f')}
+    WHERE ${notMuted('f')} AND ${reportCountable('f')}
      OPTIONAL MATCH (b:BaseURL {project_id: $pid})-[:DEPENDS_ON]->(p)
      RETURN p.purl AS purl, p.name AS name, p.version AS version,
             p.ecosystem AS ecosystem, f.verdict AS verdict,
@@ -1697,19 +1708,19 @@ async function querySupplyChain(session: any, pid: string) {
 async function queryJsRecon(session: any, pid: string) {
   const bySevRes = await session.run(
     `MATCH (jf:JsReconFinding {project_id: $pid})
-    WHERE ${notMuted('jf')}
+    WHERE ${notMuted('jf')} AND ${reportCountable('jf')}
      RETURN jf.severity AS severity, count(jf) AS count ORDER BY count DESC`,
     { pid }
   )
   const byTypeRes = await session.run(
     `MATCH (jf:JsReconFinding {project_id: $pid})
-    WHERE ${notMuted('jf')}
+    WHERE ${notMuted('jf')} AND ${reportCountable('jf')}
      RETURN jf.finding_type AS findingType, count(jf) AS count ORDER BY count DESC`,
     { pid }
   )
   const findingsRes = await session.run(
     `MATCH (jf:JsReconFinding {project_id: $pid})
-    WHERE ${notMuted('jf')}
+    WHERE ${notMuted('jf')} AND ${reportCountable('jf')}
      RETURN jf.finding_type AS findingType, jf.severity AS severity,
             jf.confidence AS confidence, jf.title AS title,
             jf.detail AS detail, jf.evidence AS evidence,
@@ -1759,17 +1770,17 @@ async function queryGraphql(session: any, pid: string) {
     { pid }
   )
   const bySevRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')}
+    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.severity AS severity, count(v) AS count ORDER BY count DESC`,
     { pid }
   )
   const byTypeRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')}
+    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.vulnerability_type AS vulnerabilityType, count(v) AS count ORDER BY count DESC`,
     { pid }
   )
   const findingsRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')}
+    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
      OPTIONAL MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v)
      RETURN coalesce(e.full_url, v.endpoint, '') AS endpoint,
             v.vulnerability_type AS vulnerabilityType,
@@ -1837,19 +1848,19 @@ async function queryGraphql(session: any, pid: string) {
 async function queryVhostSni(session: any, pid: string) {
   const bySevRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'vhost_sni_enum'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.severity AS severity, count(v) AS count ORDER BY count DESC`,
     { pid }
   )
   const byLayerRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'vhost_sni_enum'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.layer, 'unknown') AS layer, count(v) AS count ORDER BY count DESC`,
     { pid }
   )
   const byTypeRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'vhost_sni_enum'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.type, 'unknown') AS findingType, count(v) AS count ORDER BY count DESC`,
     { pid }
   )
@@ -1862,7 +1873,7 @@ async function queryVhostSni(session: any, pid: string) {
   )
   const findingsRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'vhost_sni_enum'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.hostname AS hostname,
             v.ip AS ip,
             v.port AS port,
@@ -2020,25 +2031,25 @@ export async function queryTlsx(session: any, pid: string) {
 async function queryWebCachePoison(session: any, pid: string) {
   const bySevRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.severity AS severity, count(v) AS count ORDER BY count DESC`,
     { pid }
   )
   const byImpactRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.cache_impact, 'unknown') AS impact, count(v) AS count ORDER BY count DESC`,
     { pid }
   )
   const tierRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.confidence_tier, 'Tentative') AS tier, count(v) AS count`,
     { pid }
   )
   const findingsRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.endpoint, v.matched_at) AS endpoint,
             v.cache_header AS cacheHeader,
             v.cache_param AS cacheParam,
@@ -2158,7 +2169,7 @@ async function queryAiSurface(session: any, pid: string) {
 
   const mcpVulnRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid, source: 'ai_surface_recon'})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN count(v) AS n`,
     { pid }
   )
@@ -2189,7 +2200,7 @@ async function queryAiSurface(session: any, pid: string) {
   }
   const attackRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid})
-     WHERE v.source IN ['garak', 'pyrit', 'giskard', 'promptfoo'] AND ${notMuted('v')}
+     WHERE v.source IN ['garak', 'pyrit', 'giskard', 'promptfoo'] AND ${notMuted('v')} AND ${reportCountable('v')}
      OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
      WITH v, parent
      RETURN v.source AS source, v.severity AS severity, v.type AS type,

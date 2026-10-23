@@ -42,6 +42,7 @@ function makeReportData(overrides: Partial<ReportData> = {}): ReportData {
       suppressedCount: 0,
       suppressedByPeople: 0, suppressedByMultiMute: 0, suppressedByAgents: 0, suppressedByRules: 0,
       suppressedRules: [],
+      judged: { personFalsePositive: 0, resolved: 0, aiFlagged: 0 },
       nodeCounts: [],
       subdomainStats: { total: 0, resolved: 0, uniqueIps: 0 },
       endpointCoverage: { baseUrls: 0, endpoints: 0, parameters: 0 },
@@ -595,6 +596,41 @@ describe('Suppressed findings: people and rules are reported apart', () => {
     const html = withSuppressed(0, 1, [{ name: `<img src=x onerror=alert(1)> it's`, count: 1 }])
     expect(html).not.toContain('<img src=x onerror=alert(1)>')
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt; it&#39;s: 1')
+  })
+})
+
+describe('Findings the Priority Board judged: three scope lines', () => {
+  function withJudged(judged: ReportData['graphOverview']['judged']) {
+    const data = makeReportData()
+    data.graphOverview.judged = judged
+    return generateReportHtml(data, null)
+  }
+
+  test('each count gets its own line, worded for who decided', () => {
+    const html = withJudged({ personFalsePositive: 3, resolved: 5, aiFlagged: 2 })
+    expect(html).toContain('<tr><td>Judged false positive by a person</td><td>3 finding(s) excluded from this report</td></tr>')
+    expect(html).toContain('<tr><td>Resolved (fixed, gone, inactive)</td><td>5 finding(s) excluded from this report</td></tr>')
+    expect(html).toContain('<tr><td>Flagged as likely false positive by AI review</td><td>2 finding(s), still counted in this report</td></tr>')
+  })
+
+  test('a zero count prints no line', () => {
+    const html = withJudged({ personFalsePositive: 0, resolved: 4, aiFlagged: 0 })
+    expect(html).not.toContain('Judged false positive by a person')
+    expect(html).not.toContain('Flagged as likely false positive by AI review')
+    expect(html).toContain('Resolved (fixed, gone, inactive)')
+  })
+
+  test('counts that could not be read print nothing, never a 0', () => {
+    const html = withJudged(null)
+    expect(html).not.toContain('Judged false positive by a person')
+    expect(html).not.toContain('Resolved (fixed, gone, inactive)')
+    expect(html).not.toContain('Flagged as likely false positive by AI review')
+  })
+
+  test('a report built before the field existed renders unchanged', () => {
+    const data = makeReportData()
+    delete (data.graphOverview as Partial<ReportData['graphOverview']>).judged
+    expect(() => generateReportHtml(data, null)).not.toThrow()
   })
 })
 

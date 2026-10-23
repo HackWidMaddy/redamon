@@ -3,6 +3,7 @@ import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
+import { reportCountable } from '@/lib/triage/reportable'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -49,7 +50,7 @@ export async function GET(request: NextRequest) {
        OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
        OPTIONAL MATCH (ip)-[:HAS_VULNERABILITY]->(v:Vulnerability)
          WHERE (v.type IN $vulnTypes OR v.vulnerability_type IN $vulnTypes OR v.name IN $vulnTypes)
-           AND ${notMuted('v')}
+           AND ${notMuted('v')} AND ${reportCountable('v')}
        RETURN toString(id(p))       AS nodeId,
               'port'                AS origin,
               ip.address            AS ipAddress,
@@ -75,7 +76,7 @@ export async function GET(request: NextRequest) {
     const vulnResult = await session.run(
       `MATCH (ip:IP {project_id: $pid})-[:HAS_VULNERABILITY]->(v:Vulnerability)
        WHERE (v.type IN $vulnTypes OR v.vulnerability_type IN $vulnTypes OR v.name IN $vulnTypes)
-         AND ${notMuted('v')}
+         AND ${notMuted('v')} AND ${reportCountable('v')}
        OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
        // Grouped on (ip, port, timestamp), not on v: in practice one
        // Vulnerability, but not by construction, and making v a grouping key

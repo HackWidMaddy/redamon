@@ -1,3 +1,5 @@
+import type { JudgedFindingCounts } from '@/lib/triage/reportable'
+
 export interface GraphOverviewData {
   nodeCounts: { label: string; count: number }[]
   relationshipCounts: { type: string; count: number }[]
@@ -64,6 +66,8 @@ export interface VulnerabilityData {
   exploits: Exploit[]
   githubSecrets: { repos: number; secrets: number; sensitiveFiles: number }
   gvmRemediation: { status: string; count: number }[]
+  /** Findings the Priority Board set aside; null when they could not be read. */
+  judged?: JudgedFindingCounts | null
 }
 
 export interface AttackSurfaceData {
