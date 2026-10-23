@@ -334,7 +334,27 @@ the tier bands meet rather than overlap.
 
 **State is decided before the score.** A `fixed`, `gone` or `inactive` finding
 leaves the ranking entirely rather than being demoted to a small number that
-still sorts above something real.
+still sorts above something real. `gone` needs evidence of absence: the
+`gone_hosts` fact reads `RESOLVES_TO` from each label's own end (Subdomain ->
+IP, so an IP is gone only when no Subdomain resolves to it) and leaves out every
+host on an org `Domain`'s `recon_skipped_hosts`, normalised as
+`circuit_breaker.hostname_of` does for the prune: a host the run did not
+re-check is unknown, not gone.
+
+**Agent proof has a confidence floor.** A `ChainFinding` proves the finding it
+`CONFIRMS` only when `coalesce(toInteger(cf.confidence), 80) >= 70`
+(`PROOF_MIN_AGENT_CONFIDENCE`, `AGENT_CONFIDENCE_DEFAULT`, `agent_proof_counts`
+in `score_model.py`). The missing-value default is the writer's own
+(`chain_graph_writer.fire_record_finding`), so stored proof is unchanged. The
+same numbers sit in three places that must agree: the `proof` fact query (and
+its reducer, which feeds `is_proven`), `triage_mixin._LIVE_PROOF`, and the
+`proof_types` the detail read lists; `tests/test_fix_triage_proof_mirror.py`
+pins the mixin's copies to the model's.
+
+**A finding is classed by type before source.** `origin_discovery` and
+`security_check` MERGE the same `waf_bypass` node and `source` is set on create
+only, so any finding whose `type` names a `SECURITY_CHECK_CLASSES` entry goes to
+`classify_security_check` whatever its source.
 
 Three decisions worth knowing, because each was a live defect:
 
@@ -376,11 +396,28 @@ v3.0.0 on a graph nobody has clicked. Tests:
 
 - **Group** (`cypherfix_triage/grouping.py`): deterministic keys, no LLM. The
   same CVE from two scanners is one group; every advisory on one package is one
-  group; a secret's key is a hash of its value, never the value.
+  group; a secret's key is a hash of its value, never the value. The `secrets`
+  fact query returns `s.matched_text` for that, and names the detector by the
+  pattern (`coalesce(s.secret_type, s.key_type)`): js_recon's `key_type` is only
+  the pattern's category. When a run produces a group key no `Remediation` row
+  carries, the fix-list route re-points the orphaned row that shares at least
+  half of the group's findings (largest overlap, then protected, then newest;
+  once per run) instead of creating a duplicate, and reports it as `repointed`.
 - **Review** (`cypherfix_triage/evidence.py`, `prompts/review.py`): the LLM
   corrects FACTORS against quoted evidence and never produces a score. Every
   quote is verified as a substring of what was sent; an unverifiable correction
-  becomes "no change". `security_check` and OSV findings never reach it.
+  becomes "no change". `security_check` and OSV findings never reach it. A
+  Secret's bundle carries `Value (redacted)` and `Context (redacted)`: the
+  context has the matched value masked by name before the shape redaction and
+  the short cap, so a secret of no known shape never reaches the model. Rule 3
+  of the prompt lists a login page, a redirect to login, a 401/403 auth wall and
+  the page the server returns for a random path as false-positive shapes
+  (`REVIEW_PROMPT_VERSION` `review-v3`). A review that answers `false_positive`
+  moves the finding to the board's false-positive section but never out of the
+  client report, Insights or the MCP analytics counts: only a person's
+  `likely_noise` (with `triage_source = 'human'`) or a resolved state does that
+  (`webapp/src/lib/triage/reportable.ts`). The reviewer reads target-controlled
+  text, so an injected sentence can re-rank a finding, never hide it.
 - **Remediate** (`cypherfix_triage/remediation.py`): every field that decides
   anything is computed in code. `targetRepo` comes from project settings and
   never from model output, because it decides where CodeFix pushes.
