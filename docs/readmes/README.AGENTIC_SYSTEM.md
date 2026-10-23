@@ -1266,10 +1266,12 @@ sequenceDiagram
     O-->>B: tool_start (naabu)
     B-->>C: tool_start
 
-    Note over O: tool executes...
+    Note over O: tool executes (bounded by its deadline)...
 
     O-->>B: tool_output_chunk
     B-->>C: tool_output_chunk
+    O-->>B: tool_finished (tool returned, analysis pending)
+    B-->>C: tool_finished
 
     Note over O: Iteration 2, analyse previous output
 
@@ -1289,6 +1291,12 @@ sequenceDiagram
     O-->>B: task_complete
     B-->>C: task_complete
 ```
+
+A standalone tool's `tool_complete` carries the LLM's analysis, so it only fires after the next think turn. `tool_finished` is sent as soon as the tool itself returns; the card then freezes at the tool's real duration and reads "Analyzing output" instead of "Running" through that turn. Every root tool event (`tool_start`, `tool_output_chunk`, `tool_finished`, `tool_complete`) carries the step's `step_id`, and the frontend pairs cards by it: pairing by tool name let one lost `tool_complete` swallow the next same-name tool's completion.
+
+Each tool call is also bounded by a wall-clock deadline (`TOOL_DEADLINES_S` in [`agentic/tools.py`](../../agentic/tools.py): the tool's own server-side limit plus a margin). The MCP SSE transport cannot provide that bound itself: kali-sandbox sends a keep-alive every 15s, which resets the client's `sse_read_timeout`, so a lost answer used to be awaited forever.
+
+**Reconnects.** Events sent while the browser's socket is down are not replayed; they exist only in the `ChatMessage` table. Every `connected` payload therefore carries `agent_running`, the server's live answer to "is this session's run still going?". On each (re)connect the drawer re-reads the conversation, reconciles it with what is on screen, and takes the spinner state from that flag; when the run is over, cards still marked running are closed as finished or interrupted. A run releases its task registration before draining its persist queue, so a page reconnecting during that drain is told the run is over. The socket stays open while a run is active even with the drawer closed, and Stop / guidance clicked while it is down wait in an outbox until the next `connected`.
 
 ### Wave Execution Events
 

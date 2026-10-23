@@ -41,6 +41,9 @@ interface ToolExecutionCardProps {
 export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApiKey, onAddApiKey, onApprove, onReject, onStop }: ToolExecutionCardProps) {
   const [copied, setCopied] = useState(false)
   const [duration, setDuration] = useState(0)
+  // The tool process itself is still going. A finished tool whose card is
+  // still 'running' is waiting for the agent's analysis, not for the tool.
+  const toolRunning = item.status === 'running' && !item.finished
 
   // Calculate duration for running tools
   useEffect(() => {
@@ -48,7 +51,7 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
       setDuration(0)
       return
     }
-    if (item.status === 'running') {
+    if (toolRunning) {
       const interval = setInterval(() => {
         const elapsed = Date.now() - item.timestamp.getTime()
         setDuration(Math.floor(elapsed / 1000))
@@ -57,7 +60,7 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
     } else if (item.duration) {
       setDuration(Math.floor(item.duration / 1000))
     }
-  }, [item.status, item.timestamp, item.duration])
+  }, [item.status, item.timestamp, item.duration, toolRunning])
 
   const handleCopy = async () => {
     try {
@@ -93,11 +96,11 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
       case 'pending_approval':
         return 'Awaiting approval'
       case 'running':
-        return `Running... (${duration}s)`
+        return item.finished ? `Analyzing output (${duration}s)` : `Running... (${duration}s)`
       case 'success':
         return `Completed (${duration}s)`
       case 'error':
-        return 'Failed'
+        return item.interrupted ? 'Interrupted' : 'Failed'
     }
   }
 
@@ -165,7 +168,7 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
                 <button className={styles.denyBtn} onClick={(e) => { e.stopPropagation(); onReject?.() }}>Deny</button>
               </div>
             )}
-            {item.status === 'running' && onStop && (
+            {toolRunning && onStop && (
               <button
                 className={styles.stopButton}
                 onClick={(e) => { e.stopPropagation(); onStop() }}
@@ -226,7 +229,7 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
             <div className={styles.section}>
               <div className={styles.sectionLabel}>
                 Raw Output
-                {item.status === 'running' && (
+                {toolRunning && (
                   <span className={styles.streamingLabel}>(streaming)</span>
                 )}
               </div>
@@ -234,7 +237,7 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
                 <pre className={styles.codeBlock}>
                   <code>
                     {item.output_chunks.join('')}
-                    {item.status === 'running' && (
+                    {toolRunning && (
                       <span className={styles.cursor}>▋</span>
                     )}
                   </code>

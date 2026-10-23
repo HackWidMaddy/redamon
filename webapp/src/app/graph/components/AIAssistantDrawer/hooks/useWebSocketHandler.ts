@@ -20,6 +20,7 @@ import {
 } from '@/lib/websocket-types'
 import type { ChatItem, Message, FileDownloadItem, Phase, FireteamItem, FireteamMemberPanel } from '../types'
 import type { ThinkingItem, ToolExecutionItem, PlanWaveItem, DeepThinkItem } from '../AgentTimeline'
+import { findToolCardIndex, settleRunningTools } from './toolCardState'
 import {
   handleFireteamDeployed,
   handleFireteamMemberStarted,
@@ -241,7 +242,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
             pendingApprovalToolId.current = null
             setChatItems((prev: ChatItem[]) => prev.map((item: ChatItem) =>
               'type' in item && item.type === 'tool_execution' && item.id === pendingToolId
-                ? { ...item, status: 'running' as const, timestamp: new Date(), tool_args: message.payload.tool_args }
+                ? { ...item, status: 'running' as const, timestamp: new Date(), tool_args: message.payload.tool_args, step_id: message.payload.step_id }
                 : item
             ))
           } else {
@@ -253,6 +254,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
               tool_args: message.payload.tool_args,
               status: 'running',
               output_chunks: [],
+              step_id: message.payload.step_id,
             }
             setChatItems((prev: ChatItem[]) => [...prev, toolItem])
           }
@@ -292,12 +294,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
             }
             return prev
           }
-          const toolIndex = prev.findIndex(
-            item => 'type' in item &&
-                    item.type === 'tool_execution' &&
-                    item.tool_name === message.payload.tool_name &&
-                    item.status === 'running'
-          )
+          const toolIndex = findToolCardIndex(prev, message.payload.tool_name, message.payload.step_id)
           if (toolIndex !== -1) {
             const toolItem = prev[toolIndex] as ToolExecutionItem
             return [
@@ -307,6 +304,29 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
             ]
           }
           return prev
+        })
+        break
+      }
+
+      case MessageType.TOOL_FINISHED: {
+        // The tool returned; its analysis (tool_complete) comes with the next
+        // think turn. Freeze the card at the tool's real duration so a slow or
+        // stalled turn no longer reads as a hung tool.
+        setChatItems(prev => {
+          const toolIndex = findToolCardIndex(prev, message.payload.tool_name, message.payload.step_id)
+          if (toolIndex === -1) return prev
+          const toolItem = prev[toolIndex] as ToolExecutionItem
+          if (toolItem.status !== 'running') return prev
+          return [
+            ...prev.slice(0, toolIndex),
+            {
+              ...toolItem,
+              finished: true,
+              finishedSuccess: message.payload.success,
+              duration: message.payload.duration_ms ?? Date.now() - toolItem.timestamp.getTime(),
+            },
+            ...prev.slice(toolIndex + 1),
+          ]
         })
         break
       }
@@ -348,12 +368,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
           })
         } else {
           setChatItems(prev => {
-            const toolIndex = prev.findIndex(
-              item => 'type' in item &&
-                      item.type === 'tool_execution' &&
-                      item.tool_name === message.payload.tool_name &&
-                      item.status === 'running'
-            )
+            const toolIndex = findToolCardIndex(prev, message.payload.tool_name, message.payload.step_id)
             if (toolIndex !== -1) {
               const toolItem = prev[toolIndex] as ToolExecutionItem
               const elapsed = Date.now() - toolItem.timestamp.getTime()
@@ -363,7 +378,8 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
                 final_output: message.payload.output_summary,
                 actionable_findings: message.payload.actionable_findings || [],
                 recommended_next_steps: message.payload.recommended_next_steps || [],
-                duration: elapsed,
+                duration: message.payload.duration_ms ?? toolItem.duration ?? elapsed,
+                interrupted: false,
               }
               return [
                 ...prev.slice(0, toolIndex),
@@ -778,7 +794,8 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
           isReport: tier === 'full_report',
           responseTier: tier,
         }
-        setChatItems(prev => [...prev, assistantMessage])
+        // The run is over: a card still "running" lost its tool_complete.
+        setChatItems(prev => [...settleRunningTools(prev), assistantMessage])
         setIsLoading(false)
         break
       }
@@ -792,7 +809,12 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
           error: message.payload.message,
           timestamp: new Date(),
         }
-        setChatItems(prev => [...prev, errorMessage])
+        // A non-recoverable error ends the run; a recoverable one (e.g. a bad
+        // client frame) can arrive mid-run and must not close live cards.
+        setChatItems(prev => [
+          ...(message.payload.recoverable === false ? settleRunningTools(prev) : prev),
+          errorMessage,
+        ])
         setIsLoading(false)
         break
       }
@@ -806,7 +828,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
           phase: message.payload.final_phase as Phase,
           timestamp: new Date(),
         }
-        setChatItems(prev => [...prev, completeMessage])
+        setChatItems(prev => [...settleRunningTools(prev), completeMessage])
         setIsLoading(false)
         triggerGraphRefetch()
         break
@@ -816,6 +838,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
         break
 
       case MessageType.STOPPED:
+        setChatItems(settleRunningTools)
         setIsLoading(false)
         setIsStopped(true)
         setIsStopping(false)

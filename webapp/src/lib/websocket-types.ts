@@ -30,6 +30,7 @@ export enum MessageType {
   THINKING_CHUNK = 'thinking_chunk',
   TOOL_START = 'tool_start',
   TOOL_OUTPUT_CHUNK = 'tool_output_chunk',
+  TOOL_FINISHED = 'tool_finished',
   TOOL_COMPLETE = 'tool_complete',
   PHASE_UPDATE = 'phase_update',
   TODO_UPDATE = 'todo_update',
@@ -350,6 +351,10 @@ export interface ConnectedPayload {
   protocol_version?: number
   /** Server-advertised feature flags (e.g. "fireteam", "plan_tools"). */
   features?: string[]
+  /** Whether this session's run is still going on the server. Events emitted
+   *  while the socket was down are lost, so every (re)connect uses this to
+   *  keep or clear the spinner. Absent from agents older than this field. */
+  agent_running?: boolean
 }
 
 export interface ThinkingPayload {
@@ -370,6 +375,8 @@ export interface ToolStartPayload {
   tool_name: string
   tool_args: Record<string, any>
   wave_id?: string
+  /** Stable per-step id, repeated on this tool's chunk/finished/complete. */
+  step_id?: string
 }
 
 export interface ToolOutputChunkPayload {
@@ -377,6 +384,15 @@ export interface ToolOutputChunkPayload {
   chunk: string
   is_final: boolean
   wave_id?: string
+  step_id?: string
+}
+
+/** The tool itself returned; its tool_complete follows after the next think turn. */
+export interface ToolFinishedPayload {
+  tool_name: string
+  success: boolean
+  duration_ms?: number
+  step_id?: string
 }
 
 export interface ToolCompletePayload {
@@ -388,6 +404,7 @@ export interface ToolCompletePayload {
   wave_id?: string
   step_index?: number
   duration_ms?: number
+  step_id?: string
 }
 
 export interface PlanStartPayload {
