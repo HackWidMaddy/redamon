@@ -83,6 +83,12 @@ class TestNoJsInput:
         _run(_combined(live=False))
         assert not cb.coverage_report().degraded
 
+    def test_live_urls_listed_per_host_count_as_a_live_target(self):
+        combined = _combined(live=False)
+        combined["http_probe"]["by_host"] = {HOST_A: {"live_urls": [f"http://{HOST_A}/"]}}
+        _run(combined)
+        assert "js_recon" in cb.coverage_report().degraded_sources
+
     def test_only_5xx_answers_are_no_live_target(self):
         combined = _combined(live=False)
         combined["http_probe"]["by_url"] = {f"http://{HOST_A}": {"status_code": 502}}
