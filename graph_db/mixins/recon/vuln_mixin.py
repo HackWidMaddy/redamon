@@ -61,6 +61,7 @@ def _ip_port_key(ip: str, port) -> str:
 #: classifier was (triage weighs a finding by them), and a port's service.
 _SECURITY_CHECK_EXTRA_FIELDS = (
     "detection_method", "waf_confidence", "waf_type", "ai_reasoning", "service",
+    "control_check",
 )
 
 #: Words nmap and the fingerprinters put after a product name without making

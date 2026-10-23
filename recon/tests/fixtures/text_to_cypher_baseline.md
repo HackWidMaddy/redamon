@@ -641,6 +641,7 @@ Web cache poisoning properties (source="cache_poisoning"):
 Security-check properties (source="security_check"):
 - detection_method (string): how a waf_bypass was decided, "payload_differential", "static_headers", "ai_classifier" or "jev_classifier"; waf_confidence (float), waf_type (string) and ai_reasoning (string) carry the WAF classifier's verdict
 - service (string): the service admin_port_exposed or database_exposed found on the port, as the check names it (case-sensitive): "SSH", "Telnet", "RDP", "VNC", "MySQL", "PostgreSQL", "MongoDB", "MSSQL", "Oracle", "Redis", "Elasticsearch"; redis_no_auth and smtp_open_relay write none
+- control_check (string): did a made-up path get the same answer? "passed" (it did not: the hit is real) or "failed" (the control could not be sent or read: no conclusion either way); the evidence text says why. A catch-all ("same answer") is never written: the check drops the hit. Set by ip_api_exposed and the payload-differential waf_bypass; absent on checks with no control and on findings from before it existed
 
 Per-source properties node filters also read (graph_db/node_filters/catalog.yaml):
 - url (string): the probed URL (security_check, origin_discovery)

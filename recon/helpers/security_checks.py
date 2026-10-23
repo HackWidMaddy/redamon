@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Any, Set, Tuple
 from urllib.parse import quote, urlparse
 import concurrent.futures
 
+from recon.helpers import catchall
 from recon.helpers.cdn_ranges import (
     collect_asn_cdn_ips,
     collect_prefix_cdn_ips,
@@ -44,6 +45,10 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # The run's report scope while run_security_checks runs (one scan per process).
 _HH_SCOPE = None
+# The run's catch-all controls (one per host and path prefix) and the RoE
+# exclusions no control may be sent to, for the same span.
+_CONTROL_CACHE: Optional[catchall.ControlCache] = None
+_ROE_EXCLUDED: Tuple[str, ...] = ()
 
 
 def _hh_alive(url) -> None:
@@ -608,18 +613,19 @@ def check_ip_api_exposed(ip: str, timeout: int = 10) -> Optional[Dict]:
         "/v2",
     ]
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+        "Accept": "application/json",
+    }
+
+    def fetch(u):
+        return _hh_get(u, timeout=timeout, allow_redirects=False, headers=headers)
+
+    controls = _CONTROL_CACHE if _CONTROL_CACHE is not None else catchall.ControlCache()
     for path in api_paths:
         try:
             url = f"http://{_url_host(ip)}{path}"
-            response = _hh_get(
-                url,
-                timeout=timeout,
-                allow_redirects=False,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
-                    "Accept": "application/json",
-                }
-            )
+            response = fetch(url)
 
             # Look for API-like responses (JSON or specific status codes)
             content_type = response.headers.get("Content-Type", "")
@@ -629,6 +635,12 @@ def check_ip_api_exposed(ip: str, timeout: int = 10) -> Optional[Dict]:
                 continue
 
             if response.status_code == 200 and is_json:
+                # A server that answers 200 JSON to any path says nothing
+                # about this one: ask it for a path that cannot exist.
+                verdict = catchall.control_probe(fetch, url, response, cache=controls,
+                                                 roe_excluded=_ROE_EXCLUDED)
+                if verdict.catch_all:
+                    continue
                 return {
                     "type": "ip_api_exposed",
                     "severity": "high",
@@ -640,7 +652,9 @@ def check_ip_api_exposed(ip: str, timeout: int = 10) -> Optional[Dict]:
                     "path": path,
                     "status_code": response.status_code,
                     "content_type": content_type,
-                    "evidence": f"API endpoint returned {response.status_code} with {content_type}",
+                    "evidence": (f"API endpoint returned {response.status_code} with {content_type}; "
+                                 f"control_check: {verdict.control_check} ({verdict.reason})"),
+                    "control_check": verdict.control_check,
                 }
 
             # Every web server answers 401/403 somewhere (a default nginx page,
@@ -3143,16 +3157,22 @@ def run_security_checks(
     Returns:
         Dictionary with security check findings
     """
-    global _HH_SCOPE
+    global _HH_SCOPE, _CONTROL_CACHE, _ROE_EXCLUDED
     from recon.helpers import circuit_breaker as _cb
     _HH_SCOPE = _cb.scope((), label="SecurityCheck", unit="host(s)")
+    _CONTROL_CACHE = catchall.ControlCache()
+    _ROE_EXCLUDED = tuple(h for h in (roe_excluded_hosts or ()) if isinstance(h, str) and h.strip())
     try:
         return _run_security_checks(
             recon_data, enabled_checks, timeout, tls_expiry_days, max_workers,
             ai_classifier_enabled, ai_model, ai_user_id, ai_project_id, ai_engine,
             roe_excluded_hosts=roe_excluded_hosts)
     finally:
+        if _CONTROL_CACHE.requests:
+            print(f"[*][SecurityCheck] Catch-all control probes sent: {_CONTROL_CACHE.requests}")
         _HH_SCOPE = None
+        _CONTROL_CACHE = None
+        _ROE_EXCLUDED = ()
 
 
 def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, max_workers,
