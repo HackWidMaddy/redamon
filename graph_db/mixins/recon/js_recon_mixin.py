@@ -744,13 +744,14 @@ class JsReconMixin:
             endpoint_scope = js_endpoint_scope(recon_data)
             for ep in js_recon_data.get("endpoints", []):
                 try:
-                    # Drop only endpoints a probe positively confirmed as dead.
-                    # 'hittable' (probe succeeded), 'unvalidated' (probing off,
-                    # unresolved upload-relative URL, or unsupported scheme), and
-                    # missing status are all ingested — only 'not_hittable' is
-                    # filtered out, so disabling endpoint probing keeps the prior
+                    # Drop only endpoints a probe positively judged: dead
+                    # ('not_hittable'), or answered exactly like a made-up path
+                    # on a catch-all host ('catch_all', an SPA shell). 'hittable',
+                    # 'unvalidated' (probing off, unresolved upload-relative URL,
+                    # or unsupported scheme) and a missing status are all
+                    # ingested, so disabling endpoint probing keeps the prior
                     # "ingest every extracted endpoint" behavior.
-                    if ep.get("validation_status") == "not_hittable":
+                    if ep.get("validation_status") in ("not_hittable", "catch_all"):
                         continue
 
                     path = ep.get("path", "")

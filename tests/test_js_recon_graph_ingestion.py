@@ -203,6 +203,33 @@ class TestJsReconGraphIngestion(unittest.TestCase):
         self.assertEqual({k["path"] for k in endpoint_calls}, {"/api/a", "/api/b"})
         self.assertEqual(stats["errors"], [])
 
+    def test_a_catch_all_endpoint_is_dropped_like_a_dead_one(self):
+        # The host answered a made-up path the same way (an SPA shell), so the
+        # path's "hittable" status proved nothing: no Endpoint node for it.
+        client = GraphClient()
+        ep = {"method": "GET", "source_js": "https://example.com/app.js", "base_url": "https://example.com"}
+        recon_data = {
+            "domain": "example.com",
+            "js_recon": {
+                "scan_metadata": {"scan_timestamp": "2026-05-28T00:00:00Z"},
+                "endpoints": [
+                    {**ep, "path": "/api/read", "validation_status": "catch_all", "status_code": 200},
+                    {**ep, "path": "/api/v1", "validation_status": "hittable", "status_code": 200},
+                ],
+            },
+        }
+
+        stats = client.update_graph_from_js_recon(recon_data, "u1", "p1")
+
+        endpoint_calls = [
+            kwargs for query, kwargs in client.driver.session_obj.calls
+            if "MERGE (e:Endpoint" in query
+        ]
+        self.assertEqual({k["path"] for k in endpoint_calls}, {"/api/v1"})
+        self.assertEqual(stats["endpoints_created"], 1)
+        linked_paths = {k.get("path") for q, k in client.driver.session_obj.calls if "HAS_ENDPOINT" in q}
+        self.assertNotIn("/api/read", linked_paths)
+
 
 class TestJsReconFindingPackageFields(unittest.TestCase):
     """package_name / package_version on JsReconFinding nodes.

@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 from typing import NamedTuple, Optional
 
+from recon.helpers import catchall
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.helpers.js_recon.patterns import (
     scan_js_content, scan_dev_comments, load_custom_patterns,
@@ -974,6 +975,9 @@ def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: _Probe
     # JS_RECON_CONCURRENCY used for downloads/secret validation.
     workers = _clamp_int(settings.get('JS_RECON_ENDPOINT_CONCURRENCY', 10), 10, 1, 20)
     requester = request_func or requests.request
+    # One cache per probe method: a HEAD or OPTIONS control says nothing
+    # about a GET hit.
+    controls = {m: catchall.ControlCache() for m in ('GET', 'HEAD', 'OPTIONS')}
 
     def _validate_one(endpoint: dict) -> None:
         candidate = endpoint.get('full_url') or endpoint.get('path') or ''
@@ -1037,15 +1041,45 @@ def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: _Probe
             _js_failed(resolved_url, exc)
             endpoint['validation_status'] = 'not_hittable'
             endpoint['validation_error'] = 'timeout'
+            return
         except Exception as exc:
             _js_failed(resolved_url, exc)
             endpoint['validation_status'] = 'not_hittable'
             endpoint['validation_error'] = type(exc).__name__
+            return
+
+        if endpoint['validation_status'] != 'hittable':
+            return
+
+        def fetch_control(url):
+            try:
+                answer = requester(probe_method, url, timeout=timeout, headers=headers,
+                                   allow_redirects=False)
+            except Exception as exc:
+                _js_failed(url, exc)
+                raise
+            _js_alive(url)
+            return answer
+
+        # A server that answers every path alike (an SPA shell) makes any
+        # status "hittable": a path that cannot exist decides. A catch-all
+        # host is still alive (recorded above); only its endpoint is dropped.
+        verdict = catchall.control_probe(
+            fetch_control, resolved_url, response, url_guard=is_url_safe_to_probe,
+            cache=controls[probe_method], roe_excluded=scope.roe_excluded,
+            note_module='js_recon')
+        if verdict.catch_all:
+            endpoint['validation_status'] = 'catch_all'
 
     if endpoints:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             list(ex.map(_validate_one, endpoints))
 
+    sent = sum(cache.requests for cache in controls.values())
+    if sent:
+        caught = sum(1 for e in endpoints if e.get('validation_status') == 'catch_all')
+        print(f"[*][JsRecon] Catch-all control probes sent: {sent} ({caught} endpoint(s) answered "
+              f"like a made-up path)")
     return endpoints
 
 

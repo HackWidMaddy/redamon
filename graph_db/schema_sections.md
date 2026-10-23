@@ -257,6 +257,9 @@ Additional properties present on this node type, not yet described:
   - page_class (string): "app", "login_only", "parked", "default", "placeholder" or "error"
   - page_class_confidence (integer): 0-100; 100 when the pre-filter placed the page
   - page_class_source (string): "jev_classifier", or "prefilter" where Jev gave no answer
+- Endpoint probe (set by js_recon on endpoints it extracted from JavaScript, when JS_RECON_VALIDATE_ENDPOINTS is on):
+  - validation_status (string): "hittable" (an accepted status that a made-up path next to it did not also get) or "unvalidated" (probing off, an upload-relative URL with no host, an unsupported scheme). "not_hittable" (dead) and "catch_all" (the host answers a made-up path the same way, e.g. an SPA shell) are never written: the endpoint is dropped
+  - js_status_code (integer): the status js_recon's own probe got; status_code stays http_probe's when both probed
 Additional properties present on this node type, not yet described:
 - body_param_count (integer)
 - body_sha256 (string)
@@ -286,7 +289,6 @@ Additional properties present on this node type, not yet described:
 - ai_mcp_resource_count
 - ai_model_ids
 - js_recon_source
-- js_status_code
 
 **Parameter** - URL/form parameters
 - name (string): "id", "username", "page"
