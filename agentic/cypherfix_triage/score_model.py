@@ -1468,7 +1468,10 @@ def _class_for(finding: dict) -> FindingClass:
     source = _lower(finding.get("source"))
     label = str(finding.get("label") or "")
 
-    if source == "security_check":
+    # By type before source: origin_discovery MERGEs the same waf_bypass node as
+    # security_check and `source` is set on create only, so routing by source
+    # made the class depend on which writer got there first.
+    if source == "security_check" or _lower(finding.get("type")) in SECURITY_CHECK_CLASSES:
         return classify_security_check(finding.get("type") or finding.get("name"))
     if label in ("Secret", "GithubSecret", "GithubSensitiveFile",
                  "MultiscannerFinding") or source in (

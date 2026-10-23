@@ -153,6 +153,39 @@ class TestLockedFirebase(unittest.TestCase):
         self.assertTrue(sm.is_proven(legacy, sm.ProjectFacts(live_hosts={"h1"})))
 
 
+def waf_bypass(source, severity="high"):
+    return {"id": "waf-1", "label": "Vulnerability", "source": source, "type": "waf_bypass",
+            "name": "Origin Server Exposed (CDN Bypass)", "severity": severity,
+            "host": "h1", "url": "https://203.0.113.10"}
+
+
+class TestWafBypassWhicheverWriterCreatedIt(unittest.TestCase):
+    """security_check and origin_discovery MERGE one waf_bypass node (shared
+    stable_vuln_id) and `source` is set on create only, so the class used to
+    depend on which writer got there first: uncapped "unclassified" via origin
+    discovery, a "high" then scoring impact 0.75."""
+
+    def test_both_sources_get_the_cdn_bypass_class(self):
+        for source in ("security_check", "origin_discovery"):
+            with self.subTest(source=source):
+                klass = sm._class_for(waf_bypass(source))
+                self.assertEqual(klass.name, "cdn_bypass")
+                self.assertTrue(klass.caps_impact)
+
+    def test_same_impact_cap_and_tier_from_either_writer(self):
+        facts = sm.ProjectFacts(live_hosts={"h1"})
+        check = sm.score(waf_bypass("security_check"), facts)
+        origin = sm.score(waf_bypass("origin_discovery"), facts)
+        self.assertAlmostEqual(origin.impact.value, check.impact.value)
+        self.assertLessEqual(origin.impact.value, sm.SECURITY_CHECK_CLASSES["waf_bypass"].impact)
+        self.assertEqual(origin.tier, check.tier)
+
+    def test_a_type_outside_the_catalog_keeps_its_source_routing(self):
+        row = {"label": "Vulnerability", "source": "nuclei", "type": "http",
+               "category": "sqli", "severity": "high"}
+        self.assertEqual(sm._class_for(row).name, "sqli")
+
+
 
 if __name__ == "__main__":
     unittest.main()
