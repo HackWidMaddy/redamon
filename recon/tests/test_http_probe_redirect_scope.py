@@ -128,6 +128,53 @@ class TestNeitherHostInScope:
         assert [e["domain"] for e in res["external_domains"]] == ["cdn.example.org"]
 
 
+class TestTheRedirectChain:
+    """The pre-redirect answer is kept: a host that answers 302 is not a 200 page."""
+
+    def test_an_off_host_redirect_records_its_chain(self, tmp_path):
+        entry = _parse(tmp_path, _line(IN_SCOPE, FOREIGN, [302, 200]))["by_url"][IN_SCOPE]
+        assert entry["final_url"] == FOREIGN
+        assert entry["first_status_code"] == 302
+        assert entry["redirect_chain_codes"] == [302, 200]
+        assert entry["redirected_off_host"] is True
+
+    def test_a_same_host_redirect_is_not_off_host(self, tmp_path):
+        url = "http://www.example.com"
+        entry = _parse(tmp_path, _line(url, "https://www.example.com/home", [301, 302, 200]))["by_url"][url]
+        assert entry["first_status_code"] == 301
+        assert entry["redirect_chain_codes"] == [301, 302, 200]
+        assert entry["redirected_off_host"] is False
+
+    def test_an_in_scope_host_change_is_off_host(self, tmp_path):
+        url = "http://example.com"
+        entry = _parse(tmp_path, _line(url, "https://www.example.com/", [301, 200]))["by_url"][url]
+        assert entry["redirected_off_host"] is True
+        assert entry["title"] == "SAML Login"
+
+    def test_no_redirect_is_a_one_hop_chain(self, tmp_path):
+        url = "http://www.example.com"
+        entry = _parse(tmp_path, _line(url, status_code=404))["by_url"][url]
+        assert entry["final_url"] == url
+        assert entry["first_status_code"] == 404
+        assert entry["redirect_chain_codes"] == [404]
+        assert entry["redirected_off_host"] is False
+
+    def test_chain_codes_are_ints(self, tmp_path):
+        url = "http://www.example.com"
+        line = _line(url, "http://www.example.com/a", ["302", 200, "junk"])
+        entry = _parse(tmp_path, line)["by_url"][url]
+        assert entry["redirect_chain_codes"] == [302, 200]
+        assert entry["first_status_code"] == 302
+
+    def test_no_status_at_all_writes_no_chain(self, tmp_path):
+        url = "http://www.example.com"
+        line = _line(url)
+        del line["status_code"]
+        entry = _parse(tmp_path, line)["by_url"][url]
+        assert entry["first_status_code"] is None
+        assert entry["redirect_chain_codes"] is None
+
+
 class _Proc:
     returncode = 0
 

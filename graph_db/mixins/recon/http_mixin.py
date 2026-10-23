@@ -149,6 +149,11 @@ class HttpMixin:
                         "asn": url_info.get("asn"),
                         "favicon_hash": url_info.get("favicon_hash"),
                         "is_live": url_info.get("status_code") is not None,
+                        # status_code is the last hop's (httpx follows redirects).
+                        "final_url": url_info.get("final_url"),
+                        "first_status_code": url_info.get("first_status_code"),
+                        "redirect_chain_codes": url_info.get("redirect_chain_codes"),
+                        "redirected_off_host": url_info.get("redirected_off_host"),
                         "source": "http_probe",
                         # AI surface recon (lap-1 Patch D — moved from BaseURL to Endpoint)
                         "is_ai_framework_detected": url_info.get("is_ai_framework_detected"),

@@ -306,14 +306,10 @@ Additional properties present on this node type, not yet described:
 - tls_versions_supported (list[string])
 ### Web Application Nodes (Hierarchy: BaseURL -> Endpoint -> Parameter)
 
-**BaseURL** - HTTP-probed base URLs, or declared OpenAPI server origins
+**BaseURL** - HTTP-probed base URLs, or declared OpenAPI server origins. A thin service identity: the probe's answer (status_code, first_status_code, title, content_type, final_url, server) is on the Endpoint it probed (HAS_ENDPOINT, path "/" unless extra probe paths are set)
 - scheme (string): "http" or "https"
 - host (string): hostname or IP
 - url (string): "https://api.example.com:443"
-- status_code (integer): 200, 301, 404
-- title (string): page title
-- content_type (string): "text/html"
-- final_url (string): after redirects
 
 Additional properties present on this node type, not yet described:
 - urlscan_enriched (boolean)
@@ -340,7 +336,11 @@ Additional properties present on this node type, not yet described:
 - url (string): "https://api.example.com/api/v1/users"
 - path (string): "/api/v1/users"
 - method (string): "GET", "POST"
-- status_code (integer)
+- status_code (integer): the LAST answer; http_probe follows redirects, so a host that answers 302 to a login page reads 200 here
+- first_status_code (integer): the first answer, before any redirect; rank on this, not status_code
+- redirect_chain_codes (list[integer]): the status of each hop, first to last; one entry when nothing redirected
+- final_url (string): the URL the answer came from after redirects; equals url when nothing redirected
+- redirected_off_host (boolean): the last hop is on another host. When that host is out of scope the probe keeps no title, technologies, server, favicon or body hash for this Endpoint (they describe someone else's page) and records the host as an ExternalDomain
 - is_graphql (boolean): True if the endpoint is a GraphQL endpoint
 - graphql_introspection_enabled (boolean): True if __schema introspection query succeeded
 - graphql_schema_extracted (boolean): True if full schema was retrieved
@@ -388,6 +388,7 @@ Additional properties present on this node type, not yet described:
 
 Additional properties present on this node type, not yet described:
 
+- Redirect chain (set by http_probe on the Endpoint it probed):
 - GraphQL enrichment (set by graphql_scan when endpoint is a GraphQL endpoint):
 - graphql-cop capability flags (set by the external scanner, Phase 2):
 - Page type (set by http_probe when the project's Jev page-type hook is on):

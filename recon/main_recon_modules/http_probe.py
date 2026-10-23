@@ -1026,6 +1026,19 @@ _FOREIGN_PAGE_FIELDS = frozenset({
 })
 
 
+def _redirect_chain(chain_codes, status_code) -> Optional[List[int]]:
+    """The status of each hop, first to last; one hop when nothing redirected."""
+    chain = []
+    for code in chain_codes or []:
+        try:
+            chain.append(int(code))
+        except (TypeError, ValueError):
+            continue
+    if not chain and isinstance(status_code, int):
+        chain = [status_code]
+    return chain or None
+
+
 def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list = None, settings: dict = None,
                        *, exact: bool = False, include_root: bool = True) -> Dict:
     """
@@ -1151,6 +1164,14 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
                 "is_cdn": bool(entry.get("cdn") or entry.get("cdn_name")),
                 "asn": entry.get("asn"),
             }
+            # status_code is the LAST hop's: rank on first_status_code.
+            chain = _redirect_chain(entry.get("chain_status_codes"), status_code)
+            url_entry.update({
+                "final_url": final_url,
+                "first_status_code": chain[0] if chain else None,
+                "redirect_chain_codes": chain,
+                "redirected_off_host": bool(final_host and host and final_host.lower() != host.lower()),
+            })
 
             # TLS information
             #
