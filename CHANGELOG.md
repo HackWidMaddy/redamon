@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.3.0] - 2026-10-23
+
+### Fixed
+
+- **Copy buttons work when RedAmon is opened from another machine.** Opened over plain http on a network address (`http://<host-ip>:3000`), the page is not a secure context, so the browser offers no Clipboard API, and most copy buttons did nothing: no copy, no tick, only an error in the browser console. They worked only on the host itself, at `localhost`. Affected: the JS Recon secret value; the chat's message, code-block and table-cell copies; the Thinking, Deep Think and tool-execution cards; TrafficMind's curl, URL, header and body copies; the `./redamon.sh update` command in Settings and the update notice; the MCP token, client snippet and agent onboarding files; and the TruffleHog detector list. Every copy now falls back to the browser's legacy copy when the Clipboard API is missing or refuses, as the Node ID column and the node drawer already did, and a test fails if new code calls the Clipboard API directly.
+- **Copying keeps keyboard focus where it was.** The fallback copy left focus on the page body, so after copying inside a dialog, Escape no longer closed it; focus now returns to the button you pressed.
+- **TrafficMind no longer says "Copied" when nothing was copied.** It reports the failure instead.
+  - **Upgrade.** Rebuild the `webapp` image.
+
 ## [7.2.0] - 2026-10-22
 
 ### Security
