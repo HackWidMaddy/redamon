@@ -52,7 +52,7 @@ from typing import Any, Iterable, Optional
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.5.0"
+SCORE_MODEL_VERSION = "v3.6.0"
 
 
 # ===========================================================================
@@ -610,11 +610,10 @@ SECURITY_CHECK_CONFIDENCE = {
 #: was written before the writer stored it, and keeps the 1.0 it was scored
 #: with until a rescan says how the bypass was found.
 WAF_BYPASS_CONFIDENCE = {
-    # Not 1.0 while the producer counts any non-block answer under 500 from the
-    # origin (a 302 to login, a 401, a 404) as "served"; plan 03.5 raises it
-    # once only a real 2xx page counts.
-    "payload_differential": (0.75, "the edge blocked a probe the origin answered without blocking; "
-                                   "that answer may be a redirect or an error page"),
+    # Not 1.0: the "same page" is a token-similarity judgement (>= 0.80), and a
+    # site that serves one template everywhere can still pass it.
+    "payload_differential": (0.95, "the edge blocked a probe the origin served with a 2xx page "
+                                   "matching the edge's own page for a benign request"),
     "static_headers": (0.75, "the edge's Server header names a WAF and the origin's does not"),
     "ai_classifier": (0.6, "an AI classifier saw a WAF on the edge but not on the origin"),
     "jev_classifier": (0.6, "a Jev classifier saw a WAF on the edge but not on the origin"),

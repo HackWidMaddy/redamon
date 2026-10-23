@@ -127,13 +127,13 @@ class TestSecurityCheckConfidence(unittest.TestCase):
     def test_waf_bypass_confidence_follows_the_detection_method(self):
         def c(method):
             return self.c_of(check("waf_bypass", "high", detection_method=method))
-        # Not a fact: the producer still reads any origin answer under 500 that
-        # is not a block code (a 302 to login, a 401, a 404, a 421) as "served".
-        self.assertEqual(c("payload_differential"), 0.75)
+        # The producer now needs a 2xx origin page matching the edge's benign
+        # page, so a 302 to login, a 401, a 404 or a 421 is no longer "served".
+        self.assertEqual(c("payload_differential"), 0.95)
         self.assertEqual(c("static_headers"), 0.75)
         self.assertEqual(c("ai_classifier"), 0.6)
         self.assertEqual(c("jev_classifier"), 0.6)
-        self.assertGreaterEqual(c("payload_differential"), c("static_headers"))
+        self.assertGreater(c("payload_differential"), c("static_headers"))
         self.assertGreater(c("static_headers"), c("ai_classifier"))
 
     def test_a_waf_bypass_written_before_the_method_was_stored_keeps_one(self):
@@ -643,11 +643,11 @@ GUARD = {
         {'host': 'h1', 'id': 'x', 'label': 'Vulnerability', 'severity': 'medium', 'source': 'security_check', 'type': 'waf_bypass'},
         ('open', 'T3', 27.25),
         ('open', 'T3', 26.8)),
-    # Moved on purpose: C 1.0 -> 0.75 until the producer requires a 2xx page.
+    # C 0.95: the producer requires a 2xx origin page matching the edge's own.
     'waf_bypass_payload_differential': (
         {'detection_method': 'payload_differential', 'host': 'h1', 'id': 'x', 'label': 'Vulnerability', 'severity': 'high', 'source': 'security_check', 'type': 'waf_bypass'},
-        ('open', 'T3', 26.6875),
-        ('open', 'T3', 26.35)),
+        ('open', 'T3', 27.1375),
+        ('open', 'T3', 26.71)),
     'direct_ip_http_medium': (
         {'host': 'h1', 'id': 'x', 'label': 'Vulnerability', 'severity': 'medium', 'source': 'security_check', 'type': 'direct_ip_http'},
         ('open', 'T3', 27.25),

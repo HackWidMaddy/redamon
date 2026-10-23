@@ -722,15 +722,28 @@ def _looks_blocked(status: int) -> bool:
     return status in _WAF_BLOCK_CODES
 
 
+# The origin's answer to a probe must share at least this share of tokens with
+# the page the edge serves for a benign request. The two pass through different
+# paths (a CDN injects scripts, rewrites e-mail links, adds a banner), so the
+# bar sits below the catch-all control's 0.90; an unrelated default page or an
+# error template shares far less than 0.80 with a real site.
+_WAF_ORIGIN_SIMILARITY = 0.80
+
+
 def _waf_payload_differential(subdomain: str, ip: str, timeout: int = 10) -> Optional[Dict]:
     """Blocked-vs-allowed payload differential (class 13).
 
-    A probe the edge WAF blocks for the hostname but the origin serves when addressed
-    directly by IP (with the real Host header) is concrete proof the WAF is bypassable
-    -- stronger than comparing Server-header tokens. Returns a finding dict or None.
+    A probe the edge WAF blocks for the hostname but the origin SERVES when
+    addressed directly by IP (with the real Host header) is concrete proof the
+    WAF is bypassable -- stronger than comparing Server-header tokens. "Serves"
+    means a 2xx page like the one the edge serves for a benign request: a 302 to
+    login, a 401, a 404 or a 421 (the no-SNI default vhost) is the origin
+    refusing. The benign baseline is fetched once, only when a probe is a
+    candidate, through the same _hh_get. Returns a finding dict or None.
     """
     ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
     origin_base = f"https://{_url_host(ip)}/"
+    baseline = None
     for kind, payload in _WAF_PROBES:
         q = f"?{_WAF_PROBE_PARAM}={quote(payload)}"
         try:
@@ -740,26 +753,44 @@ def _waf_payload_differential(subdomain: str, ip: str, timeout: int = 10) -> Opt
                                   allow_redirects=False, headers={**ua, "Host": subdomain})
         except requests.exceptions.RequestException:
             continue
-        # Edge blocks the probe, origin accepts it (and is not merely erroring) -> bypass.
-        if _looks_blocked(edge.status_code) and not _looks_blocked(origin.status_code) \
-                and origin.status_code < 500:
-            return {
-                "type": "waf_bypass",
-                "severity": "high",
-                "name": "WAF Bypass via Direct Origin Access (payload differential)",
-                "description": (
-                    f"A {kind} signature probe is blocked at the edge for {subdomain} "
-                    f"(HTTP {edge.status_code}) but served by the origin {ip} "
-                    f"(HTTP {origin.status_code}) addressed directly with the real Host "
-                    "header. The WAF can be bypassed by reaching the origin directly."
-                ),
-                "url": origin_base,
-                "matched_ip": ip,
-                "subdomain": subdomain,
-                "evidence": (f"probe_class={kind}; edge_status={edge.status_code}; "
-                             f"origin_status={origin.status_code}"),
-                "detection_method": "payload_differential",
-            }
+        if not _looks_blocked(edge.status_code) or not 200 <= origin.status_code < 300:
+            continue
+        if baseline is None:
+            try:
+                baseline = _hh_get(f"https://{subdomain}/", timeout=timeout, verify=False,
+                                   allow_redirects=False, headers=ua)
+            except requests.exceptions.RequestException:
+                return None
+            if not 200 <= baseline.status_code < 300:
+                return None     # the edge serves no page to compare the origin's with
+        hostnames = [subdomain, ip]
+        echoes = [q[1:], payload, quote(payload)]
+        ratio = catchall.similarity(
+            catchall.normalise_body(catchall.body_bytes(origin), hostnames=hostnames, echoes=echoes),
+            catchall.normalise_body(catchall.body_bytes(baseline), hostnames=hostnames, echoes=echoes))
+        if ratio < _WAF_ORIGIN_SIMILARITY:
+            continue
+        return {
+            "type": "waf_bypass",
+            "severity": "high",
+            "name": "WAF Bypass via Direct Origin Access (payload differential)",
+            "description": (
+                f"A {kind} signature probe is blocked at the edge for {subdomain} "
+                f"(HTTP {edge.status_code}) but served by the origin {ip} "
+                f"(HTTP {origin.status_code}, the same page the edge serves for a "
+                "benign request) addressed directly with the real Host header. The "
+                "WAF can be bypassed by reaching the origin directly."
+            ),
+            "url": origin_base,
+            "matched_ip": ip,
+            "subdomain": subdomain,
+            "evidence": (f"probe_class={kind}; edge_status={edge.status_code}; "
+                         f"origin_status={origin.status_code}; "
+                         f"edge_baseline_status={baseline.status_code}; "
+                         f"body_similarity={ratio:.2f}; control_check: passed"),
+            "detection_method": "payload_differential",
+            "control_check": "passed",
+        }
     return None
 
 

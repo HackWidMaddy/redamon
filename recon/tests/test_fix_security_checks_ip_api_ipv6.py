@@ -163,8 +163,10 @@ class TestIpv6UrlsAreBracketed:
         assert f["url"] == f"http://[{V6}]/"
 
     def test_waf_bypass_origin_urls(self):
+        # The edge blocks the probes and serves the site; the origin serves both.
         get = mock.MagicMock(side_effect=lambda url, *a, **k: _resp(
-            403 if "example.test" in url else 200, {"Server": "cloudflare"} if "example" in url else {}))
+            403 if "example.test" in url and sc._WAF_PROBE_PARAM in url else 200,
+            {"Server": "cloudflare"} if "example" in url else {}))
         with mock.patch.object(sc.requests, "get", get):
             f = sc.check_waf_bypass("www.example.test", V6, timeout=1)
         origin_urls = [c.args[0] for c in get.call_args_list if "example.test" not in c.args[0]]
