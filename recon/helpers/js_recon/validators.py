@@ -289,8 +289,13 @@ def validate_firebase(matched_text: str, timeout: int = 5) -> dict:
                           timeout=t)
         if resp.status_code == 200:
             return {'valid': True, 'scope': 'database', 'info': 'Database publicly readable', 'error': ''}
-        if resp.status_code == 401:
-            return {'valid': True, 'scope': 'database', 'info': 'Database exists but requires auth', 'error': ''}
+        if resp.status_code in (401, 403):
+            # The rules refused an anonymous read: the protection works, so it
+            # is never proof. With no `error`, the Priority Board's
+            # _validator_rejected_it reads `status=401` as a rejection (and
+            # leaves a 403 open, as it does for every validator).
+            return {'valid': False, 'scope': '', 'error': '',
+                    'info': f"Database locked, anonymous read refused: status={resp.status_code}"}
         return {'valid': False, 'scope': '', 'info': f"status={resp.status_code}", 'error': ''}
 
     return _rate_limited_request('firebase', do_request, timeout)

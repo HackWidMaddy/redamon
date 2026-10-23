@@ -386,6 +386,12 @@ def _shannon_entropy(text: str) -> float:
 _BASE64_CHARS = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
 
 
+#: How far a base64 run must reach past the match before the match counts as
+#: sitting inside it. Measuring the run alone made every match over the
+#: threshold (a JWT, a Bearer header, a 1Password service token) its own blob.
+_BLOB_MIN_OUTSIDE = 64
+
+
 def _is_inside_base64_blob(line: str, start: int, end: int, threshold: int = 200) -> bool:
     """Check if match sits inside a continuous base64-like run > threshold chars."""
     left = start
@@ -394,7 +400,8 @@ def _is_inside_base64_blob(line: str, start: int, end: int, threshold: int = 200
     right = end
     while right < len(line) and line[right] in _BASE64_CHARS:
         right += 1
-    return (right - left) > threshold
+    outside = (start - left) + (right - end)
+    return (right - left) > threshold and outside > _BLOB_MIN_OUTSIDE
 
 
 _BINARY_CONTEXT_RE = re.compile(
@@ -691,9 +698,11 @@ def scan_js_content(
                     if _is_inside_base64_blob(line, match.start(), match.end()):
                         filtered_counts['base64_blob'] += 1
                         continue
-                    # Binary context check: only check same line to avoid
-                    # false-filtering real secrets near font declarations
-                    if len(lines) <= 3 and len(line) > 1000:
+                    # Binary context check: only near the match on a long line,
+                    # whatever the line count. A minified bundle after a short
+                    # license header is one huge line, so one `fontFamily` on
+                    # it would otherwise hide every secret.
+                    if len(line) > 1000:
                         nearby = line[max(0, match.start() - 300):min(len(line), match.end() + 300)]
                     else:
                         nearby = line

@@ -7,6 +7,7 @@ had no class of their own, so they fell through to `generic_secret`: a lexical
 Run: ./agentic/run_tests.sh tests/test_score_model_recon_fp.py
 """
 
+import json
 import os
 import sys
 import unittest
@@ -116,6 +117,40 @@ class TestShodanPassiveCves(unittest.TestCase):
         for source in ("criminalip", "netlas", "censys"):
             with self.subTest(source=source):
                 self.assertEqual(self.c_of(shodan_cve(source=source)), 0.4)
+
+
+def firebase_secret(status, info):
+    """A Secret as js_recon stores a Firebase URL's validation result."""
+    validation = {"status": status, "valid": status == "validated", "info": info, "error": "",
+                  "checked_at": "2026-10-23T10:00:00Z"}
+    return {"id": "s1", "label": "Secret", "source": "js_recon", "secret_type": "Firebase URL",
+            "severity": "high", "host": "h1", "validation_status": status,
+            "validation_info": json.dumps(validation)}
+
+
+class TestLockedFirebase(unittest.TestCase):
+    """js_recon stored a database answering 401 (rules refuse the read) as
+    'validated', which is_proven reads as proof: a locked database ranked T1."""
+
+    LOCKED_401 = firebase_secret("invalid", "Database locked, anonymous read refused: status=401")
+
+    def test_a_locked_database_is_inactive_and_not_proven(self):
+        facts = sm.ProjectFacts(live_hosts={"h1"})
+        state, why = sm.finding_state(self.LOCKED_401, facts)
+        self.assertEqual(state, sm.STATE_INACTIVE)
+        self.assertIn("rejected", why)
+        self.assertFalse(sm.is_proven(self.LOCKED_401, facts))
+
+    def test_a_locked_database_never_reaches_act_now(self):
+        locked_403 = firebase_secret("invalid", "Database locked, anonymous read refused: status=403")
+        facts = sm.ProjectFacts(live_hosts={"h1"})
+        self.assertFalse(sm.is_proven(locked_403, facts))
+        self.assertNotEqual(sm.score(locked_403, facts).tier, "T1")
+
+    def test_the_old_validated_shape_was_read_as_proof(self):
+        # Why the recon fix matters: the stored word, not the info text, is proof.
+        legacy = firebase_secret("validated", "Database exists but requires auth")
+        self.assertTrue(sm.is_proven(legacy, sm.ProjectFacts(live_hosts={"h1"})))
 
 
 
