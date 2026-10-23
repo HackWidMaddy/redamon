@@ -238,6 +238,28 @@ refs_t = [t for t in scored if t["kind"] == "dev_reference"]
 check("X-01c", refs_t and all(t["tier"] == "T4" for t in refs_t), f"developer reference tiers: {refs_t}")
 
 
+# --------------------------------------------------------------------------- Priority Board: secret groups
+# Grouped by the leaked VALUE, and learned per pattern: before plan 02 every
+# js_recon secret of one category on one host was a single board row.
+aws = q(f"""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.secret_type = 'AWS Access Key ID'
+              AND s.base_url = 'http://{NET}.20' AND s.triage_group_key IS NOT NULL
+              RETURN s.matched_text AS mt, s.source_url AS url, s.triage_group_key AS g,
+                     s.triage_detector AS d""")
+by_value = {}
+for r in aws:
+    by_value.setdefault(r["mt"], set()).add(r["g"])
+groups = [g for gs in by_value.values() for g in gs]
+check("S-01", len(by_value) >= 2 and len(set(groups)) == len(by_value) == len(groups),
+      f"distinct AWS keys on one host -> groups: { {k[:8]: sorted(v) for k, v in by_value.items()} } "
+      f"(expect one group per key, never one per category)")
+twice = [r for r in aws if r["mt"] == "AKIAZ3FPLB7QW4XN6R2T"]
+check("S-02", len({r["url"] for r in twice}) == 2 and len({r["g"] for r in twice}) == 1,
+      f"the same key in theme and config bundles: {[(r['url'].rsplit('/', 1)[-1], r['g']) for r in twice]} "
+      f"(expect two findings, one group: one rotation)")
+check("S-03", aws and {r["d"] for r in aws} == {"js_recon:aws-access-key-id"},
+      f"detector of the AWS secrets: {sorted({r['d'] for r in aws})} (expect the pattern, not 'js_recon:cloud')")
+
+
 # --------------------------------------------------------------------------- report
 width = max(len(c) for c, _, _ in results)
 for case, ok, detail in results:
