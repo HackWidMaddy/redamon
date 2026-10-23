@@ -18,6 +18,7 @@ try:
     from recon.main_recon_modules.ip_filter import is_url_safe_to_probe
 except ImportError:  # spawned-container path where CWD is on sys.path
     from ip_filter import is_url_safe_to_probe
+from recon.helpers.user_agent import DEFAULT_BROWSER_UA
 
 
 # Default paths to probe for source maps
@@ -164,7 +165,7 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
         outcome['reason'] = 'unsafe'
         return None
 
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': DEFAULT_BROWSER_UA}
     head_timeout = min(timeout, 5)
 
     try:

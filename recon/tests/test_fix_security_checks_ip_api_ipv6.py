@@ -343,3 +343,51 @@ class TestTheControlInTheRun:
             sc.run_security_checks(_recon_with_ip(), {**ONLY_IP_API, "ip_api_exposed": False,
                                                       "direct_ip_http": True}, timeout=1, max_workers=1)
         assert calls and not [u for u in calls if "/rdm-" in u]
+
+
+CF_CHALLENGE = _resp(403, {"Content-Type": "application/json", "cf-mitigated": "challenge"},
+                     '{"error":"challenge"}')
+CHALLENGE_PAGE = _resp(403, {"Content-Type": "text/html"},
+                       '<html><head><title>Just a moment...</title></head><body>'
+                       '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script></body></html>')
+
+
+def _challenge_gaps():
+    return [g for g in cb.coverage_report().gaps if g["source"] == "challenge_blocked"]
+
+
+class TestChallengePages:
+    """A bot challenge is the edge's answer, not the target's: it is never a
+    finding, and the host is recorded as not really checked."""
+
+    def test_a_challenged_api_path_is_never_a_finding(self):
+        """The JSON content type and 403 would otherwise make it a medium."""
+        get, calls = _catch_all_get(default=CF_CHALLENGE)
+        with mock.patch.object(sc.requests, "get", side_effect=get):
+            assert sc.check_ip_api_exposed(V4, timeout=1) is None
+        assert calls == [f"http://{V4}/api"]        # the host is challenged: stop probing it
+
+    def test_a_challenged_host_is_one_coverage_gap(self):
+        get, _ = _catch_all_get(default=CHALLENGE_PAGE)
+        with mock.patch.object(sc.requests, "get", side_effect=get):
+            sc.check_ip_api_exposed(V4, timeout=1)
+            sc.check_ip_api_exposed(V4, timeout=1)
+        gaps = _challenge_gaps()
+        assert len(gaps) == 1
+        assert (gaps[0]["module"], gaps[0]["reason"], gaps[0]["skipped"]) == ("vuln_scan", V4, 1)
+        report = cb.coverage_report()
+        assert "security_check" not in report.degraded_sources   # an entry: no prune effect
+
+    def test_a_challenged_control_keeps_the_finding_and_notes_the_host(self):
+        def answer(url, *a, **k):
+            return CHALLENGE_PAGE if "/rdm-" in url else NOT_FOUND
+        with mock.patch.object(sc.requests, "get", side_effect=answer):
+            f = sc.check_ip_api_exposed(V4, timeout=1)
+        assert f["control_check"] == "failed" and "challenge page" in f["evidence"]
+        assert [g["reason"] for g in _challenge_gaps()] == [V4]
+
+    def test_an_ordinary_403_is_not_a_challenge(self):
+        get, _ = _catch_all_get(default=_resp(403, {"Content-Type": "text/html"}, "<h1>Forbidden</h1>"))
+        with mock.patch.object(sc.requests, "get", side_effect=get):
+            sc.check_ip_api_exposed(V4, timeout=1)
+        assert _challenge_gaps() == []

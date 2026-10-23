@@ -22,6 +22,7 @@ from urllib.parse import quote, urlparse
 import concurrent.futures
 
 from recon.helpers import catchall
+from recon.helpers.user_agent import DEFAULT_BROWSER_UA
 from recon.helpers.cdn_ranges import (
     collect_asn_cdn_ips,
     collect_prefix_cdn_ips,
@@ -203,7 +204,7 @@ def _analyze_redirect_chain(ip: str, scheme: str, timeout: int = 10) -> Dict:
             timeout=timeout,
             allow_redirects=False,
             verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
         result["initial_status_code"] = initial_response.status_code
         
@@ -218,7 +219,7 @@ def _analyze_redirect_chain(ip: str, scheme: str, timeout: int = 10) -> Dict:
                     timeout=timeout,
                     allow_redirects=True,
                     verify=False,
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+                    headers={"User-Agent": DEFAULT_BROWSER_UA}
                 )
                 result["final_url"] = final_response.url
                 result["redirect_count"] = len(final_response.history)
@@ -362,7 +363,7 @@ def _is_bare_origin_match(ip: str, hostnames: List[str], scheme: str, timeout: i
             timeout=timeout,
             allow_redirects=False,
             verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"},
+            headers={"User-Agent": DEFAULT_BROWSER_UA},
         )
     except requests.exceptions.RequestException:
         return False
@@ -379,7 +380,7 @@ def _is_bare_origin_match(ip: str, hostnames: List[str], scheme: str, timeout: i
                 timeout=timeout,
                 allow_redirects=False,
                 verify=False,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"},
+                headers={"User-Agent": DEFAULT_BROWSER_UA},
             )
         except requests.exceptions.RequestException:
             continue
@@ -428,7 +429,7 @@ def check_direct_ip_http(ip: str, hostnames: Optional[List[str]] = None, timeout
             url,
             timeout=timeout,
             allow_redirects=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         if response.status_code < 500:
@@ -523,7 +524,7 @@ def check_direct_ip_https(ip: str, hostnames: Optional[List[str]] = None, timeou
             timeout=timeout,
             allow_redirects=False,
             verify=False,  # Ignore cert errors for IP-based access
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         if response.status_code < 500:
@@ -614,7 +615,7 @@ def check_ip_api_exposed(ip: str, timeout: int = 10) -> Optional[Dict]:
     ]
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+        "User-Agent": DEFAULT_BROWSER_UA,
         "Accept": "application/json",
     }
 
@@ -631,6 +632,12 @@ def check_ip_api_exposed(ip: str, timeout: int = 10) -> Optional[Dict]:
             content_type = response.headers.get("Content-Type", "")
             is_json = "application/json" in content_type or "text/json" in content_type
 
+            # A bot challenge is the edge answering, not the API: never a
+            # finding, and the rest of the paths would only meet it again.
+            if catchall.is_challenge(response):
+                catchall.note_challenge("vuln_scan", ip)
+                break
+
             if response_is_cdn_edge(response):
                 continue
 
@@ -638,7 +645,7 @@ def check_ip_api_exposed(ip: str, timeout: int = 10) -> Optional[Dict]:
                 # A server that answers 200 JSON to any path says nothing
                 # about this one: ask it for a path that cannot exist.
                 verdict = catchall.control_probe(fetch, url, response, cache=controls,
-                                                 roe_excluded=_ROE_EXCLUDED)
+                                                 roe_excluded=_ROE_EXCLUDED, note_module="vuln_scan")
                 if verdict.catch_all:
                     continue
                 return {
@@ -741,7 +748,7 @@ def _waf_payload_differential(subdomain: str, ip: str, timeout: int = 10) -> Opt
     refusing. The benign baseline is fetched once, only when a probe is a
     candidate, through the same _hh_get. Returns a finding dict or None.
     """
-    ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+    ua = {"User-Agent": DEFAULT_BROWSER_UA}
     origin_base = f"https://{_url_host(ip)}/"
     baseline = None
     for kind, payload in _WAF_PROBES:
@@ -804,7 +811,7 @@ def check_cache_purge_exposed(ip: str, hostnames: Optional[List[str]] = None,
     bogus control method must be refused (else the server accepts any method and we
     cannot tell), while PURGE or BAN is accepted (2xx).
     """
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+    headers = {"User-Agent": DEFAULT_BROWSER_UA}
     if hostnames:
         headers["Host"] = hostnames[0]
     for scheme in ("http", "https"):
@@ -873,7 +880,7 @@ def check_waf_bypass(
             timeout=timeout,
             allow_redirects=False,
             verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         # Try accessing via direct IP with Host header
@@ -884,7 +891,7 @@ def check_waf_bypass(
             allow_redirects=False,
             verify=False,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+                "User-Agent": DEFAULT_BROWSER_UA,
                 "Host": subdomain,  # Set Host header to bypass virtual hosting
             }
         )
@@ -1614,7 +1621,7 @@ def check_security_headers(
             timeout=timeout,
             allow_redirects=True,
             verify=False,  # Allow self-signed for testing
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         # Only check successful responses
@@ -1673,7 +1680,7 @@ def check_cache_control_missing(hostname: str, port: int = 443, timeout: int = 1
             timeout=timeout,
             allow_redirects=True,
             verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         if response.status_code != 200:
@@ -1742,7 +1749,7 @@ def check_login_no_https(hostname: str, timeout: int = 10) -> List[Dict]:
                 url,
                 timeout=timeout,
                 allow_redirects=False,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+                headers={"User-Agent": DEFAULT_BROWSER_UA}
             )
 
             # Check if response contains login form indicators
@@ -1797,7 +1804,7 @@ def check_session_cookies(hostname: str, timeout: int = 10) -> List[Dict]:
             timeout=timeout,
             allow_redirects=True,
             verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         session_indicators = ['session', 'sess', 'sid', 'token', 'auth', 'jwt', 'phpsessid', 'jsessionid', 'asp.net_sessionid']
@@ -1928,7 +1935,7 @@ def check_basic_auth_no_tls(hostname: str, timeout: int = 10) -> Optional[Dict]:
             url,
             timeout=timeout,
             allow_redirects=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         # Check for WWW-Authenticate header with Basic auth
@@ -2435,7 +2442,7 @@ def check_kubernetes_api_exposed(ip: str, timeout: int = 10,
                 timeout=timeout,
                 allow_redirects=False,
                 verify=False,
-                headers={"User-Agent": "Mozilla/5.0"}
+                headers={"User-Agent": DEFAULT_BROWSER_UA}
             )
 
             if response.status_code in [200, 401, 403]:
@@ -2678,7 +2685,7 @@ def check_csp_unsafe_inline(hostname: str, timeout: int = 10) -> Optional[Dict]:
             timeout=timeout,
             allow_redirects=True,
             verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         csp = response.headers.get('Content-Security-Policy', '')
@@ -2732,7 +2739,7 @@ def check_insecure_form_action(hostname: str, timeout: int = 10) -> List[Dict]:
             timeout=timeout,
             allow_redirects=True,
             verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+            headers={"User-Agent": DEFAULT_BROWSER_UA}
         )
 
         if response.status_code == 200:
@@ -2899,7 +2906,7 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
                 timeout=timeout,
                 verify=False,
                 allow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+                headers={"User-Agent": DEFAULT_BROWSER_UA}
             )
 
             # Skip if endpoint doesn't exist
@@ -2917,7 +2924,7 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
                         timeout=timeout,
                         verify=False,
                         data={"username": f"test{i}", "password": "test"},
-                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+                        headers={"User-Agent": DEFAULT_BROWSER_UA}
                     )
 
                     # Check for rate limiting indicators
