@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Iterable, NamedTuple, Optional
 
 from recon.helpers.roe_scope import _is_roe_excluded
+from recon.helpers.catchall import canonical_bytes, replace_hostnames as _replace_hostnames
 
 
 # Marker that separates the response body from curl's --write-out metadata in
@@ -703,32 +704,6 @@ def _curl_probe(
             "title": _canonical_title(body, probed) if has_meta else None}
 
 
-# Per-request values that make one provider template hash differently on every
-# request: UUIDs, timestamps, Cloudflare Ray IDs and other hex request ids,
-# Akamai references, Fastly cache-node names, epoch numbers, and long
-# base64/ULID nonces. These rules only feed the "is this the same page as the
-# unknown-host page" comparison, never what is stored or shown, so erring
-# toward normalising is safe: a real hidden app differs in far more than ids.
-_VOLATILE_RULES: tuple[tuple[re.Pattern, bytes], ...] = (
-    (re.compile(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I), b"{UUID}"),
-    (re.compile(rb"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}| UTC)?"), b"{TS}"),
-    (re.compile(rb"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT"), b"{TS}"),
-    (re.compile(rb"reference(?:\s|&#32;)*(?:#|&#35;)\s*[0-9a-z.&#;]+", re.I), b"reference #{REF}"),
-    # Akamai's reference also appears bare, in its errors.edgesuite.net link,
-    # with plain or entity-encoded dots: 18.6bd3c917.1696512345.1a2b3c4d
-    (re.compile(rb"\b\d{1,3}(?:\.|&#46;)[0-9a-f]{6,10}(?:\.|&#46;)\d{9,10}(?:\.|&#46;)[0-9a-f]{4,10}\b", re.I), b"{AKREF}"),
-    # Azure Front Door's "Ref A/B/C" lines (edge node names, timestamps).
-    (re.compile(rb"\bRef [ABC]:\s*[^<\n]*"), b"Ref {REF}"),
-    # Upper-case alphanumeric request ids (S3's 16-character RequestId).
-    (re.compile(rb"\b(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{16,}\b"), b"{ID}"),
-    (re.compile(rb"\bcache-[a-z0-9-]+-[A-Z]{3}\b"), b"{EDGE}"),
-    # No `/` in a token: two different redirect paths must stay different.
-    (re.compile(rb"(?<![\w+=-])(?=[\w+=-]*\d)[\w+=-]{20,}"), b"{TOKEN}"),
-    (re.compile(rb"\b(?=[0-9a-f]*\d)[0-9a-f]{12,}(?:-[A-Z]{3})?\b", re.I), b"{HEX}"),
-    (re.compile(rb"\b\d{9,}\b"), b"{NUM}"),
-)
-
-
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
 
@@ -739,14 +714,6 @@ def _canonical_title(body: bytes, hostnames: list[str]) -> Optional[str]:
         return None
     title = _replace_hostnames(m.group(1), hostnames)
     return b" ".join(title.split()).decode("utf-8", "replace")[:200]
-
-
-def _replace_hostnames(data: bytes, hostnames: list[str]) -> bytes:
-    """Replace each probed hostname (plain or with HTML-entity dots) by {HOST}."""
-    for host in sorted({h.lower() for h in hostnames if h}, key=len, reverse=True):
-        for variant in (host, host.replace(".", "&#46;")):
-            data = re.sub(re.escape(variant.encode("ascii", "ignore")), b"{HOST}", data, flags=re.I)
-    return data
 
 
 def _canonical_fingerprint(
@@ -763,18 +730,12 @@ def _canonical_fingerprint(
     name (Fastly) or carries a fresh Ray ID (Cloudflare); the raw bytes then
     differ per probe while this fingerprint does not.
     """
-    def canon(data: bytes) -> bytes:
-        data = _replace_hostnames(data.replace(b"\r\n", b"\n"), hostnames)
-        for pattern, replacement in _VOLATILE_RULES:
-            data = pattern.sub(replacement, data)
-        return data
-
     mime = content_type.split(";", 1)[0].strip().lower()
     parts = [
         str(status).encode("ascii"),
-        canon(redirect_url.encode("utf-8", "ignore")),
+        canonical_bytes(redirect_url.encode("utf-8", "ignore"), hostnames),
         mime.encode("ascii", "ignore"),
-        canon(body),
+        canonical_bytes(body, hostnames),
     ]
     return hashlib.sha1(b"\x00".join(parts)).hexdigest()
 
