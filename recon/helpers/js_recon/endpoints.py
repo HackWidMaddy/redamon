@@ -33,12 +33,20 @@ _REST_PATTERNS = [
     re.compile(r'''(?:superagent|agent)\.(?:get|post|put|del|patch)\(\s*['"]([^'"]+)['"]'''),
 ]
 
-# Method extraction from fetch/axios patterns
-_METHOD_PATTERNS = [
-    re.compile(r'''fetch\([^)]*,\s*\{[^}]*method:\s*['"](\w+)['"]''', re.DOTALL),
-    re.compile(r'''axios\.(get|post|put|delete|patch|head|options)\('''),
-    re.compile(r'''\.open\(\s*['"](\w+)['"]'''),
-]
+# An endpoint's method comes from its own call, never from the rest of the
+# line: a minified bundle is one line, and one `postMessage` on it made every
+# endpoint POST. The verb the call names (axios.post, client.put, agent.del,
+# xhr.open('PATCH', ...)) wins; then a `method:` / `type:` key in the call's
+# own arguments; a call that names neither is a GET, as fetch, request and
+# $.ajax default to.
+_HTTP_METHODS = {'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'}
+_CALL_VERB_RE = re.compile(
+    r'''\.(get|post|put|patch|delete|del|head|options)\(\s*['"]|\.open\(\s*['"](\w+)['"]''',
+    re.IGNORECASE)
+_OPTION_METHOD_RE = re.compile(r'''\b(?:method|type)\s*:\s*['"]([A-Za-z]+)['"]''')
+# How far past the URL a call's own arguments are read, when its closing
+# parenthesis is not reached first.
+_METHOD_WINDOW = 150
 
 # ========== Config Object Patterns ==========
 _CONFIG_PATTERNS = [
@@ -112,18 +120,38 @@ _HIDDEN_PARAMS = {
 }
 
 
-def _extract_method(line: str) -> str:
-    """Try to extract HTTP method from a code line."""
-    for pattern in _METHOD_PATTERNS:
-        match = pattern.search(line)
-        if match:
-            return match.group(1).upper()
-    if 'post' in line.lower() or 'POST' in line:
-        return 'POST'
-    if 'put' in line.lower() or 'PUT' in line:
-        return 'PUT'
-    if 'delete' in line.lower() or 'DELETE' in line:
-        return 'DELETE'
+def _normalize_method(word: str) -> str:
+    method = (word or '').upper()
+    method = 'DELETE' if method == 'DEL' else method
+    return method if method in _HTTP_METHODS else ''
+
+
+def _call_arguments(line: str, end: int) -> str:
+    """What follows the matched URL inside the same call, up to the parenthesis
+    that closes it (at most _METHOD_WINDOW characters)."""
+    tail = line[end:end + _METHOD_WINDOW]
+    depth = 1
+    for i, ch in enumerate(tail):
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                return tail[:i]
+    return tail
+
+
+def _extract_method(line: str, match: re.Match) -> str:
+    """The HTTP method of the call `match` found in `line`."""
+    call = match.group(0)
+    verb = _CALL_VERB_RE.search(call)
+    if verb:
+        method = _normalize_method(verb.group(1) or verb.group(2))
+        if method:
+            return method
+    option = _OPTION_METHOD_RE.search(call + _call_arguments(line, match.end()))
+    if option:
+        return _normalize_method(option.group(1)) or 'GET'
     return 'GET'
 
 
@@ -239,7 +267,7 @@ def extract_endpoints(
                         if not _is_likely_path(url):
                             continue
 
-                        method = _extract_method(line)
+                        method = _extract_method(line, match)
                         params = _extract_params_from_url(url)
                         classification = _classify_path(url)
 
