@@ -1016,6 +1016,16 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
 # Result Parsing
 # =============================================================================
 
+#: httpx fields (both spellings) that describe the last page of a redirect
+#: chain, dropped when that page is off scope.
+_FOREIGN_PAGE_FIELDS = frozenset({
+    "title", "tech", "technologies", "webserver", "server", "favicon", "hash",
+    "content_type", "content-type", "content_length", "content-length",
+    "words", "word-count", "lines", "line-count", "header", "body",
+    "tls", "tls-grab", "tls_version", "subject_cn", "subject_an", "issuer_org",
+})
+
+
 def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list = None, settings: dict = None,
                        *, exact: bool = False, include_root: bool = True) -> Dict:
     """
@@ -1069,8 +1079,11 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
             if not url:
                 continue
 
-            # Extract host from URL
+            # `url` is the URL httpx was asked for; with -fr the page it
+            # describes (title, tech, server, favicon, body) is the LAST hop.
             host = extract_host_from_url(url)
+            final_url = entry.get("final_url") or url
+            final_host = extract_host_from_url(final_url)
 
             # Filter URLs outside target scope
             # In filtered mode: only allow specific hosts from SUBDOMAIN_LIST
@@ -1095,6 +1108,26 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
                             "server": entry.get("webserver") or entry.get("server"),
                         })
                     continue
+
+            # The target is live and redirects away: keep the entry, but the
+            # last page is someone else's (a third-party IdP), so nothing it
+            # shows may be credited to the target.
+            redirected_off_scope = bool(root_domain and final_host and not in_scope(final_host))
+            if redirected_off_scope:
+                external_domain_entries.append({
+                    "domain": final_host,
+                    "source": "http_probe_redirect",
+                    "url": final_url,
+                    # Kept above through `input` when `url` is itself the last hop.
+                    "redirect_from_url": url if in_scope(host) else (entry.get("input") or url),
+                    "status_code": entry.get("status_code") or entry.get("status-code"),
+                    "title": entry.get("title"),
+                    "server": entry.get("webserver") or entry.get("server"),
+                })
+                # TLS goes too: Go's client reports the final connection's
+                # certificate. JARM, the IP, CNAME, ASN and CDN are measured on
+                # the requested host and stay.
+                entry = {k: v for k, v in entry.items() if k not in _FOREIGN_PAGE_FIELDS}
 
             # Extract status code (tracking deferred until after by_url dedup)
             status_code = entry.get("status_code") or entry.get("status-code")
@@ -2025,7 +2058,9 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
             "by_host": results["by_host"],
             "technologies_found": results["technologies_found"],
             "servers_found": results.get("servers_found", {}),
-            "summary": results["summary"]
+            "summary": results["summary"],
+            # Read by main._aggregate_external_domains (ExternalDomain nodes).
+            "external_domains": results.get("external_domains", []),
         }
 
         # Print summary
