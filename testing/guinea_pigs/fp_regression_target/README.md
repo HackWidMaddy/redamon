@@ -48,6 +48,13 @@ the host.
    Cypher through MCP `query_graph`; exit 0 only when every case holds. The MCP
    token is read from the repo `.env` and never printed.
 
+4. **A run with no JS input (N-01).** `python3 validate_e2e.py <id> --js-count`
+   prints the project's js_recon findings. Switch Resource Enumeration off
+   (`update_recon_settings` with `scanModules` minus `resource_enum`), run
+   `python3 e2e_fp.py --rerun <id> --no-triage`, then
+   `python3 validate_e2e.py <id> --js-count-equals <n>`: the count must not
+   change. Switch Resource Enumeration back on afterwards.
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -68,6 +75,10 @@ the host.
 | `.20` | source maps: first-party sources (served as octet-stream), library-only, a 403, the SPA shell answering a map URL, a map on an unreachable host, an inline `data:` map | M-01..M-06 | first-party map high, library map low, the shell is no map, the 403 and the unreachable host are an info reference, the inline map is stored truncated |
 | `.20` | UI labels that read like secrets beside real ones | K-01, K-04/05 | the labels are not secrets; the AWS key, the generic API key and both passwords are |
 | `.20` | debug flag, internal URL, localhost with port, a documentation host | K-02, K-03 | the three dev references are info; the documentation host is not reported |
+| `.20` | a 228-character JWT in quotes and as a `Bearer` header | K-06 | both are Secrets, not dropped as a base64 blob |
+| `.20` | a 5-line bundle whose last line is 20,000 characters: `fontFamily` near its start, an AWS-format key 8,000 characters later | K-07 | the key is a Secret; a font marker hides only what sits next to it |
+| `.20` | `window.postMessage(1);fetch("/api/read");api.get("/api/list")` beside an `axios.post` control | E-01 | `/api/read` and `/api/list` are GET, `/api/save` is POST |
+| `.20` | a second run with Resource Enumeration off, so js_recon gets no JS file | N-01 | every earlier js_recon finding is kept |
 | `.20` | URLs back to the scanned host and to another, unreachable one | X-05 | the scanned IP is never an external domain of itself; the other host is |
 | `.10`-`.13` | Shodan stub (`.30`): an unverified version-matched CVE, a verified one, a catalog-only CVE, a cloud-host org, a `cdn` tag | H-01..H-04 | the version match stays a high candidate on its own port; the verified CVE is marked verified; the catalog CVE carries no severity; the CDN and cloud hosts get no Shodan finding |
 | `.15` | a shared cache keyed on the URL only: `/promo` alternates two variants, `/home` reflects `X-Forwarded-Host` | C-01, C-02 | `/home` is reported as poisoned; the A/B page is not |

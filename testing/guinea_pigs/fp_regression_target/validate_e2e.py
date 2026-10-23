@@ -2,6 +2,10 @@
 
 Run after e2e_fp.py:   python3 validate_e2e.py <projectId>
 
+N-01, a run with no JS input keeps the earlier js_recon findings, takes a second
+run: `--js-count` prints the count, then switch resource_enum off, rerun, and
+`--js-count-equals <n>` asserts it is unchanged (README.md, "Running the proof").
+
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
 when every assertion holds. Case ids match README.md.
@@ -14,8 +18,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mcp_client as mcp  # noqa: E402
 
-if len(sys.argv) != 2:
-    sys.exit("usage: validate_e2e.py <projectId>")
+USAGE = "usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n>]"
+if len(sys.argv) not in (2, 3, 4):
+    sys.exit(USAGE)
 P = sys.argv[1]
 NET = "192.88.94"
 APEX = "fplab.test"
@@ -31,6 +36,25 @@ def q(cypher):
 
 def check(case, ok, detail):
     results.append((case, bool(ok), detail))
+
+
+def js_recon_count():
+    """JsReconFinding + Secret written by js_recon: what a run with no JS input must keep."""
+    findings = q("MATCH (f:JsReconFinding) WHERE f.source = 'js_recon' RETURN count(f) AS n")
+    secrets = q("MATCH (s:Secret) WHERE s.source = 'js_recon' RETURN count(s) AS n")
+    return findings[0]["n"] + secrets[0]["n"]
+
+
+if len(sys.argv) > 2:
+    if sys.argv[2] == "--js-count" and len(sys.argv) == 3:
+        print(f"JS_RECON_COUNT={js_recon_count()}")
+        sys.exit(0)
+    if sys.argv[2] == "--js-count-equals" and len(sys.argv) == 4:
+        expected, got = int(sys.argv[3]), js_recon_count()
+        print(f"{'PASS' if got == expected else 'FAIL'}  N-01  js_recon findings after a run with "
+              f"no JS input: {got} (expect the {expected} from before)")
+        sys.exit(0 if got == expected else 1)
+    sys.exit(USAGE)
 
 
 # --------------------------------------------------------------------------- VHost
@@ -144,6 +168,24 @@ ext = sorted(r["d"] for r in q("""MATCH (f:JsReconFinding) WHERE f.finding_type 
 own = {f"{NET}.{n}" for n in (10, 11, 12, 13, 14, 15, 20)}
 check("X-05", f"{NET}.99" in ext and not own.intersection(ext),
       f"external domains: {ext} (expect the unreachable map host, never a scanned target IP)")
+
+long_secrets = q("""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.source_url ENDS WITH '/auth.1d2e.js'
+                    RETURN s.secret_type AS t, size(s.matched_text) AS n""")
+got = sorted((r["t"], r["n"]) for r in long_secrets)
+check("K-06", any(t == "JWT Token" and n >= 220 for t, n in got)
+      and any(t == "Bearer Token" and n >= 220 for t, n in got),
+      f"secrets longer than 200 characters: {got} (expect the JWT and its Bearer header, not dropped "
+      f"as a base64 blob)")
+font = q("""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.source_url ENDS WITH '/theme.5b6c.js'
+            RETURN s.secret_type AS t, s.matched_text AS mt""")
+check("K-07", [(r["t"], r["mt"]) for r in font] == [("AWS Access Key ID", "AKIAZ3FPLB7QW4XN6R2T")],
+      f"key 8,000 characters after a font marker on a long minified line: {font}")
+eps = q(f"""MATCH (e:Endpoint) WHERE e.baseurl = 'http://{NET}.20' AND e.path IN ['/api/read', '/api/list', '/api/save']
+            RETURN e.path AS path, e.method AS method ORDER BY path, method""")
+got = sorted((r["path"], r["method"]) for r in eps)
+check("E-01", got == [("/api/list", "GET"), ("/api/read", "GET"), ("/api/save", "POST")],
+      f"endpoint methods on a minified line with postMessage: {got} (expect read and list GET, the "
+      f"axios.post control POST)")
 
 
 # --------------------------------------------------------------------------- Shodan
