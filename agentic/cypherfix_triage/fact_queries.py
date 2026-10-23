@@ -375,13 +375,19 @@ RETURN ex.id AS id, 'ExploitGvm' AS label, 'gvm' AS source,
         "name": "secrets",
         "id_expr": "s.id",
         "label": "Secret",
+        # js_recon's key_type is the pattern's CATEGORY (cloud, auth...) and
+        # secret_type its name. Keyed on the category with no value, every secret
+        # of one category on one host fell into one group; the value lets
+        # grouping hash it, and the evidence redacts it.
         "query": """
 MATCH (s:Secret {user_id: $userId, project_id: $projectId})
 WHERE NOT s:Muted
 RETURN s.id AS id, 'Secret' AS label, coalesce(s.source, 'js_recon') AS source,
-       coalesce(s.key_type, s.secret_type, 'secret') AS name,
+       coalesce(s.secret_type, s.key_type, 'secret') AS name,
        coalesce(s.severity, 'medium') AS severity,
-       s.secret_type AS secret_type, s.key_type AS detector_name,
+       s.secret_type AS secret_type,
+       coalesce(s.secret_type, s.key_type) AS detector_name,
+       s.matched_text AS matched_text, s.context AS context,
        s.validation_status AS validation_status, s.validated_at AS validated_at,
        s.validation_info AS validation_info,
        s.stale_since AS stale_since, s.confidence AS confidence,

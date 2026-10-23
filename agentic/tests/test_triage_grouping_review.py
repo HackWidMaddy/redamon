@@ -97,6 +97,46 @@ class TestGroupKeys(unittest.TestCase):
                  "triage_host": "h2"}
         self.assertEqual(grouping.group_key(one), grouping.group_key(other))
 
+    def test_the_secrets_query_returns_the_value_and_the_pattern_name(self):
+        """Without them every js_recon Secret of one category on one host was
+        one group: a Google browser key and an AWS key became one fix item."""
+        from cypherfix_triage.fact_queries import FINDING_QUERIES
+
+        query = next(q for q in FINDING_QUERIES if q["name"] == "secrets")["query"]
+        self.assertIn("s.matched_text AS matched_text", query)
+        self.assertIn("coalesce(s.secret_type, s.key_type) AS detector_name", query)
+        self.assertIn("s.context AS context", query)
+        self.assertNotIn("s.key_type AS detector_name", query)
+        # The fix item's title comes from `name`: split groups must not all
+        # read "Rotate exposed secret: cloud".
+        self.assertIn("coalesce(s.secret_type, s.key_type, 'secret') AS name", query)
+
+    def test_two_different_secrets_on_one_host_are_two_groups(self):
+        # Rows as the secrets query returns them: key_type is only the category.
+        google = {"id": "s1", "label": "Secret", "source": "js_recon",
+                  "detector_name": "GCP API Key", "secret_type": "GCP API Key",
+                  "matched_text": "AIzaSyD-EXAMPLEKEY0000000000000000000",
+                  "triage_host": "https://app.example.com"}
+        aws = {"id": "s2", "label": "Secret", "source": "js_recon",
+               "detector_name": "AWS Access Key ID", "secret_type": "AWS Access Key ID",
+               "matched_text": "AKIAIOSFODNN7EXAMPLE",
+               "triage_host": "https://app.example.com"}
+        self.assertNotEqual(grouping.group_key(google), grouping.group_key(aws))
+
+    def test_the_same_value_in_two_places_is_one_group(self):
+        here = {"id": "s1", "label": "Secret", "source": "js_recon",
+                "detector_name": "AWS Access Key ID", "matched_text": "AKIAIOSFODNN7EXAMPLE",
+                "triage_host": "https://app.example.com"}
+        there = dict(here, id="s2", triage_host="https://cdn.example.org")
+        self.assertEqual(grouping.group_key(here), grouping.group_key(there))
+
+    def test_without_a_value_two_patterns_on_one_host_still_split(self):
+        one = {"id": "s1", "label": "Secret", "detector_name": "GCP API Key",
+               "triage_host": "https://app.example.com"}
+        two = {"id": "s2", "label": "Secret", "detector_name": "AWS Access Key ID",
+               "triage_host": "https://app.example.com"}
+        self.assertNotEqual(grouping.group_key(one), grouping.group_key(two))
+
     def test_an_unrecognised_finding_becomes_its_own_group(self):
         """It still gets a fix item rather than silently sharing one."""
         key = grouping.group_key({"id": "weird-1", "source": "brand_new"})

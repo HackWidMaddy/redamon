@@ -128,6 +128,32 @@ class LiveFactQueriesCase(unittest.TestCase):
         rows = {r["id"]: r for r in self._run(query)}
         self.assertEqual(rows["sec"]["validation_info"], VALIDATION_INFO)
 
+    def test_different_secrets_of_one_category_on_one_host_are_separate_groups(self):
+        from cypherfix_triage import grouping
+        from cypherfix_triage.fact_queries import FINDING_QUERIES
+
+        with self.driver.session() as s:
+            s.run("""
+                UNWIND $rows AS row
+                CREATE (x:Secret {id: row.id, source: 'js_recon', key_type: 'cloud',
+                                  secret_type: row.type, matched_text: row.value,
+                                  sample: 'redacted', base_url: row.host,
+                                  user_id: $u, project_id: $p, updated_at: datetime()})
+                """, u=self.uid, p=self.pid, rows=[
+                {"id": "gk", "type": "GCP API Key", "value": "AIzaSyD-EXAMPLEKEY0000000000000000000",
+                 "host": "https://app.factq.test"},
+                {"id": "ak", "type": "AWS Access Key ID", "value": "AKIAIOSFODNN7EXAMPLE",
+                 "host": "https://app.factq.test"},
+                {"id": "ak2", "type": "AWS Access Key ID", "value": "AKIAIOSFODNN7EXAMPLE",
+                 "host": "https://cdn.factq.test"},
+            ])
+        query = next(q for q in FINDING_QUERIES if q["name"] == "secrets")["query"]
+        rows = {r["id"]: r for r in self._run(query)}
+        keys = {i: grouping.group_key(rows[i]) for i in ("gk", "ak", "ak2")}
+        self.assertNotEqual(keys["gk"], keys["ak"])
+        self.assertEqual(keys["ak"], keys["ak2"])
+        self.assertEqual(rows["gk"]["detector_name"], "GCP API Key")
+
     def _gone(self):
         from cypherfix_triage.fact_queries import PROJECT_FACT_QUERIES
 
