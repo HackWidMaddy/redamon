@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
 import { Loader2, AlertTriangle, Copy, Check } from 'lucide-react'
 import { ExternalLink } from '@/components/ui'
+import { copyText } from '@/lib/copyText'
 import styles from './JsReconTable.module.css'
 import { ColumnFilterButton, ActiveFilterChips } from '../ColumnFilterPanel'
 import { useRedZoneFilters, type RedZoneFilterColumn } from '../RedZoneTables/useRedZoneFilters'
@@ -454,7 +455,7 @@ function filterRows(rows: readonly any[], search: string): any[] {
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
+    copyText(text).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })

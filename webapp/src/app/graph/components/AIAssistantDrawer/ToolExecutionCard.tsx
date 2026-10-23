@@ -11,6 +11,7 @@ import { useState, useEffect } from 'react'
 import { Wrench, ChevronDown, ChevronRight, Copy, Check, Loader2, CheckCircle2, XCircle, AlertTriangle, Square } from 'lucide-react'
 import { ExternalLink } from '@/components/ui'
 import { isHttpUrl } from '@/lib/url-utils'
+import { copyText } from '@/lib/copyText'
 import styles from './ToolExecutionCard.module.css'
 import type { ToolExecutionItem } from './AgentTimeline'
 
@@ -66,7 +67,7 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
         output: item.output_chunks.join(''),
         status: item.status,
       }
-      await navigator.clipboard.writeText(JSON.stringify(data, null, 2))
+      await copyText(JSON.stringify(data, null, 2))
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
