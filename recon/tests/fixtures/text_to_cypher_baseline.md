@@ -366,6 +366,7 @@ Additional properties present on this node type, not yet described:
 - page_class_source (string): "jev_classifier", or "prefilter" where Jev gave no answer
 - validation_status (string): "hittable" (an accepted status that a made-up path next to it did not also get) or "unvalidated" (probing off, an upload-relative URL with no host, an unsupported scheme). "not_hittable" (dead) and "catch_all" (the host answers a made-up path the same way, e.g. an SPA shell) are never written: the endpoint is dropped
 - js_status_code (integer): the status js_recon's own probe got; status_code stays http_probe's when both probed
+- path_template (string): the literal as written, e.g. "/api/users/${id}"; `path` is then its literal prefix ("/api/users/"). Absent for a plain literal
 
 Additional properties present on this node type, not yet described:
 - body_param_count (integer)
@@ -397,6 +398,7 @@ Additional properties present on this node type, not yet described:
 - graphql-cop capability flags (set by the external scanner, Phase 2):
 - Page type (set by http_probe when the project's Jev page-type hook is on):
 - Endpoint probe (set by js_recon on endpoints it extracted from JavaScript, when JS_RECON_VALIDATE_ENDPOINTS is on):
+- Path template (set by js_recon when the JS built the URL from a template literal):
 - _js_recon_created
 - ai_attack_synthetic
 - ai_mcp_prompt_count

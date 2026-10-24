@@ -16,22 +16,57 @@ from typing import Optional
 
 
 # ========== REST API Patterns ==========
+# The URL argument: a quoted or backtick literal, optionally after a base the
+# code adds in front (fetch(API_BASE + "/v2/items")), whose literal part is
+# the path.
+_LITERAL = r'''(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|`(?P<bt>[^`]*)`)'''
+_BASE_PLUS = r'''(?:[\w$.]+(?:\(\))?\s*\+\s*)?'''
+_URL_ARG = _BASE_PLUS + _LITERAL
+_VERB_NAMES = 'get|post|put|patch|delete|head|options'
+_VERBS = f'(?:{_VERB_NAMES})'
+
+# (pattern, relative): a path without a leading slash (api.get("v1/accounts"))
+# counts only from a call that is HTTP by name; from any other receiver
+# (map.get("key"), params.get("q"), headers.get("content-type")) it is a
+# lookup key, not a path.
 _REST_PATTERNS = [
-    # fetch('url') or fetch("url")
-    re.compile(r'''fetch\(\s*['"]([^'"]+)['"]'''),
-    # axios.get/post/put/delete/patch('url')
-    re.compile(r'''axios\.(?:get|post|put|delete|patch|head|options)\(\s*['"]([^'"]+)['"]'''),
-    # $.ajax({url: 'url'})
-    re.compile(r'''\$\.ajax\(\s*\{[^}]*url:\s*['"]([^'"]+)['"]'''),
+    (re.compile(r'''(?<![\w$.])fetch\(\s*''' + _URL_ARG), True),
+    (re.compile(r'''(?<![\w$])axios\.(?:''' + _VERB_NAMES + r'''|request)\(\s*''' + _URL_ARG), True),
+    (re.compile(r'''\$\.ajax\(\s*\{[^}]*url:\s*''' + _URL_ARG), True),
     # XMLHttpRequest.open('METHOD', 'url')
-    re.compile(r'''\.open\(\s*['"](?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)['"],\s*['"]([^'"]+)['"]'''),
-    # http.get/post/put/delete('url') (node http client)
-    re.compile(r'''(?:http|https|client|api)\.(?:get|post|put|delete|patch)\(\s*['"]([^'"]+)['"]'''),
-    # request('url') or request({url: 'url'})
-    re.compile(r'''request\(\s*['"]([^'"]+)['"]'''),
+    (re.compile(r'''\.open\(\s*['"](?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)['"],\s*''' + _URL_ARG), True),
+    # http/https/client/api clients (node http, axios instances, $http)
+    (re.compile(r'''(?<![\w$])(?:http|https|client|api|apiClient|httpClient|\$http)\.''' + _VERBS
+                + r'''\(\s*''' + _URL_ARG), True),
+    (re.compile(r'''(?<![\w$.])request\(\s*''' + _URL_ARG), False),
     # superagent: superagent.get('url'), agent.post('url')
-    re.compile(r'''(?:superagent|agent)\.(?:get|post|put|del|patch)\(\s*['"]([^'"]+)['"]'''),
+    (re.compile(r'''(?<![\w$])(?:superagent|agent)\.(?:get|post|put|del|patch)\(\s*''' + _URL_ARG), True),
+    # Any receiver's HTTP verb: this.get("/v1/orders"), minified n.get("/users").
+    # Express-style app/router calls are routes (_ROUTER_PATTERNS).
+    (re.compile(r'''(?<![\w$])(?!(?:app|router)\.)[\w$]+\.''' + _VERBS + r'''\(\s*''' + _URL_ARG), False),
+    # A request object as the call's argument: r({url: "/api/export", method: "GET"})
+    (re.compile(r'''[\w$]\(\s*\{[^{}]*?\burl\s*:\s*''' + _URL_ARG), False),
 ]
+# A path relative to the client's base: segments of path characters, at least
+# two, the first not a host name (no dot) and not ./ or ../.
+_RELATIVE_PATH = re.compile(r'''[A-Za-z0-9_~-]+(?:/[A-Za-z0-9_~.%:@!$&'()*+,;=-]*)+(?:\?\S*)?''')
+
+
+def _literal_url(match: re.Match) -> tuple:
+    """``(path, template)`` from a call's URL literal. A template literal keeps
+    its literal prefix up to the first ``${`` (``/api/users/`` from
+    ``/api/users/${id}``), after a leading ``${base}`` when there is one;
+    ``template`` is the whole literal then, else None."""
+    if match.group('bt') is not None:
+        text = match.group('bt')
+        if '${' not in text:
+            return text, None
+        rest = text
+        if rest.startswith('${'):
+            close = rest.find('}')
+            rest = rest[close + 1:] if close != -1 else ''
+        return rest.split('${', 1)[0], text
+    return (match.group('dq') if match.group('dq') is not None else match.group('sq')), None
 
 # An endpoint's method comes from its own call, never from the rest of the
 # line: a minified bundle is one line, and one `postMessage` on it made every
@@ -41,7 +76,7 @@ _REST_PATTERNS = [
 # $.ajax default to.
 _HTTP_METHODS = {'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'}
 _CALL_VERB_RE = re.compile(
-    r'''\.(get|post|put|patch|delete|del|head|options)\(\s*['"]|\.open\(\s*['"](\w+)['"]''',
+    r'''\.(get|post|put|patch|delete|del|head|options)\(|\.open\(\s*['"](\w+)['"]''',
     re.IGNORECASE)
 _OPTION_METHOD_RE = re.compile(r'''\b(?:method|type)\s*:\s*['"]([A-Za-z]+)['"]''')
 # How far past the URL a call's own arguments are read, when its closing
@@ -261,9 +296,11 @@ def extract_endpoints(
 
             # Extract REST endpoints
             for line_num, line in enumerate(lines, 1):
-                for pattern in _REST_PATTERNS:
+                for pattern, relative_ok in _REST_PATTERNS:
                     for match in pattern.finditer(line):
-                        url = match.group(1)
+                        url, template = _literal_url(match)
+                        if relative_ok and _RELATIVE_PATH.fullmatch(url or ''):
+                            url = '/' + url
                         if not _is_likely_path(url):
                             continue
 
@@ -294,7 +331,11 @@ def extract_endpoints(
                                 'category': classification['category'],
                                 'severity': classification['severity'],
                                 'line_number': line_num,
+                                # A template literal: `path` is its literal prefix.
+                                'parameterized': template is not None,
                             }
+                            if template is not None:
+                                all_endpoints[key]['path_template'] = template[:500]
 
                 # Extract config object URLs
                 for pattern in _CONFIG_PATTERNS:

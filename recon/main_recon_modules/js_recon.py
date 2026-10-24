@@ -911,6 +911,7 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
 
                 elif name == 'endpoints':
                     results['endpoints'] = result
+                    results['_endpoint_extraction_files'] = len(js_files)
 
                 elif name == 'framework':
                     results['frameworks'] = result.get('frameworks', [])
@@ -1404,6 +1405,24 @@ def _note_unchecked(reason: str, urls=None) -> None:
         pass
 
 
+# Below this many files an app can genuinely call no endpoint from its JS.
+_TOOL_MISS_MIN_FILES = 20
+
+
+def _note_endpoint_miss(files: int) -> None:
+    """Many files read and not one endpoint out: more likely the extractor
+    missing this app's call style than an app that calls nothing. Said in the
+    log and the report's Coverage Limitations; no prune effect."""
+    print(f"[!][JsRecon] Endpoint extraction found 0 endpoints in {files} files: the app's request "
+          f"style is probably one the extractor does not read (TOOL MISS)")
+    try:
+        from recon.helpers import circuit_breaker as cb
+        cb.note_degraded('js_recon', entries=[
+            {"source": "js_endpoint_extraction", "reason": f"0 endpoints from {files} files", "skipped": 0}])
+    except Exception:  # noqa: BLE001 - coverage bookkeeping never fails the scan
+        pass
+
+
 def _note_file_cap(skipped: int, max_files: int) -> None:
     """The cut as a coverage note, so the report's Coverage Limitations block
     names it. No prune effect: _note_unchecked keeps the cut hosts."""
@@ -1531,6 +1550,10 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         # 3. Run all analysis modules
         results = _run_analysis(js_files, settings)
         source_map_files = results.pop('_source_map_files', 0)
+        extracted_from = results.pop('_endpoint_extraction_files', 0)
+        endpoint_miss = extracted_from >= _TOOL_MISS_MIN_FILES and not results.get('endpoints')
+        if endpoint_miss:
+            _note_endpoint_miss(extracted_from)
         unanalyzed = results.pop('_unanalyzed_urls', None)
         if unanalyzed:
             _note_unchecked("analyzer failed or timed out", unanalyzed)
@@ -1643,6 +1666,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
                 'js_files_analyzed': len(js_files),
                 # First-party sources recovered from source maps, analyzed too.
                 'source_map_files_analyzed': source_map_files,
+                'endpoint_extraction_miss': endpoint_miss,
                 'js_files_total_size_bytes': total_size,
                 'duration_seconds': round(duration, 1),
                 'file_budget': file_budget,

@@ -833,11 +833,13 @@ class JsReconMixin:
                             e.resolved_url = $resolved_url,
                             e.validation_status = $validation_status,
                             e.endpoint_type = $ep_type,
+                            e.path_template = $path_template,
                             e._js_recon_created = true,
                             e.updated_at = datetime()
                         ON MATCH SET e.id = COALESCE(e.id, $id),
                             e.js_recon_source = true,
                             e.endpoint_type = COALESCE(e.endpoint_type, $ep_type),
+                            e.path_template = COALESCE(e.path_template, $path_template),
                             e.full_url = COALESCE(e.full_url, $full_url),
                             // K2: `status_code` is what the score model reads
                             // liveness from, and the HTTP probe owns it. JS
@@ -862,6 +864,8 @@ class JsReconMixin:
                         resolved_url=ep.get("resolved_url", ""),
                         validation_status=ep.get("validation_status"),
                         ep_type=ep.get("type", "rest"),
+                        # `parameterized` is this property being set.
+                        path_template=ep.get("path_template") if ep.get("parameterized") else None,
                     )
                     record = result.single()
                     if record and bool(record.get("created", False)):

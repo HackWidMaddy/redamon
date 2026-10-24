@@ -131,6 +131,27 @@ class TestJsReconGraphIngestion(unittest.TestCase):
         self.assertNotIn("MATCH (n:Endpoint {id: $nid})", link_calls[0][0])
         self.assertEqual(stats["errors"], [])
 
+    def test_a_template_literal_endpoint_keeps_its_template(self):
+        """Plan 06.6: `/api/users/${id}` is stored as path `/api/users/` with
+        its template beside it; a plain literal stores no template."""
+        client = GraphClient()
+        client.update_graph_from_js_recon({
+            "domain": "example.com",
+            "js_recon": {
+                "scan_metadata": {"scan_timestamp": "2026-10-24T00:00:00Z"},
+                "endpoints": [
+                    {"path": "/api/users/", "method": "GET", "source_js": "https://example.com/app.js",
+                     "full_url": "/api/users/", "parameterized": True, "path_template": "/api/users/${id}"},
+                    {"path": "/api/plain", "method": "GET", "source_js": "https://example.com/app.js",
+                     "full_url": "/api/plain", "parameterized": False},
+                ],
+            },
+        }, "u1", "p1")
+        writes = {kw["path"]: kw for q, kw in client.driver.session_obj.calls
+                  if "MERGE (e:Endpoint" in q and "ON CREATE SET" in q}
+        self.assertEqual(writes["/api/users/"]["path_template"], "/api/users/${id}")
+        self.assertIsNone(writes["/api/plain"]["path_template"])
+
     def test_existing_endpoint_and_unmatched_file_link_do_not_increment_counts(self):
         client = GraphClient(endpoint_created=False, endpoint_linked=False)
         recon_data = {
