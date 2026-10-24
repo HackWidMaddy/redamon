@@ -362,7 +362,7 @@ Additional properties present on this node type, not yet described:
 JS Recon secret properties (source="js_recon" only):
 - key_type (string): the matching pattern's category
 - confidence (string): high, medium, low
-- validation_status (string): validated, invalid, unvalidated, skipped, incomplete, format_validated, error
+- validation_status (string): validated (the provider accepted it), rejected (the provider refused it), unknown (no verdict: a timeout, a 429 or 5xx, a 403, a skipped call), format_invalid, format_validated, incomplete, unvalidated (no validator for it), skipped. Nodes written before these states hold invalid or error
 - detection_method (string): "regex"
 - context (string): the code around the match, at most 400 characters, with this key and every other secret-shaped value in it shown redacted
 - public_client_key (boolean): true for a key that is public by design (a browser key, a publishable key, a DSN, a write-only analytics key); written at severity info. Absent on nodes written before it existed: readers then also treat a secret_type in the public-client list as public
@@ -943,7 +943,7 @@ Graph hierarchy: Domain/BaseURL -> JS file node -> findings/secrets/endpoints
 - `(BaseURL)-[:HAS_ENDPOINT]->(Endpoint)` also owns every JS endpoint on a network host, like any other endpoint. Only in-scope hosts get an Endpoint; a third-party URL found in the JS is an external domain, not an Endpoint. A relative path in uploaded JS has `baseurl: 'upload'` and no BaseURL
 
 Note: JS Recon also creates Secret nodes with source='js_recon' and extra fields:
-- validation_status (string): validated, invalid, unvalidated, skipped, incomplete
+- validation_status (string): validated, rejected, unknown, format_invalid, format_validated, incomplete, unvalidated, skipped (legacy: invalid, error)
 - validation_info (string): JSON with validation details (scope, account info)
 - confidence (string): high, medium, low
 - detection_method (string): regex (or "ai_sdk_catalogue" when matched by Phase 6)

@@ -881,47 +881,53 @@ def _validate_secrets(secrets: list, settings: dict) -> list:
             )
 
             err = result.get('error')
+            state = result.get('state')
+            checked_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
             if err == 'no_validator':
                 secret['validation'] = {'status': 'unvalidated'}
             elif err == 'incomplete_credentials':
                 secret['validation'] = {'status': 'incomplete', 'info': result.get('info', '')}
             elif err == 'format_only':
                 secret['validation'] = {'status': 'format_validated', 'info': result.get('info', '')}
-            elif err == 'format_invalid':
+            elif state == 'format_invalid':
                 secret['validation'] = {
-                    'status': 'invalid',
+                    'status': 'format_invalid',
                     'valid': False,
                     'info': result.get('info', ''),
                     'error': 'format_invalid',
                 }
-            elif result.get('valid'):
+            elif state == 'valid':
                 secret['validation'] = {
                     'status': 'validated',
                     'valid': True,
                     'scope': result.get('scope', ''),
                     'info': result.get('info', ''),
-                    'checked_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                    'checked_at': checked_at,
                 }
             else:
+                # 'rejected' is the provider's verdict; anything else (a
+                # timeout, a 429 or 5xx, a breaker skip, a 403) is 'unknown',
+                # never a dead key.
                 secret['validation'] = {
-                    'status': 'invalid',
+                    'status': 'rejected' if state == 'rejected' else 'unknown',
                     'valid': False,
                     'info': result.get('info', ''),
                     'error': result.get('error', ''),
-                    'checked_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                    'checked_at': checked_at,
                 }
         except Exception as e:
-            secret['validation'] = {'status': 'error', 'error': f'{type(e).__name__}: {e}'}
+            secret['validation'] = {'status': 'unknown', 'error': f'{type(e).__name__}: {e}'}
 
     workers = max(1, min(settings.get('JS_RECON_CONCURRENCY', 10), 20))
     if secrets:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             list(ex.map(_validate_one, secrets))
 
-    validated_count = sum(1 for s in secrets if s.get('validation', {}).get('status') == 'validated')
-    invalid_count = sum(1 for s in secrets if s.get('validation', {}).get('status') == 'invalid')
-    if validated_count or invalid_count:
-        print(f"[+][JsRecon] Key validation: {validated_count} live, {invalid_count} invalid")
+    def _count(status):
+        return sum(1 for s in secrets if s.get('validation', {}).get('status') == status)
+    live, rejected, unknown = _count('validated'), _count('rejected'), _count('unknown')
+    if live or rejected or unknown:
+        print(f"[+][JsRecon] Key validation: {live} live, {rejected} rejected, {unknown} could not be checked")
 
     return secrets
 
@@ -1149,7 +1155,8 @@ def _build_summary(results: dict) -> dict:
     secrets = results.get('secrets', [])
     severity_counts = {}
     type_counts = {}
-    validated = {'live': 0, 'invalid': 0, 'unvalidated': 0, 'format_validated': 0, 'incomplete': 0}
+    validated = {'live': 0, 'rejected': 0, 'unknown': 0, 'format_invalid': 0,
+                 'format_validated': 0, 'incomplete': 0, 'unvalidated': 0, 'skipped': 0}
 
     for s in secrets:
         sev = s.get('severity', 'info')
@@ -1157,16 +1164,8 @@ def _build_summary(results: dict) -> dict:
         stype = s.get('name', 'unknown')
         type_counts[stype] = type_counts.get(stype, 0) + 1
         vstatus = s.get('validation', {}).get('status', 'unvalidated')
-        if vstatus == 'validated':
-            validated['live'] += 1
-        elif vstatus == 'invalid':
-            validated['invalid'] += 1
-        elif vstatus == 'format_validated':
-            validated['format_validated'] += 1
-        elif vstatus == 'incomplete':
-            validated['incomplete'] += 1
-        else:
-            validated['unvalidated'] += 1
+        key = 'live' if vstatus == 'validated' else vstatus
+        validated[key if key in validated else 'unvalidated'] += 1
 
     filtered_stats = results.get('_filtered_stats', {})
     endpoint_validation = {'hittable': 0, 'not_hittable': 0, 'unvalidated': 0}

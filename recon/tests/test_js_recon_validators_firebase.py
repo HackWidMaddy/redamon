@@ -55,12 +55,12 @@ def test_a_401_carries_what_the_score_model_reads_as_a_rejection():
 
 def test_other_answers_are_unchanged():
     result, _ = _answer(404)
-    assert result == {"valid": False, "scope": "", "info": "status=404", "error": ""}
+    assert result == {"valid": False, "state": "unknown", "scope": "", "info": "status=404", "error": ""}
 
 
-def test_js_recon_stores_a_locked_database_as_invalid_not_validated():
-    """The shape js_recon writes from the validator's answer (the else-branch of
-    `_validate_one`): 'invalid', never 'validated'."""
+def test_js_recon_stores_a_locked_database_as_rejected_not_validated():
+    """The shape js_recon writes from the validator's answer: the database's
+    own 401 is 'rejected' (plan 05.7), never 'validated'."""
     from recon.main_recon_modules import js_recon
 
     secret = {"name": "Firebase URL", "matched_text": DB, "confidence": "high",
@@ -69,5 +69,5 @@ def test_js_recon_stores_a_locked_database_as_invalid_not_validated():
     with mock.patch.object(validators.requests, "get", return_value=resp):
         js_recon._validate_secrets([secret], {"JS_RECON_VALIDATE_KEYS": True,
                                               "JS_RECON_VALIDATION_TIMEOUT": 5})
-    assert secret["validation"]["status"] == "invalid"
+    assert secret["validation"]["status"] == "rejected"
     assert "status=401" in json.dumps(secret["validation"])

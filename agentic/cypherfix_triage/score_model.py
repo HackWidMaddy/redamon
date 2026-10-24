@@ -52,7 +52,7 @@ from typing import Any, Iterable, Optional
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.7.0"
+SCORE_MODEL_VERSION = "v3.8.0"
 
 
 # ===========================================================================
@@ -805,8 +805,15 @@ def finding_state(finding: dict, facts: ProjectFacts) -> tuple[str, str]:
         return STATE_FIXED, "the last scan of this source no longer reports it"
 
     validation = _lower(finding.get("validation_status"))
+    if validation == "rejected":
+        # js_recon and TruffleHog both write it for the provider's own verdict.
+        # 'unknown' (a timeout, a 429, a 403...) is no verdict and stays open.
+        return STATE_INACTIVE, "a validator tested the credential and the service rejected it"
+    if validation == "format_invalid":
+        return STATE_INACTIVE, "the value is not a well-formed credential"
     if validation == "unvalidated" and finding.get("validated_at"):
-        # Checked and dead, as opposed to never checked at all.
+        # A TruffleHog node written before 'rejected': checked and dead, as
+        # opposed to never checked at all.
         return STATE_INACTIVE, "the credential was tested and does not work"
     if _validator_rejected_it(finding):
         return STATE_INACTIVE, "a validator tested the credential and the service rejected it"
@@ -836,11 +843,14 @@ def _passive_unconfirmed(finding: dict) -> bool:
 
 
 def _validator_rejected_it(finding: dict) -> bool:
-    """A validator ran and the service rejected the credential itself.
+    """A LEGACY js_recon node: a validator ran and the service rejected the
+    credential itself.
 
-    Only js_recon writes a "tested and dead" status, 'invalid', and it writes
-    the same word when the call never got an answer (a timeout, an open circuit
-    breaker, no key found in the match) and for ANY non-2xx answer.
+    js_recon now writes 'rejected', 'unknown' and 'format_invalid' (read
+    directly by `finding_state`). Nodes written before that hold 'invalid', a
+    word it wrote for a rejection, for a call that never got an answer (a
+    timeout, an open circuit breaker, no key found in the match) and for ANY
+    non-2xx answer alike.
     `validation_info.error` tells the first apart; of the answers, only a 401
     says the credential is not accepted. A 403 is as often a live key without
     the scope (or the SSO grant) the probe needed, and a 404 a moved endpoint,

@@ -281,7 +281,8 @@ describe('Conditional Section Rendering', () => {
     expect(html).toContain('id="secrets"')
     expect(html).toContain('Secret Detection')
     expect(html).toContain('AWSAccessKey')
-    expect(html).toContain('validated')
+    // The status in words, as the Red Zone and JS Recon tables show it.
+    expect(html).toContain('<td>LIVE</td>')
   })
 
   test('AI Surface section renders the corroborated AI Attack Surface findings (§9)', () => {
@@ -999,5 +1000,35 @@ describe('keys that are public by design (plan 05.2)', () => {
     }), null)
     expect(html).toContain('id="github-secrets"')
     expect(html).toContain('<tr><td>Expected-public client keys (not counted)</td><td>2</td></tr>')
+  })
+})
+
+describe('secret validation labels (plan 05.7)', () => {
+  test('a JS secret shows what the validator learned, in words', () => {
+    const row = { secretType: 'GitHub Token Classic', severity: 'high', source: 'js_recon', sourceUrl: null,
+                  sample: 'ghp_ab...wxyz', confidence: 'high', keyType: 'auth' }
+    const html = generateReportHtml(makeReportData({
+      secrets: { total: 3, bySeverity: [], bySource: [], byType: [], findings: [
+        { ...row, validationStatus: 'rejected' },
+        { ...row, validationStatus: 'unknown' },
+        { ...row, validationStatus: 'invalid' },
+      ] },
+    }), null)
+    expect(html).toContain('<td>rejected</td>')
+    expect(html).toContain('<td>could not check</td>')
+    expect(html).toContain('<td>invalid</td>')
+    expect(html).not.toContain('<td>unknown</td>')
+  })
+
+  test('a TruffleHog credential checked and dead reads "Not live" under either word', () => {
+    const finding = { detectorName: 'AWS', verified: false, source: 'github', findingKind: 'secret',
+                      redacted: 'AKIA...', asset: 'org/repo', location: 'a.py', commit: 'abc', line: 1,
+                      link: null, repository: 'org/repo', file: 'a.py' }
+    const html = generateReportHtml(makeReportData({
+      trufflehog: { totalFindings: 2, verifiedFindings: 0, liveFindings: 0, repositories: 1, sources: [],
+                    findings: [{ ...finding, validationStatus: 'rejected' },
+                               { ...finding, validationStatus: 'unvalidated' }] },
+    }), null)
+    expect(html.match(/Not live/g)?.length).toBe(2)
   })
 })

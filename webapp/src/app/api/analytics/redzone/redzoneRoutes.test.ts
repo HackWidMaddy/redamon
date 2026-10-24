@@ -469,6 +469,20 @@ describe('/api/analytics/redzone/secrets', () => {
     expect(c).toMatch(/s\.public_client_key\s+AS publicClientKey/)
   })
 
+  test('the explicit validation states sort as they read (plan 05.7)', async () => {
+    // No verdict ranks above a dead key; a legacy 'invalid' keeps its old place.
+    runReturnFor = [
+      { match: /MATCH \(s:Secret/, rows: [
+        { id: 'legacy', secretType: 'API Key', validationStatus: 'invalid', origin: 'Secret' },
+        { id: 'dead', secretType: 'API Key', validationStatus: 'rejected', origin: 'Secret' },
+        { id: 'nocheck', secretType: 'API Key', validationStatus: 'unknown', origin: 'Secret' },
+        { id: 'live', secretType: 'API Key', validationStatus: 'validated', origin: 'Secret' },
+      ] },
+    ]
+    const body = await (await secretsRoute.GET(makeRequest('p1'))).json()
+    expect(body.rows.map((r: { id: string }) => r.id)).toEqual(['live', 'nocheck', 'dead', 'legacy'])
+  })
+
   test('a credential the agent USED outranks every scanner finding', async () => {
     // An exploit_success carrying a password is a credential someone logged in
     // with — the strongest row this table can hold.

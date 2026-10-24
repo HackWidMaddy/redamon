@@ -10,6 +10,7 @@
 import type { ReportData, VulnFinding, CveChain, ExploitRecord } from './reportData'
 import { type ScopeGroup, groupLabel, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
 import { projectTargetLabel } from '@/lib/projectSummary'
+import { validationLabel } from '@/lib/secrets/validationStatus'
 
 // ── Narrative types (from LLM summarizer) ──────────────────────────────────
 
@@ -1234,6 +1235,8 @@ function renderGithubSecrets(data: ReportData): string {
  *  whoever reads this report, and merging them would overstate the assurance. */
 const TH_VALIDATION_LABEL: Record<string, { text: string; color: string; weight: string }> = {
   validated: { text: 'LIVE', color: '#dc2626', weight: '600' },
+  rejected: { text: 'Not live', color: '#6b7280', weight: '400' },
+  // Written before `rejected` existed, for the same verdict.
   unvalidated: { text: 'Not live', color: '#6b7280', weight: '400' },
   verify_error: { text: 'Verify failed', color: '#d97706', weight: '500' },
   unverified: { text: 'Not checked', color: '#d97706', weight: '400' },
@@ -1339,7 +1342,7 @@ function renderSecrets(data: ReportData): string {
       <td>${sevBadge(f.severity)}</td>
       <td>${esc(f.source)}</td>
       <td style="font-family:monospace;font-size:11px">${esc(f.sample || '')}</td>
-      <td>${f.validationStatus ? esc(f.validationStatus) : ''}</td>
+      <td>${f.validationStatus ? esc(validationLabel(f.validationStatus)) : ''}</td>
     </tr>`).join('')
 
   return `

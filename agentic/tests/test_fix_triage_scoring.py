@@ -849,3 +849,44 @@ class TestPrivilegedSupabaseKeys(unittest.TestCase):
     def test_the_anon_key_is_public(self):
         self.assertEqual(sm.classify_secret("Supabase anon key", "Supabase anon key").name,
                          "public_client_id")
+
+
+# ---------------------------------------------------------------------------
+# Plan 05.7: the validation states are stored explicitly
+# ---------------------------------------------------------------------------
+class TestExplicitValidationStates(unittest.TestCase):
+    def state(self, label="Secret", **kwargs):
+        if label == "Secret":
+            return sm.score(js_secret("Stripe Secret Key", "payment", **kwargs), LIVE).state
+        return sm.score(secret(label, "trufflehog", "AWS", **kwargs), LIVE).state
+
+    def test_rejected_is_inactive_with_nothing_to_parse(self):
+        self.assertEqual(self.state(validation_status="rejected"), sm.STATE_INACTIVE)
+        self.assertEqual(self.state(validation_status="Rejected", validation_info="{}"),
+                         sm.STATE_INACTIVE)
+
+    def test_a_malformed_value_is_inactive(self):
+        self.assertEqual(self.state(validation_status="format_invalid"), sm.STATE_INACTIVE)
+
+    def test_unknown_stays_open_whatever_its_detail_says(self):
+        for info in (validation_info("status=401"), validation_info("", "timeout"), None):
+            with self.subTest(info=info):
+                self.assertEqual(self.state(validation_status="unknown", validation_info=info),
+                                 sm.STATE_OPEN)
+
+    def test_legacy_invalid_is_read_as_before(self):
+        self.assertEqual(self.state(validation_status="invalid",
+                                    validation_info=validation_info("status=401")),
+                         sm.STATE_INACTIVE)
+        self.assertEqual(self.state(validation_status="invalid",
+                                    validation_info=validation_info("", "timeout")),
+                         sm.STATE_OPEN)
+
+    def test_a_trufflehog_credential_tested_and_dead_is_inactive(self):
+        self.assertEqual(self.state("MultiscannerFinding", validation_status="rejected"),
+                         sm.STATE_INACTIVE)
+
+    def test_the_model_version_moved_with_plan_05(self):
+        # Public client keys, the credential needles and the explicit states
+        # rescore existing findings.
+        self.assertNotIn(sm.SCORE_MODEL_VERSION, ("v3.7.0",))

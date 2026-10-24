@@ -543,7 +543,12 @@ kinds:
         type: enum
         prop: validation_status
         label: Validation
-        values: [validated, invalid, unvalidated, skipped, incomplete, format_validated, error]
+        values: [validated, rejected, unknown, format_invalid, unvalidated, skipped, incomplete,
+                 format_validated, invalid, error]
+        # `invalid` and `error` are what nodes written before the explicit
+        # states hold. A rule naming `invalid` (saved, preset, imported, MCP)
+        # also matches what replaced its dead cases; never `unknown`.
+        aliases: { invalid: [rejected, format_invalid] }
       detection_method: { type: enum, prop: detection_method, label: Detection, values: [regex] }
       public_client_key: { type: bool, normalizer: public_client_key, label: Public by design }
       source_url:       { type: url, prop: source_url, label: Found in }
@@ -551,7 +556,7 @@ kinds:
       updated_at:       { type: date, prop: updated_at, label: Last reported }
     examples:
       - name: Keys that failed validation
-        all: [{ field: validation_status, op: in, value: [invalid] }]
+        all: [{ field: validation_status, op: in, value: [invalid, rejected, format_invalid] }]
     notes:
       - >-
         `jsluice` secrets come from resource enumeration's jsluice pass; everything

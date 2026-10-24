@@ -676,3 +676,52 @@ class TestSecretPublicClientKey(unittest.TestCase):
             self.skipTest(f"score_model is not importable here: {e}")
         from graph_db.node_filters import normalize
         self.assertEqual(set(normalize.PUBLIC_CLIENT_KEY_TYPES), set(sm.PUBLIC_CLIENT_KEY_TYPES))
+
+
+class TestLegacyValidationStatusAlias(unittest.TestCase):
+    """Plan 05.7: js_recon writes 'rejected' (and 'format_invalid') where it
+    wrote 'invalid'. A saved rule, a user preset, an imported bundle or an MCP
+    write that names 'invalid' keeps matching them, with no data migration;
+    'unknown' (no verdict) is never caught by it."""
+
+    def _mutes(self, op, values, stored):
+        cond = {"field": "validation_status", "op": op, "value": values}
+        fs, cfg = filterset("secret", rule(conds=[cond]))
+        self.assertTrue(cfg.kinds["secret"].active, cfg.kinds["secret"].errors)
+        return fs.decide("secret", {"validation_status": stored})[0]
+
+    def test_a_rule_on_invalid_mutes_the_new_dead_statuses(self):
+        for stored in ("invalid", "rejected", "REJECTED", "format_invalid"):
+            with self.subTest(stored=stored):
+                self.assertTrue(self._mutes("in", ["invalid"], stored))
+
+    def test_it_never_mutes_a_key_nobody_could_check(self):
+        for stored in ("unknown", "validated", "unvalidated", "skipped", None):
+            with self.subTest(stored=stored):
+                self.assertFalse(self._mutes("in", ["invalid"], stored))
+
+    def test_not_in_invalid_leaves_them_out_too(self):
+        self.assertFalse(self._mutes("not_in", ["invalid"], "rejected"))
+        self.assertTrue(self._mutes("not_in", ["invalid"], "unknown"))
+
+    def test_the_alias_is_one_way(self):
+        # A legacy 'invalid' node may hide a timeout, so a rule on the new word
+        # does not reach back to it.
+        self.assertFalse(self._mutes("in", ["rejected"], "invalid"))
+
+    def test_the_catalog_lists_the_new_values_and_keeps_invalid(self):
+        field = CAT.kind("secret")["fields"]["validation_status"]
+        for value in ("validated", "rejected", "unknown", "format_invalid", "invalid"):
+            self.assertIn(value, field["values"])
+        self.assertEqual(field["aliases"], {"invalid": ["rejected", "format_invalid"]})
+
+    def test_the_shipped_example_names_the_new_value_too(self):
+        examples = {e["name"]: e for e in CAT.kind("secret")["examples"]}
+        cond = examples["Keys that failed validation"]["all"][0]
+        self.assertEqual(sorted(cond["value"]), ["format_invalid", "invalid", "rejected"])
+
+    def test_an_alias_naming_an_unlisted_value_fails_the_catalog_check(self):
+        bad = copy.deepcopy(CAT.data)
+        bad["kinds"]["secret"]["fields"]["validation_status"]["aliases"] = {"invalid": ["nope"]}
+        problems = C.check(bad, C._declared_props(), {n: i for n, (_f, i) in NORMALIZERS.items()})
+        self.assertTrue(any("alias" in p for p in problems), problems)

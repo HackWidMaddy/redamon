@@ -2069,13 +2069,22 @@
           "label": "Validation",
           "values": [
             "validated",
-            "invalid",
+            "rejected",
+            "unknown",
+            "format_invalid",
             "unvalidated",
             "skipped",
             "incomplete",
             "format_validated",
+            "invalid",
             "error"
-          ]
+          ],
+          "aliases": {
+            "invalid": [
+              "rejected",
+              "format_invalid"
+            ]
+          }
         },
         "detection_method": {
           "type": "enum",
@@ -2115,7 +2124,9 @@
               "field": "validation_status",
               "op": "in",
               "value": [
-                "invalid"
+                "invalid",
+                "rejected",
+                "format_invalid"
               ]
             }
           ]

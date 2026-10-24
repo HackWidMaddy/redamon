@@ -5,6 +5,7 @@ import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
 import { reportCountable } from '@/lib/triage/reportable'
 import { isPublicClientKey } from '@/lib/secrets/publicClientKeys'
+import { validationRank } from '@/lib/secrets/validationStatus'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -383,19 +384,13 @@ export async function GET(request: NextRequest) {
       return 5
     }
 
-    // Prefer validated > format_validated > unvalidated, then by type priority,
-    // then higher entropy first.
-    // Shared with SecretsTable's VALIDATION_CLASS. `verify_error` outranks
-    // `unvalidated`: the verify call failed, which is NOT proof the credential is
-    // dead. `unverified` (verification switched off) sits below both — nobody
-    // looked, so it must never read as "checked and safe".
-    const VALIDATION_RANK: Record<string, number> = {
-      validated: 0, format_validated: 1, verify_error: 2, unvalidated: 3,
-      unverified: 4, skipped: 5, invalid: 6,
-    }
+    // Live first, then by type priority, then higher entropy first. The order
+    // is the one the table's labels use (validationStatus.ts): a check that
+    // got no verdict ranks above a credential checked and dead, and one nobody
+    // looked at below both, so it never reads as "checked and safe".
     rows.sort((a, b) => {
-      const va = VALIDATION_RANK[a.validationStatus ?? 'unvalidated'] ?? 3
-      const vb = VALIDATION_RANK[b.validationStatus ?? 'unvalidated'] ?? 3
+      const va = validationRank(a.validationStatus, a.origin)
+      const vb = validationRank(b.validationStatus, b.origin)
       if (va !== vb) return va - vb
       const ta = typePriority(a.secretType)
       const tb = typePriority(b.secretType)
