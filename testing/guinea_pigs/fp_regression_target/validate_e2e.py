@@ -9,6 +9,10 @@ N-01, a run with no JS input keeps the earlier js_recon findings, takes a second
 run: `--js-count` prints the count, then switch resource_enum off, rerun, and
 `--js-count-equals <n>` asserts it is unchanged (README.md, "Running the proof").
 
+The JS-coverage project (e2e_fp.py --js-coverage): `--js-coverage first` after
+its first run (prints JS_BULK_COUNT=<n>), then rerun it with a low
+jsReconMaxFiles and .20's /js/app.min.js hidden, and `--js-coverage capped <n>`.
+
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
 when every assertion holds. Case ids match README.md.
@@ -22,8 +26,8 @@ sys.path.insert(0, HERE)
 import mcp_client as mcp  # noqa: E402
 
 USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer"
-         " | --passive-cves baseline|partial|unscanned|off]")
-if len(sys.argv) not in (2, 3, 4):
+         " | --passive-cves baseline|partial|unscanned|off | --js-coverage first | --js-coverage capped <n>]")
+if len(sys.argv) not in (2, 3, 4, 5):
     sys.exit(USAGE)
 P = sys.argv[1]
 NET = "192.88.94"
@@ -155,6 +159,93 @@ def passive_cves(stage):
         sys.exit(USAGE)
 
 
+SPA = f"http://{NET}.20"
+BULK = f"http://{NET}.29"
+COVERAGE_FILES = {"/static/js/main.4f3a.js": "static", "/_next/static/chunks/pages/app-91c.js": "next",
+                  "/js/app.min.js": "min", "/js/bundle.js__v_ab12": "hash"}
+
+
+def bulk_count():
+    """js_recon findings on the bulk host: what a capped rerun must keep."""
+    total = 0
+    for label in ("JsReconFinding", "Secret"):
+        rows = q(f"""MATCH (f:{label}) WHERE f.source = 'js_recon'
+                     AND f.source_url STARTS WITH '{BULK}/' RETURN count(f) AS n""")
+        total += rows[0]["n"]
+    return total
+
+
+def js_coverage_checks(stage, expected_bulk=None):
+    """Plan 06 cases, on the project e2e_fp.py --js-coverage creates."""
+    files = q(f"""MATCH (jf:JsReconFinding {{finding_type: 'js_file'}}) WHERE jf.source_url STARTS WITH '{SPA}/'
+                  OPTIONAL MATCH (jf)-[:HAS_ENDPOINT]->(e:Endpoint)
+                  RETURN jf.source_url AS url, collect(e.path) AS paths""")
+    by_url = {r["url"][len(SPA):]: r["paths"] for r in files}
+    if stage == "first":
+        # Each file calls fetch("/api/cov/<marker>"): its Endpoint under the
+        # file's own node proves the file was downloaded and analyzed.
+        analyzed = {p: f"/api/cov/{m}" in by_url.get(p, []) for p, m in COVERAGE_FILES.items()}
+        check("J-11", all(analyzed.values()), f"bundles the default exclude list matches, analyzed: {analyzed}")
+        excluded = [p for p in COVERAGE_FILES if p != "/js/bundle.js__v_ab12"]
+        eps = q(f"""MATCH (e:Endpoint) WHERE e.baseurl = '{SPA}' AND e.path IN {excluded}
+                    RETURN e.path AS p""")
+        check("J-12", not eps, f"the excluded JS files handed to js_recon are no Endpoints: {[r['p'] for r in eps]}")
+
+        mapped = f"{SPA}/static/js/main.4f3a.js.map#src/config.ts"
+        sec = q(f"""MATCH (s:Secret {{source: 'js_recon'}}) WHERE s.source_url = '{mapped}'
+                    OPTIONAL MATCH (jf:JsReconFinding {{finding_type: 'js_file', source_url: '{mapped}'}})-[:HAS_SECRET]->(s)
+                    RETURN s.secret_type AS t, s.base_url AS b, s.validation_status AS vs, count(jf) AS files""")
+        r = sec[0] if sec else None
+        check("S-04", r and r["t"] == "Stripe Secret Key" and r["b"] == SPA and r["files"] == 1,
+              f"the key in the map's src/config.ts is a Secret under its own file node: {r}")
+        ep = q(f"""MATCH (e:Endpoint) WHERE e.baseurl = '{SPA}' AND e.path = '/api/v2/orders'
+                   RETURN e.method AS m, e.source AS src, e.js_recon_source AS js""")
+        check("S-04b", ep and ep[0]["m"] == "GET", f"the map source's fetch is an Endpoint: {ep}")
+        sm = q(f"""MATCH (f:JsReconFinding) WHERE f.finding_type = 'source_map_exposure'
+                   AND f.source_url IN ['{SPA}/static/js/main.4f3a.js', '{SPA}/static/js/main.4f2a9c.js']
+                   RETURN f.source_url AS js, f.severity AS sev, f.secrets_in_source AS n""")
+        maps_ = {r["js"].rsplit("/", 1)[-1]: r for r in sm}
+        r = maps_.get("main.4f3a.js")
+        check("S-04c", r and r["sev"] == "low" and r["n"] == 1, f"the map itself is low and counts its secret: {r}")
+        lib = [r for label in ("Secret", "JsReconFinding") for r in q(
+            f"""MATCH (s:{label}) WHERE s.source = 'js_recon'
+                AND (s.source_url CONTAINS 'lib.8e1f.js.map#' OR coalesce(s.matched_text, '') CONTAINS 'LIBRARYEXAMPLE')
+                RETURN '{label}' AS l, s.source_url AS u""")]
+        check("S-05", not lib, f"library sources feed no detector: {lib}")
+
+        refs = q(f"""MATCH (f:JsReconFinding) WHERE f.finding_type = 'source_map_reference'
+                     AND f.source_url STARTS WITH '{SPA}/' RETURN f.source_url AS js, f.control_check AS cc""")
+        ref = {r["js"].rsplit("/", 1)[-1]: r["cc"] for r in refs}
+        check("M-07", "s3miss.0c1d.js" not in ref, f"an S3 AccessDenied 403 for a missing map: {ref.get('s3miss.0c1d.js')}")
+        check("M-08", "cfmiss.2e3f.js" not in ref, f"a 403 the made-up sibling also gets: {ref.get('cfmiss.2e3f.js')}")
+        check("M-04", ref.get("private.9c3d.js") == "passed", f"a 403 the sibling does not get: {ref.get('private.9c3d.js')}")
+
+        want = {("GET", "/v1/lab-orders"), ("GET", "/lab-users"), ("GET", "/api/lab-users/"),
+                ("GET", "/v2/lab-items"), ("GET", "/v1/lab-accounts"), ("GET", "/api/lab-export")}
+        got = q(f"""MATCH (e:Endpoint) WHERE e.baseurl = '{SPA}' AND (e.path CONTAINS 'lab-' OR e.path = '/q')
+                    RETURN e.method AS m, e.path AS p, e.path_template AS t""")
+        have = {(r["m"], r["p"]) for r in got}
+        tmpl = {r["p"]: r["t"] for r in got}
+        check("E-04", want <= have and tmpl.get("/api/lab-users/") == "/api/lab-users/${id}",
+              f"the call shapes in calls.6e7f.js: missing {sorted(want - have)}; template {tmpl.get('/api/lab-users/')}")
+        noise = sorted(p for _, p in have if "lab-key" in p or "lab-q" in p)
+        check("E-05", not noise, f"Map / URLSearchParams / headers .get() yield no Endpoint: {noise}")
+
+        detail = q(f"""MATCH (e:Endpoint) WHERE e.baseurl = '{BULK}' AND e.path ENDS WITH '/detail' RETURN count(e) AS n""")
+        check("F-00", detail[0]["n"] >= 500, f"bulk map sources analyzed at volume: {detail[0]['n']} detail endpoints")
+        print(f"JS_BULK_COUNT={bulk_count()}")
+        return
+
+    gaps = q("""MATCH (d:Domain) WHERE d.recon_coverage_gaps IS NOT NULL
+                RETURN d.name AS d, d.recon_coverage_gaps AS g""")
+    text = " ".join(str(r["g"]) for r in gaps)
+    check("F-01", "js_recon_file_cap" in text, f"the file cap is a coverage gap: {text[:400]}")
+    check("F-02", "/js/app.min.js" not in by_url,
+          f"a fully analyzed host still prunes: the hidden file's findings are gone: {by_url.get('/js/app.min.js')}")
+    got = bulk_count()
+    check("F-03", got == expected_bulk, f"the capped host keeps its findings: {got} (expect {expected_bulk})")
+
+
 def js_recon_count():
     """JsReconFinding + Secret written by js_recon: what a run with no JS input must keep."""
     findings = q("MATCH (f:JsReconFinding) WHERE f.source = 'js_recon' RETURN count(f) AS n")
@@ -173,6 +264,12 @@ if len(sys.argv) > 2:
         sys.exit(0 if got == expected else 1)
     if sys.argv[2] == "--http-layer" and len(sys.argv) == 3:
         http_layer_checks()
+        sys.exit(report())
+    if sys.argv[2] == "--js-coverage" and sys.argv[3:4] == ["first"] and len(sys.argv) == 4:
+        js_coverage_checks("first")
+        sys.exit(report())
+    if sys.argv[2] == "--js-coverage" and sys.argv[3:4] == ["capped"] and len(sys.argv) == 5:
+        js_coverage_checks("capped", int(sys.argv[4]))
         sys.exit(report())
     if sys.argv[2] == "--passive-cves" and len(sys.argv) == 4:
         passive_cves(sys.argv[3])
@@ -247,20 +344,24 @@ else:
 def maps():
     rows = q("""MATCH (f:JsReconFinding) WHERE f.finding_type IN ['source_map_exposure', 'source_map_reference']
                 RETURN f.source_url AS js, f.finding_type AS t, f.severity AS sev, f.map_url AS map,
-                       f.fetch_result AS fr, f.first_party_files AS fp, f.has_sources_content AS sc""")
+                       f.fetch_result AS fr, f.first_party_files AS fp, f.has_sources_content AS sc,
+                       f.control_check AS cc""")
     return {r["js"].rsplit("/", 1)[-1]: r for r in rows}
 
 
 m = maps()
 r = m.get("main.4f2a9c.js")
-check("M-01", r and r["t"] == "source_map_exposure" and r["sev"] == "high" and r["fp"] == 2
-      and (r["map"] or "").endswith("main.4f2a9c.js.map"), f"served map with own source: {r}")
+check("M-01", r and r["t"] == "source_map_exposure" and r["sev"] == "low" and r["fp"] == 2
+      and (r["map"] or "").endswith("main.4f2a9c.js.map"),
+      f"served map with own source (low: its impact is the findings its sources produce): {r}")
 r = m.get("lib.8e1f.js")
 check("M-02", r and r["t"] == "source_map_exposure" and r["sev"] == "low" and r["fp"] == 0, f"library-only map: {r}")
 check("M-03", "shell.2b7a.js" not in m, f"map answered by the SPA shell: {m.get('shell.2b7a.js')}")
 r = m.get("private.9c3d.js")
-check("M-04", r and r["t"] == "source_map_reference" and r["sev"] == "info" and r["fr"] == "http_403",
-      f"map behind a 403: {r}")
+check("M-04", r and r["t"] == "source_map_reference" and r["sev"] == "info" and r["fr"] == "http_403"
+      and r["cc"] == "passed", f"map behind a 403 a made-up sibling does not get: {r}")
+check("M-07", "s3miss.0c1d.js" not in m, f"an S3 AccessDenied 403 for a missing map: {m.get('s3miss.0c1d.js')}")
+check("M-08", "cfmiss.2e3f.js" not in m, f"a 403 the made-up sibling also gets: {m.get('cfmiss.2e3f.js')}")
 r = m.get("buildref.7a8b.js")
 check("M-05", r and r["t"] == "source_map_reference" and r["fr"] in ("unreachable", "unsafe")
       and f"{NET}.99" in (r["map"] or ""), f"map on another unreachable host: {r}")

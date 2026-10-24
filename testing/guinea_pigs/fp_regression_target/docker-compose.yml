@@ -118,6 +118,14 @@ services:
     environment: { ROLE: deny, PORTS: "80" }
     networks: { fp_lab: { ipv4_address: 192.88.94.28 } }
 
+  # JS coverage (plan 06): a large Next.js-style site for the file budget and
+  # the volume measurement. Its chunks are generated per request.
+  fp-bulk:
+    <<: *lab
+    container_name: redamon-fp-bulk
+    environment: { ROLE: bulk, PORTS: "80", BULK_CHUNKS: "520" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.29 } }
+
 networks:
   fp_lab:
     name: redamon_fp_lab

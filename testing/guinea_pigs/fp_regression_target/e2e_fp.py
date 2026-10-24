@@ -13,6 +13,8 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --passive-cves        # the plan-04 passive-CVE project (port scan + Shodan)
     python3 e2e_fp.py --rerun <id> --set '{"naabuCustomPorts": "80,443"}' --no-triage
     python3 e2e_fp.py --rerun <id> --shodan-state 'unavailable=192.88.94.13&hide=CVE-2019-11043'
+    python3 e2e_fp.py --js-coverage         # the plan-06 JS-coverage project (.20 + the bulk host .29)
+    python3 e2e_fp.py --rerun <id> --no-triage --set '{"jsReconMaxFiles": 60}' --spa-state 'hide=/js/app.min.js'
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
 never prints it.
@@ -103,6 +105,33 @@ PASSIVE_SETTINGS = {
 SHODAN_STUB = f"http://{NET}.30/_lab/shodan"
 
 
+def _default_katana_excludes():
+    """The shipped KATANA_EXCLUDE_PATTERNS (/static/, /_next/static, .min.js, ...),
+    read from the recon defaults so the case runs against the real list."""
+    sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "..", "..")))
+    from recon.project_settings import DEFAULT_SETTINGS
+    return list(DEFAULT_SETTINGS["KATANA_EXCLUDE_PATTERNS"])
+
+
+# JS coverage (plan 06) runs as its own project: .20's bundles behind the
+# default exclude list, and .29's 520 chunks for the file budget. JS recon is
+# switched on by jsReconEnabled alone; scanModules holds no "js_recon".
+JS_COVERAGE_TARGETS = [f"{NET}.{n}" for n in (20, 29)]
+JS_COVERAGE_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "resource_enum"],
+    "naabuCustomPorts": "80", "katanaJsCrawl": False,
+    "vhostSniEnabled": False, "shodanEnabled": False, "webCachePoisonEnabled": False,
+}
+SPA_STATE = f"http://{NET}.20/_lab/js"
+
+
+def spa_state(query=""):
+    """Which .20 paths answer with the SPA shell for the next run ('' resets it)."""
+    with urllib.request.urlopen(f"{SPA_STATE}?{query}", timeout=10) as resp:
+        return json.loads(resp.read())
+
+
 def shodan_state(query=""):
     """Set what the Shodan stub answers for the next lookups ('' resets it)."""
     with urllib.request.urlopen(f"{SHODAN_STUB}?{query}", timeout=10) as resp:
@@ -176,6 +205,10 @@ def main():
     ap.add_argument("--set", metavar="JSON", help="settings to change before the run (update_recon_settings)")
     ap.add_argument("--shodan-state", metavar="QUERY", default="",
                     help="Shodan stub state for this run, e.g. 'unavailable=<ip>&hide=<cve>'")
+    ap.add_argument("--js-coverage", action="store_true",
+                    help="create the plan-06 JS-coverage project instead of the main one")
+    ap.add_argument("--spa-state", metavar="QUERY", default="",
+                    help="SPA (.20) state for this run, e.g. 'hide=/js/app.min.js'")
     args = ap.parse_args()
 
     mcp.init()
@@ -183,10 +216,13 @@ def main():
     if args.rerun:
         project_id = args.rerun
     else:
-        kind = (" (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else "")
+        kind = (" (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else
+                " (JS coverage)" if args.js_coverage else "")
         targets, settings = ((HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
                              (PASSIVE_TARGETS, PASSIVE_SETTINGS) if args.passive_cves else
-                             (TARGETS, SETTINGS))
+                             (JS_COVERAGE_TARGETS, {**JS_COVERAGE_SETTINGS,
+                                                    "katanaExcludePatterns": _default_katana_excludes()})
+                             if args.js_coverage else (TARGETS, SETTINGS))
         name = f"FP regression lab{kind} {time.strftime('%Y-%m-%d %H:%M:%S')}"
         out = call("create_project", {"name": name, "engagementKind": "internal",
                                       "description": "Guinea pig: testing/guinea_pigs/fp_regression_target",
@@ -197,6 +233,7 @@ def main():
         changed = call("update_recon_settings", {"projectId": project_id, "settings": json.loads(args.set)})
         print("[*] settings:", json.dumps(changed)[:300], flush=True)
     print("[*] Shodan stub:", json.dumps(shodan_state(args.shodan_state)), flush=True)
+    print("[*] SPA state:", json.dumps(spa_state(args.spa_state)), flush=True)
     try:
         print("[*] preflight:", json.dumps(call("preflight_scope_check", {"projectId": project_id}))[:600],
               flush=True)
@@ -208,6 +245,8 @@ def main():
     finally:
         if args.shodan_state:
             shodan_state("")
+        if args.spa_state:
+            spa_state("")
     if not args.no_triage:
         out, err = mcp.call("start_triage_run", {"projectId": project_id})
         if err and "triage:run" in json.dumps(out):

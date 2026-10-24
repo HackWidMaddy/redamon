@@ -6,7 +6,7 @@ Every case that must stay silent sits next to one that must still fire, so a
 green run proves both halves.
 
 ```bash
-docker compose up -d --build        # sixteen hosts on 192.88.94.0/24, no host ports
+docker compose up -d --build        # seventeen hosts on 192.88.94.0/24, no host ports
 docker compose down
 ```
 
@@ -91,6 +91,22 @@ the host.
    `--shodan-state` sets what the stub answers for that run only
    (`/_lab/shodan?unavailable=<ips>&hide=<cves>`; e2e_fp.py resets it after).
 
+7. **JS coverage (plan 06).** `python3 e2e_fp.py --js-coverage` creates an
+   `internal` IP-mode project over `.20` and the bulk host `.29`, with the
+   shipped `KATANA_EXCLUDE_PATTERNS` (which hide `/static/` and
+   `/_next/static`), JS recon on by `jsReconEnabled` alone (no `js_recon` in
+   `scanModules`) and Shodan, vhosts and the cache check off. Then:
+
+   ```bash
+   python3 validate_e2e.py <id> --js-coverage first          # prints JS_BULK_COUNT=<n>
+   python3 e2e_fp.py --rerun <id> --no-triage \
+     --set '{"jsReconMaxFiles": 60}' --spa-state 'hide=/js/app.min.js'
+   python3 validate_e2e.py <id> --js-coverage capped <n>
+   ```
+
+   `--spa-state` makes `.20` answer the listed paths with its HTML shell for
+   that run only (`/_lab/js?hide=<paths>`; e2e_fp.py resets it after).
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -108,12 +124,17 @@ the host.
 | `.20` | a vendor bundle | J-08 | info, marked vendor |
 | `.20` | a jQuery plugin that writes the hash into `innerHTML` | J-10 | high, despite the vendor-looking file name |
 | `.21` | a third-party loader on another host | J-09 | info and marked third-party, when the crawl collects it |
-| `.20` | source maps: first-party sources (served as octet-stream), library-only, a 403, the SPA shell answering a map URL, a map on an unreachable host, an inline `data:` map | M-01..M-06 | first-party map high, library map low, the shell is no map, the 403 and the unreachable host are an info reference, the inline map is stored truncated |
+| `.20` | source maps: first-party sources (served as octet-stream), library-only, a 403, the SPA shell answering a map URL, a map on an unreachable host, an inline `data:` map | M-01..M-06 | first-party map low (its impact is what its sources yield), library map low, the shell is no map, the 403 (whose made-up sibling gets a 200: `control_check: passed`) and the unreachable host are an info reference, the inline map is stored truncated |
+| `.20` | a map URL answered 403 with S3's `AccessDenied` body and headers, and one answered 403 the way a made-up sibling is too | M-07/M-08 | no source-map reference for either; M-04's 403 still is one |
 | `.20` | UI labels that read like secrets beside real ones | K-01, K-04/05 | the labels are not secrets; the AWS key, the generic API key and both passwords are |
 | `.20` | debug flag, internal URL, localhost with port, a documentation host | K-02, K-03 | the three dev references are info; the documentation host is not reported |
 | `.20` | a 228-character JWT in quotes and as a `Bearer` header | K-06 | both are Secrets, not dropped as a base64 blob |
 | `.20` | a 5-line bundle whose last line is 20,000 characters: `fontFamily` near its start, an AWS-format key 8,000 characters later | K-07 | the key is a Secret; a font marker hides only what sits next to it |
 | `.20` | `window.postMessage(1);fetch("/api/read");api.get("/api/list")` beside an `axios.post` control | E-01 | `/api/read` and `/api/list` are GET, `/api/save` is POST |
+| `.20` | `/static/js/main.4f3a.js`, `/_next/static/chunks/pages/app-91c.js`, `/js/app.min.js`, `/js/bundle.js__v_ab12`: paths the default `KATANA_EXCLUDE_PATTERNS` matches, and a hash-suffixed name (JS-coverage project) | J-11/J-12 | all four analyzed (each one's `fetch("/api/cov/<name>")` is an Endpoint under its js_file node); the three the exclude list matches are no Endpoint themselves |
+| `.20` | `main.4f3a.js.map`: `src/config.ts` holds a Stripe-format key and `fetch("/api/v2/orders")`; a `node_modules` source holds an example key | S-04/S-05 | a Stripe Secret Key with `source_url` `…main.4f3a.js.map#src/config.ts` under its own js_file node, Endpoint `GET /api/v2/orders`, the map `low` with `secrets_in_source` 1; nothing from the library source |
+| `.20` | `calls.6e7f.js`: `this.get`, minified `n.get`, a template literal, `API_BASE+"/v2/…"`, `api.get("v1/…")`, a `{url: …}` request object, beside `Map`/`URLSearchParams`/`headers` `.get()` | E-04/E-05 | the six Endpoints (the template's path `/api/lab-users/` with `path_template` `/api/lab-users/${id}`); none from the lookups |
+| `.29` | 520 Next.js-style chunks of about 40 kB, each with a first-party source map (`BULK_CHUNKS`) | F-00..F-03 | all map sources analyzed; on a rerun with `jsReconMaxFiles` 60 and `.20`'s `/js/app.min.js` hidden: the coverage record names `js_recon_file_cap`, `.20` (analyzed in full) prunes the hidden file's findings, and `.29` (cut) keeps every finding |
 | `.20` | `keys.8c2d.js`: an `AIza…` browser key and a Segment write key | K-08 | both are Secrets at info with `public_client_key`; after the Priority Board every public key is in T4 (X-01d) |
 | `.20` | `keys.8c2d.js`: CSS-module class names `password:"LoginForm_password__3xYz9"` | K-09 | no Secret |
 | `.20` | `keys.8c2d.js`: two Supabase-style JWTs, `role: anon` and `role: service_role` | K-10 | "Supabase anon key" at info (public), "Supabase service_role key" critical; neither is also a "JWT Token" or "Supabase Key" |

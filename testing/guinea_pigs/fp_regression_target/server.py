@@ -21,6 +21,7 @@ real finding that must survive. Stdlib only. See README.md for the case table.
     ROLE=sso        / answers 302 to the vendor host's SAML login (outside the project)
     ROLE=loginwall  an HTTPS origin that 302s every path to /login
     ROLE=deny       one gateway deny page (403) on every path, the same bytes on every host
+    ROLE=bulk       BULK_CHUNKS Next.js-style chunks, each with a first-party source map
 """
 
 import base64
@@ -219,8 +220,31 @@ def _inline_map():
     return "data:application/json;base64," + base64.b64encode(json.dumps(m).encode()).decode()
 
 
+# Plan 06: bundles where the crawler's default exclude list (/static/,
+# /_next/static, .min.js) used to hide them, and a hash-suffixed name.
+_EXTRA_JS = {
+    "/_next/static/chunks/pages/app-91c.js": 'self.__NEXT_P=self.__NEXT_P||[];fetch("/api/cov/next");\n',
+    "/js/app.min.js": '!function(){fetch("/api/cov/min")}();\n',
+    "/js/bundle.js__v_ab12": '!function(){fetch("/api/cov/hash")}();\n',
+}
+# Synthetic, unsigned, built by concatenation; the lab keeps key validation off.
+_LAB_STRIPE_KEY = "sk_live_" + "4mQ9tR2vX7cL1nB8kP3wZ6sD"
+_SPA_HIDDEN = set()   # /_lab/js?hide=<path>: answer that path with the shell, for a rerun
+
+
 class Spa(Base):
     MAPS = {
+        "/static/js/main.4f3a.js.map": ({
+            "version": 3, "file": "main.js", "mappings": "AAAA",
+            "sources": ["webpack:///./src/config.ts", "webpack:///./src/index.tsx",
+                        "webpack:///node_modules/react/index.js"],
+            "sourcesContent": [
+                f'export const PAYMENTS_KEY = "{_LAB_STRIPE_KEY}";\n'
+                'export function loadOrders() {\n  return fetch("/api/v2/orders");\n}\n',
+                "import { loadOrders } from './config';\nloadOrders();\n",
+                'module.exports = { key: "sk_live_' + "LIBRARYEXAMPLE0000000000" + '" };\n',
+            ],
+        }, "application/octet-stream"),
         "/static/js/main.4f2a9c.js.map": ({
             "version": 3, "file": "main.js", "mappings": "AAAA;AACA",
             "sources": ["webpack:///./src/App.tsx", "webpack:///./src/api/client.ts",
@@ -236,6 +260,24 @@ class Spa(Base):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/_lab/js":
+            query = dict(p.split("=", 1) for p in self.path.split("?", 1)[-1].split("&") if "=" in p)
+            with _lock:
+                _SPA_HIDDEN.clear()
+                _SPA_HIDDEN.update(h for h in query.get("hide", "").split(",") if h)
+                hidden = sorted(_SPA_HIDDEN)
+            return self.send(200, json.dumps({"hidden": hidden}), "application/json")
+        if path not in _SPA_HIDDEN:
+            if path in _EXTRA_JS:
+                return self.send(200, _EXTRA_JS[path], "application/javascript")
+            # Object storage refuses a missing key with 403 AccessDenied (S3), and
+            # a CloudFront-style edge answers 403 to every missing path alike.
+            if path.startswith("/s3/"):
+                return self.send(403, '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>AccessDenied</Code>'
+                                      '<Message>Access Denied</Message></Error>', "application/xml",
+                                 {"Server": "AmazonS3", "x-amz-request-id": "LAB0000000000000"})
+            if path.startswith("/cf/"):
+                return self.send(403, "Forbidden", "text/plain")
         if path == "/static/js/main.4f2a9c.js":
             return self.send(200, _main_js(), "application/javascript")
         if path == "/static/js/inline.5e6f.js":
@@ -246,11 +288,76 @@ class Spa(Base):
         if path == "/static/js/private.9c3d.js.map":
             return self.send(403, "<h1>Forbidden</h1>")
         local = os.path.join(STATIC, path[len("/static/"):])
-        if path.startswith("/static/") and os.path.isfile(local) and ".." not in path:
+        if path.startswith("/static/") and os.path.isfile(local) and ".." not in path and path not in _SPA_HIDDEN:
             with open(local, "rb") as f:
                 return self.send(200, f.read(), "application/javascript" if path.endswith(".js") else "application/octet-stream")
         with open(os.path.join(STATIC, "index.html"), "rb") as f:   # the SPA catch-all
             return self.send(200, f.read(), "text/html; charset=utf-8")
+
+
+# --------------------------------------------------------------------------- bulk JS (plan 06.2)
+BULK_CHUNKS = int(os.environ.get("BULK_CHUNKS", "520"))
+_BULK_CHUNK_CHARS = 40_000
+_BULK_SOURCE_CHARS = 12_000
+
+
+def _bulk_name(n):
+    return f"{n}-{hashlib.sha256(str(n).encode()).hexdigest()[:12]}.js"
+
+
+def _filler(rng, chars):
+    out, size = [], 0
+    while size < chars:
+        i, k = rng.randrange(10 ** 6), rng.randrange(1, 97)
+        part = f"function f{i}(a,b){{var c=a+b*{k};return c>{k}?c:a}}"
+        out.append(part)
+        size += len(part)
+    return "".join(out)
+
+
+def _bulk_chunk(n):
+    """One minified Next.js-style chunk: an email and an API call to find,
+    bulk around them, and a reference to its source map."""
+    rng = random.Random(n)
+    return ('(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[%d],{%d:function(e,t,n){"use strict";'
+            'var m="bulk-%d@example.com";function load(){return fetch("/api/bulk/%d/items")}%s}}]);\n'
+            '//# sourceMappingURL=%s.map\n' % (n, n, n, n, _filler(rng, _BULK_CHUNK_CHARS), _bulk_name(n)))
+
+
+def _bulk_map(n):
+    rng = random.Random(10 ** 6 + n)
+    sources = [f"webpack://_N_E/./src/components/Widget{n}.tsx", f"webpack://_N_E/./src/lib/api{n}.ts",
+               "webpack://_N_E/./node_modules/react/cjs/react.production.min.js"]
+    contents = [
+        f"export function Widget{n}() {{\n  return fetch('/api/bulk/{n}/detail');\n}}\n" + _filler(rng, _BULK_SOURCE_CHARS),
+        f"export const base{n} = '/api/bulk/{n}';\n" + _filler(rng, _BULK_SOURCE_CHARS),
+        _filler(rng, _BULK_SOURCE_CHARS * 2),
+    ]
+    return {"version": 3, "file": _bulk_name(n), "mappings": "AAAA", "sources": sources, "sourcesContent": contents}
+
+
+class Bulk(Base):
+    """A site with BULK_CHUNKS script chunks, each with a first-party source
+    map: the volume a large Next.js app hands JS recon once nothing hides it."""
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        prefix = "/_next/static/chunks/"
+        if path in ("/", "/index.html"):
+            tags = "".join(f'<script src="{prefix}{_bulk_name(n)}"></script>' for n in range(BULK_CHUNKS))
+            return self.send(200, f"<!doctype html><html><head><title>Bulk</title></head><body>{tags}</body></html>")
+        if path.startswith(prefix):
+            name = path[len(prefix):]
+            stem = name[:-4] if name.endswith(".map") else name
+            try:
+                n = int(stem.split("-", 1)[0])
+            except ValueError:
+                n = -1
+            if 0 <= n < BULK_CHUNKS and stem == _bulk_name(n):
+                if name.endswith(".map"):
+                    return self.send(200, json.dumps(_bulk_map(n)), "application/json")
+                return self.send(200, _bulk_chunk(n), "application/javascript")
+        return self.send(404, "<h1>not found</h1>")
 
 
 class Vendor(Base):
@@ -400,7 +507,7 @@ class Shodan(Base):
 # --------------------------------------------------------------------------- main
 ROLES = {"fastly": Fastly, "cloudflare": Cloudflare, "redirect": Redirect, "akamai": Akamai,
          "ratelimit": RateLimit, "cache": Cache, "spa": Spa, "vendor": Vendor, "shodan": Shodan,
-         "api": Api, "jsonall": JsonAll, "sso": Sso, "loginwall": LoginWall, "deny": Deny}
+         "api": Api, "jsonall": JsonAll, "sso": Sso, "loginwall": LoginWall, "deny": Deny, "bulk": Bulk}
 
 
 def _tls_context():
