@@ -1644,6 +1644,52 @@ In addition to Nuclei templates, RedAmon includes custom Python-based security c
 |-------|----------|-------------|
 | `no_rate_limiting` | Medium | No rate limit on login endpoints |
 
+#### Direct IP Access
+| Check | Severity | Description |
+|-------|----------|-------------|
+| `ip_api_exposed` | High / Medium | An API path (`/api`, `/api/v1`, `/api/v2`, `/graphql`, `/rest`, `/v1`, `/v2`) answers on the bare IP over plain HTTP: `200` + JSON is High, an API's own `401`/`403` is Medium |
+| `waf_bypass` (`payload_differential`) | High | The edge blocks a WAF-signature probe that the origin, addressed by IP with the real Host header, serves |
+
+**The catch-all control (`ip_api_exposed`).** Many servers answer every path
+alike (`200 {"code":"NOT_FOUND"}`, an SPA shell). After a `200` + JSON hit the
+check asks the same server for a path that cannot exist next to it
+(`<parent prefix>rdm-<12 hex>`, through the same `_hh_get`, headers and
+`allow_redirects=False`; `recon/helpers/catchall.py`). The same answer means the
+hit proves nothing: the path is skipped and the next one tried. A real hit
+records `control_check: passed` in its evidence and as a `control_check`
+property; a control that could not be sent or read keeps the finding as
+`control_check: failed` (never evidence either way). "The same answer" is the
+same status (2xx/3xx by class, others exactly) and normalised bodies (the echoed
+path, nonce, hostname and request ids stripped) within 64 bytes or 5%, word
+counts within 5 or 10%, sharing at least 90% of their tokens. One control is
+sent per IP and path prefix per run (`ControlCache`), never to an RoE-excluded
+host, and the run logs how many it sent. JS Recon's endpoint validation uses
+the same control (`validation_status: catch_all`, no Endpoint node).
+
+**The payload differential (`waf_bypass`).** A bypass needs the edge to block
+the probe (403, 406, 429, 501, 999 or 202) **and** the origin to serve it: a
+**2xx** answer whose normalised body shares at least 80% of its tokens with the
+page the edge serves for a benign request to `https://<host>/` (one extra
+request, sent only once a probe is a candidate). A 302 to login, a 401, a 404
+or a 421 from the origin is the origin refusing; a 2xx default page that is not
+the site, or an edge with no 2xx page of its own, gives no finding either. The
+evidence carries `edge_status`, `origin_status`, `edge_baseline_status` and
+`body_similarity`, and the Priority Board rates the method's confidence 0.95.
+The `waf-bypass` guinea pig exercises it.
+
+**Challenge pages.** A Cloudflare challenge (`cf-mitigated`,
+`challenge-platform`, "Just a moment...") or an Akamai "Access Denied" page with
+a reference number is the edge answering, not the target. `ip_api_exposed`
+stops probing a challenged IP and reports nothing for it, and the host is
+recorded once per run as a `challenge_blocked` coverage gap of `vuln_scan`, so
+the report's Coverage Limitations shows it was not really checked. A challenged
+control is "no conclusion" and records the same gap.
+
+**User-Agent.** The checks send `DEFAULT_BROWSER_UA`
+(`recon/helpers/user_agent.py`), the full desktop Chrome string httpx and katana
+default to; a bare `Mozilla/5.0` or a truncated Chrome string is what bot rules
+match first.
+
 ### Configuration
 
 All checks are enabled by default. Disable in the webapp project settings:

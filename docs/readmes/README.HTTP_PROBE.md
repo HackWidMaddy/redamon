@@ -150,6 +150,32 @@ All parameters are configured via the webapp project settings (stored in Postgre
 - Login pages often redirect after authentication
 - Without following, you might miss the actual content
 
+**What is stored for a redirect.** httpx reports the URL it was *asked* for
+(`url`) and the last hop (`final_url`), but the status, title, technologies,
+server, favicon and body hash it prints describe the **last** page. So
+`status_code` on the Endpoint is the last hop's, and each probed URL also keeps:
+
+| Field (on the probed Endpoint) | Meaning |
+|---|---|
+| `first_status_code` | The first answer, before any redirect: `chain_status_codes[0]`, or `status_code` when nothing redirected. Rank on this, not on `status_code`: a host that answers `302` to a login page is not a `200` page. |
+| `redirect_chain_codes` | The status of each hop, first to last (`[302, 200]`); one entry when nothing redirected. |
+| `final_url` | Where the answer came from; equals `url` when nothing redirected. |
+| `redirected_off_host` | The last hop is on another host. |
+
+**An in-scope host that redirects off scope.** The scope filter checks the
+requested host *and* the last hop's host. When `old.example.com` (in scope)
+redirects to a third-party IdP (not in scope), the entry is kept (the host is
+live and redirects away) but none of the foreign page's fingerprint is: no
+title, technologies, server, favicon, body hash, content type, word/line
+counts, headers, body or TLS certificate (Go reports the final connection's).
+JARM, the IP, CNAME, ASN and CDN are measured on the requested host and stay.
+The foreign host becomes an external-domain entry (`source:
+"http_probe_redirect"`, `redirect_from_url` = the in-scope URL), which
+`run_http_probe` returns as `http_probe.external_domains` and the pipeline writes
+as an `ExternalDomain`. When neither host is in scope the entry is dropped and
+counted in `summary.filtered_out_of_scope`. `HTTPX_FOLLOW_REDIRECTS` stays on by
+default: with the chain stored, nothing needs the pre-redirect page itself.
+
 ---
 
 ### 3. HTTP Response Probing (Fast Options)
@@ -324,6 +350,14 @@ Each JARM fingerprint requires:
 - Detect identical pages across different URLs
 - Find mirror sites
 - Identify default/template pages
+
+**Shared pages (`shared_body_cluster`).** After every http_probe graph write,
+full or partial, the http mixin groups the project's root Endpoints (path `/`) by
+`body_sha256`. When 3 or more distinct BaseURLs serve the same body with status
+200 or 403, each of those Endpoints gets `shared_body_cluster` = that count: one
+gateway deny, parking or default page, not each host's own content. The mark is
+recomputed over the whole project each time and removed from an Endpoint whose
+host no longer serves the shared page.
 
 ---
 
@@ -958,9 +992,19 @@ docker run --rm -i \
           "Content-Type": "text/html; charset=UTF-8",
           "X-Powered-By": "PHP/7.4.3"
         },
-        "body": "<!DOCTYPE html>..."
+        "body": "<!DOCTYPE html>...",
+        "final_url": "https://example.com",
+        "first_status_code": 200,
+        "redirect_chain_codes": [200],
+        "redirected_off_host": false
       }
     },
+
+    "external_domains": [
+      {"domain": "idp.example.net", "source": "http_probe_redirect",
+       "url": "https://idp.example.net/saml/login", "redirect_from_url": "http://old.example.com",
+       "status_code": 200, "title": "SAML Login", "server": "nginx"}
+    ],
     
     "by_host": {
       "example.com": {
