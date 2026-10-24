@@ -114,10 +114,12 @@ class TestFileCap:
             f"https://{HOST_C}/d.js"]
 
     def test_regression_a_capped_run_keeps_only_the_cut_files_hosts(self):
+        # The budget is shared round-robin by host (plan 06.2): A's first file
+        # and B's only one are analyzed, A's second and C's are cut.
         _run(_combined(live=True), settings={"JS_RECON_MAX_FILES": 2}, urls=self.URLS)
         report = cb.coverage_report()
         assert "js_recon" not in report.degraded_sources
-        assert report.keep_hostnames("js_recon") == (HOST_B, HOST_C)
+        assert report.keep_hostnames("js_recon") == (HOST_A, HOST_C)
         # Cut for js_recon alone: every other source re-checked those hosts.
         assert report.keep_hostnames("nuclei") == ()
         assert any("file cap" in g["reason"] for g in _js_gaps())
@@ -232,6 +234,6 @@ class TestThePrune:
         _run(_combined(live=True), settings={"JS_RECON_MAX_FILES": 2}, urls=TestFileCap.URLS)
         calls = _prunes(recon_main, monkeypatch)
         js = [keep for sources, keep in calls if "js_recon" in sources]
-        assert js == [(HOST_B, HOST_C)]
+        assert js == [(HOST_A, HOST_C)]
         others = [keep for sources, keep in calls if "js_recon" not in sources]
         assert others and all(keep == () for keep in others)

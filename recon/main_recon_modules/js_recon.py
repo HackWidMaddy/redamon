@@ -495,6 +495,67 @@ def _collect_js_urls(combined_result: dict, settings: dict) -> list:
     return sorted(js_urls)
 
 
+def _default_max_files() -> int:
+    from recon.project_settings import DEFAULT_SETTINGS
+    return int(DEFAULT_SETTINGS['JS_RECON_MAX_FILES'])
+
+
+# Which of a host's files to fetch first when the budget cannot cover them all.
+# Library and bundler-runtime files are public code; the app's own entry
+# points and page chunks are where its endpoints and keys live.
+_VENDOR_JS_HINT = re.compile(
+    r'(?:^|[/._~-])(?:vendors?|framework|polyfills?|runtime|webpack|react(?:-dom)?|jquery'
+    r'|lodash|moment|core-js|libs?)(?:[/._~-]|$)|/node_modules/', re.IGNORECASE)
+_FIRST_PARTY_JS_HINT = re.compile(r'(?:^|/)(?:main|app|index|_app)(?:[._~-]|$)|/pages/|/chunks/',
+                                  re.IGNORECASE)
+
+
+def _js_fetch_rank(url: str) -> tuple:
+    path = urlparse(url).path
+    if _VENDOR_JS_HINT.search(path):
+        rank = 2
+    elif _FIRST_PARTY_JS_HINT.search(path):
+        rank = 0
+    else:
+        rank = 1
+    return rank, url
+
+
+def _select_js_urls(js_urls: list, max_files: int) -> tuple:
+    """``(selected, by_host)``: at most ``max_files`` URLs, taken round-robin
+    by host so one large site cannot take the whole budget, in a fixed order
+    (hosts sorted; within a host, first-party bundles first, vendor files
+    last). ``by_host`` maps each ``host:port`` to its candidates / selected /
+    cut counts."""
+    from recon.helpers import circuit_breaker as cb
+    queues: dict = {}
+    for url in sorted(set(u for u in js_urls if isinstance(u, str))):
+        queues.setdefault(cb.host_key(url) or url, []).append(url)
+    for files in queues.values():
+        files.sort(key=_js_fetch_rank)
+
+    budget = max(0, int(max_files))
+    selected = []
+    taken = {host: 0 for host in queues}
+    hosts = sorted(queues)
+    while len(selected) < budget:
+        progressed = False
+        for host in hosts:
+            if len(selected) >= budget:
+                break
+            if taken[host] < len(queues[host]):
+                selected.append(queues[host][taken[host]])
+                taken[host] += 1
+                progressed = True
+        if not progressed:
+            break
+    by_host = {
+        host: {'candidates': len(files), 'selected': taken[host], 'cut': len(files) - taken[host]}
+        for host, files in queues.items()
+    }
+    return selected, by_host
+
+
 def _load_uploaded_files(settings: dict, project_id: str) -> list:
     """
     Load manually uploaded JS files from /data/js-recon-uploads/{projectId}/.
@@ -1254,6 +1315,18 @@ def _note_unchecked(reason: str, urls=None) -> None:
         pass
 
 
+def _note_file_cap(skipped: int, max_files: int) -> None:
+    """The cut as a coverage note, so the report's Coverage Limitations block
+    names it. No prune effect: _note_unchecked keeps the cut hosts."""
+    try:
+        from recon.helpers import circuit_breaker as cb
+        print(f"[!][JsRecon] JS_RECON_MAX_FILES ({max_files}) cut {skipped} JS file(s)")
+        cb.note_degraded('js_recon', entries=[
+            {"source": "js_recon_file_cap", "reason": f"file cap ({max_files})", "skipped": skipped}])
+    except Exception:  # noqa: BLE001 - coverage bookkeeping never fails the scan
+        pass
+
+
 def run_js_recon(combined_result: dict, settings: dict) -> dict:
     """
     Run JS Recon analysis on JS files from the recon pipeline.
@@ -1323,19 +1396,29 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         # 2. Collect JS URLs from pipeline
         js_urls = _collect_js_urls(combined_result, settings)
 
-        # 3. Download JS files from pipeline URLs
-        max_files = settings.get('JS_RECON_MAX_FILES', 500)
+        # 3. Download JS files from pipeline URLs, the budget shared by host
+        max_files = settings.get('JS_RECON_MAX_FILES') or _default_max_files()
+        selected_urls, by_host = _select_js_urls(js_urls, max_files)
+        file_budget = {
+            'max_files': max_files,
+            'candidates': len(set(js_urls)),
+            'selected': len(selected_urls),
+            'cut': len(set(js_urls)) - len(selected_urls),
+            'by_host': by_host,
+        }
         js_files = []
-        if js_urls:
+        if selected_urls:
             js_files = _download_js_files(
-                js_urls,
+                selected_urls,
                 work_dir,
                 max_files=max_files,
                 concurrency=settings.get('JS_RECON_CONCURRENCY', 10),
                 timeout=settings.get('JS_RECON_TIMEOUT', 900),
             )
-            if len(js_urls) > max_files:
-                _note_unchecked("file cap", js_urls[max_files:])
+        if file_budget['cut']:
+            chosen = set(selected_urls)
+            _note_unchecked("file cap", [u for u in js_urls if u not in chosen])
+            _note_file_cap(file_budget['cut'], max_files)
         # Uploads do not count: they re-check none of the pipeline's files. A
         # run with no live target at all had nothing to re-check, so no gap.
         if not js_files and _has_live_urls(combined_result):
@@ -1347,7 +1430,8 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         if not js_files:
             print("[-][JsRecon] No JS files found (pipeline or uploaded)")
             combined_result['js_recon'] = {
-                'scan_metadata': {'mode': 'post_recon', 'js_files_analyzed': 0},
+                'scan_metadata': {'mode': 'post_recon', 'js_files_analyzed': 0,
+                                  'file_budget': file_budget},
                 'secrets': [], 'endpoints': [], 'summary': {},
             }
             return combined_result
@@ -1469,6 +1553,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
                 'js_files_analyzed': len(js_files),
                 'js_files_total_size_bytes': total_size,
                 'duration_seconds': round(duration, 1),
+                'file_budget': file_budget,
             },
             # Where the downloaded JS lives. GROUP 5.5 (supply-chain recon)
             # hands this path to the DIRTY analyzer so retire.js can read the
