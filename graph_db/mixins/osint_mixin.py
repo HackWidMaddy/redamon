@@ -75,6 +75,24 @@ def _shodan_cve_props(cve_entry: dict) -> dict:
     return {k: v for k, v in props.items() if v is not None}
 
 
+#: The passive CVE sources whose id ends in the IP (`shodan-<cve>-<ip>`,
+#: `criminalip-<cve>-<ip>`). Kept in step with PASSIVE_CVE_SOURCES in
+#: recon/helpers/finding_sources.py, which this package cannot import.
+_IP_KEYED_PASSIVE_SOURCES = ("shodan_api", "internetdb", "shodan", "shodan_host_lookup",
+                             "criminalip")
+
+_PASSIVE_CVE_ID = re.compile(r"^(?:shodan|criminalip)-CVE-\d{4}-\d+-(.+)$", re.IGNORECASE)
+
+
+def _ip_from_passive_cve_id(vid) -> str | None:
+    """The IP a Shodan or CriminalIP CVE's id names, or None."""
+    match = _PASSIVE_CVE_ID.match(str(vid or ""))
+    if not match:
+        return None
+    candidate = match.group(1)
+    return candidate if _is_ip_address(candidate) else None
+
+
 def _split_url(url: str) -> tuple[str, str]:
     """(base_url, path), where base_url is scheme://netloc and path defaults to
     '/'. Query and fragment are dropped.
@@ -527,6 +545,43 @@ class OsintMixin:
                 print(f"[!][graph-db] {len(stats['errors'])} errors occurred")
 
         return stats
+
+    def backfill_passive_cve_hosts(self, user_id: str, project_id: str) -> int:
+        """Give older Shodan and CriminalIP CVEs the `target_ip` their id names.
+
+        The recon prune keeps an IP the run could not look up by matching a
+        finding's host fields, and `target_ip` is the only one these carry.
+        Shodan stores it since its evidence grading, CriminalIP since its CVEs
+        are pruned at all; a row written before would otherwise be deleted
+        when its IP was the one not re-checked. Run before the prune. Never
+        writes `updated_at`; idempotent.
+        """
+        with self.driver.session() as session:
+            rows = []
+            for record in session.run(
+                """
+                MATCH (v:Vulnerability {user_id: $uid, project_id: $pid})
+                WHERE v.target_ip IS NULL AND v.source IN $sources
+                RETURN v.id AS id
+                """,
+                uid=user_id, pid=project_id, sources=list(_IP_KEYED_PASSIVE_SOURCES),
+            ):
+                ip = _ip_from_passive_cve_id(record["id"])
+                if ip:
+                    rows.append({"id": record["id"], "ip": ip})
+            if not rows:
+                return 0
+            session.run(
+                """
+                UNWIND $rows AS r
+                MATCH (v:Vulnerability {id: r.id, user_id: $uid, project_id: $pid})
+                WHERE v.target_ip IS NULL
+                SET v.target_ip = r.ip
+                """,
+                rows=rows, uid=user_id, pid=project_id,
+            )
+        print(f"[*][graph-db] Backfilled target_ip on {len(rows)} older passive CVE(s)")
+        return len(rows)
 
 
     def update_graph_from_urlscan_discovery(self, recon_data: dict, user_id: str, project_id: str) -> dict:
@@ -2325,10 +2380,13 @@ class OsintMixin:
                                                                 project_id: $project_id})
                                         ON CREATE SET v.source = 'criminalip', v.name = $cve_id,
                                                       v.cves = [$cve_id], v.cvss = $cvss,
-                                                      v.user_id = $user_id, v.project_id = $project_id,
-                                                      v.updated_at = datetime()
+                                                      v.user_id = $user_id, v.project_id = $project_id
+                                        // Every run: the prune deletes what a run
+                                        // did not touch, and keeps an IP it could
+                                        // not look up by this host field.
+                                        SET v.updated_at = datetime(), v.target_ip = $ip
                                         """,
-                                        vuln_id=vuln_id, cve_id=cve_id, cvss=cvss,
+                                        vuln_id=vuln_id, cve_id=cve_id, cvss=cvss, ip=ip,
                                         user_id=user_id, project_id=project_id,
                                     )
                                     stats["vulnerabilities_created"] += 1

@@ -414,6 +414,13 @@ Shodan passive CVE properties (source="shodan_api" or "internetdb"):
 - id pattern: `shodan-{cve}-{ip}`; a shared CDN/edge IP (Shodan's `cdn` tag or an edge provider's attribution) yields no CVE rows
 - Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`, the finding's only parent (match the Service by `target_port` and `product`)
 
+CriminalIP passive CVE properties (source="criminalip"):
+- target_ip (string): the IP Criminal IP reported the CVE on, refreshed every run
+- id pattern: `criminalip-{cve}-{ip}`
+- Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`
+
+Passive CVEs (Shodan, InternetDB, Netlas, CriminalIP) are recon finding sources: a full scan prunes the ones it no longer reports, and keeps those on an IP the provider could not be asked about.
+
 Nuclei-specific properties (source="nuclei"):
 - template_id (string): nuclei template ID
 - template_path, template_url (string): template location

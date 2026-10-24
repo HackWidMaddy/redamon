@@ -246,8 +246,8 @@ def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
 
     domain = combined_result.get("domain", "") or ""
     is_ip_mode = combined_result.get("metadata", {}).get("ip_mode", False)
-    ips = _extract_ips_from_recon(combined_result)
-    ips = filter_ips_for_enrichment(ips, combined_result, "Netlas")
+    all_ips = _extract_ips_from_recon(combined_result)
+    ips = filter_ips_for_enrichment(all_ips, combined_result, "Netlas")
 
     print(f"[*][Netlas] Starting OSINT enrichment")
 
@@ -256,21 +256,32 @@ def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
     total_hint = 0
     netlas_scope = cb.scope("netlas", label="Netlas", unit="query(ies)")
     breaker = _netlas_breaker()
+    # IPs whose every Netlas row this run saw; the prune keeps the others' CVEs.
+    checked: set[str] = set()
+    reached = False
+    failed = False
 
     try:
         if is_ip_mode:
             print(f"[+][Netlas] IP mode — querying host: for {len(ips)} IP(s)")
 
             def _enrich_single_ip_netlas(ip, rate_limiter):
+                nonlocal reached
                 # Before the wait: the limiter reserves a slot before sleeping.
                 if not breaker.allow():
                     return ip, [], 0
                 rate_limiter.wait()
                 q = f"host:{ip}"
                 res = _netlas_responses_get(q, keys, max_results, admitted=True)
+                if res.answered:
+                    reached = True
+                if res.answered and not res.ok:
+                    checked.add(ip)
                 if not res.ok:
                     return ip, [], 0
                 rows, t = _parse_netlas_body(res.data)
+                if t <= len(rows):
+                    checked.add(ip)
                 return ip, rows, t
 
             max_workers = settings.get('NETLAS_WORKERS', 5)
@@ -289,6 +300,9 @@ def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
             # Preserve original IP ordering
             ip_order = {ip: i for i, ip in enumerate(ips)}
             all_rows.sort(key=lambda r: ip_order.get(r.get("ip", ""), 0))
+            # The row cap is across every IP: one that lost a row to it was not
+            # fully re-checked.
+            checked -= {r.get("ip") for r in all_rows[max_results:]}
         else:
             if not domain:
                 print("[!][Netlas] No domain in scope — skipping")
@@ -299,6 +313,11 @@ def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
                 if res.ok:
                     rows, total_hint = _parse_netlas_body(res.data)
                     all_rows = rows[:max_results]
+                # One query answers for every IP of the domain; a cut answer
+                # re-checked none of them for sure.
+                reached = res.answered
+                if res.answered and total_hint <= len(all_rows):
+                    checked.update(ips)
                 time.sleep(1)
 
         netlas_data["results"] = all_rows[:max_results]
@@ -311,8 +330,12 @@ def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
         print(f"[!][Netlas] Pipeline continues with partial or empty Netlas data")
         netlas_data["results"] = all_rows[:max_results]
         netlas_data["total"] = total_hint if total_hint else len(netlas_data["results"])
+        failed = True
 
     netlas_scope.finish("netlas_enrich", payload=netlas_data)
+    from recon.helpers.passive_cve_coverage import note_cve_coverage
+    note_cve_coverage("netlas", "netlas_enrich", ips, checked, reached=reached,
+                      no_input=not all_ips or (not is_ip_mode and not domain), failed=failed)
     combined_result["netlas"] = netlas_data
     return combined_result
 

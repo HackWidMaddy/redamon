@@ -1768,7 +1768,7 @@
         }
       ],
       "notes": [
-        "CriminalIP writes these nodes once and never refreshes them, and none of these providers is a recon finding source, so in this phase only applying to the current graph reaches them at all.",
+        "These providers are recon finding sources: the sweep after a scan applies the rules to their CVEs, and a full scan prunes the ones it no longer reports, except on an IP the provider could not be asked about.",
         "Netlas records a severity and a public exploit; Shodan records a severity only when its banner gave a CVSS score, plus the evidence grade (detection_method): a Shodan-verified banner, a banner's product and version, or the IP's catalog alone. CriminalIP carries the CVE alone."
       ]
     },

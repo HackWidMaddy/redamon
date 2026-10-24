@@ -530,6 +530,9 @@ Shodan passive CVE properties (source="shodan_api" or "internetdb"):
 - product (string): the banner's product, absent when the banner named none
 - version (string): the banner's version, absent when the banner named none
 
+CriminalIP passive CVE properties (source="criminalip"):
+- target_ip (string): the IP Criminal IP reported the CVE on, refreshed every run
+
 Nuclei-specific properties (source="nuclei"):
 - template_id (string): nuclei template ID
 - template_path: template location
@@ -674,6 +677,9 @@ Per-source properties node filters also read (graph_db/node_filters/catalog.yaml
 - remediated_at
 - id pattern: `shodan-{cve}-{ip}`; a shared CDN/edge IP (Shodan's `cdn` tag or an edge provider's attribution) yields no CVE rows
 - Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`, the finding's only parent (match the Service by `target_port` and `product`)
+- id pattern: `criminalip-{cve}-{ip}`
+- Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`
+Passive CVEs (Shodan, InternetDB, Netlas, CriminalIP) are recon finding sources: a full scan prunes the ones it no longer reports, and keeps those on an IP the provider could not be asked about.
 - Typical query: "list serialized-object candidates awaiting confirmation, most reachable first" → `MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'serialized_scan'}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) RETURN e.url, v.id, v.deser_format, v.deser_location, v.deser_jev_exploitability ORDER BY CASE v.deser_jev_format WHEN 'none' THEN -1 ELSE coalesce(v.deser_jev_exploitability, -1) END DESC, v.id`
 - id pattern: `graphql_{vulnerability_type}_{baseurl}_{path}` (deterministic, MERGE-safe across re-scans)
 - Typical query: "find endpoints exposing GraphQL introspection" → `MATCH (e:Endpoint {is_graphql: true, graphql_introspection_enabled: true})-[:HAS_VULNERABILITY]->(v:Vulnerability) WHERE v.source IN ['graphql_scan', 'graphql_cop'] RETURN e.url, v.vulnerability_type, v.severity`

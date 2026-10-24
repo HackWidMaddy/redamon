@@ -1220,6 +1220,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                         combined_result["metadata"]["modules_executed"].append("masscan_scan")
                 except Exception as e:
                     print(f"[!][{name}] Failed: {e}")
+                    _note_phase_error(name)
 
         # Merge masscan results into port_scan for downstream consumers
         if "masscan_scan" in combined_result:
@@ -1331,6 +1332,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                         print(f"[+][{name.upper()}] Enrichment merged")
                 except Exception as e:
                     print(f"[!][{name.upper()}] Enrichment failed: {e}")
+                    _note_phase_error(name)
         save_recon_file(combined_result, output_file)
         for name, (_, _, _, graph_method) in enabled_ip_osint.items():
             if name in combined_result:
@@ -1880,6 +1882,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                         print(f"[+][Masscan] Port scan merged")
                 except Exception as e:
                     print(f"[!][{name}] Failed: {e}")
+                    _note_phase_error(name)
 
         # Merge masscan results into port_scan for downstream consumers
         if "masscan_scan" in combined_result:
@@ -2009,6 +2012,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                         print(f"[+][{name.upper()}] Enrichment merged")
                 except Exception as e:
                     print(f"[!][{name.upper()}] Enrichment failed: {e}")
+                    _note_phase_error(name)
 
         save_recon_file(combined_result, output_file)
 
@@ -2286,7 +2290,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     return combined_result
 
 
-from recon.helpers.finding_sources import RECON_FINDING_SOURCES  # noqa: E402
+from recon.helpers.finding_sources import PASSIVE_CVE_SOURCES, RECON_FINDING_SOURCES  # noqa: E402
 
 #: When this run started. Everything it writes gets a later `updated_at`, so the
 #: prune at the end can tell "still reported" from "gone".
@@ -2456,6 +2460,16 @@ def _prune_recon_findings():
         from graph_db import Neo4jClient
         with Neo4jClient() as graph_client:
             if graph_client.verify_connection():
+                # A host kept above is matched on the finding's host fields;
+                # passive CVEs written before they carried one get it first.
+                try:
+                    graph_client.backfill_passive_cve_hosts(USER_ID, PROJECT_ID)
+                except Exception as e:  # noqa: BLE001 - fail closed for those sources only
+                    print(f"[!][graph-db] Could not backfill passive CVE hosts ({e}) - "
+                          f"passive CVEs are not pruned this run")
+                    passive = {s for group in PASSIVE_CVE_SOURCES.values() for s in group}
+                    batches = {keep: [s for s in batch if s not in passive]
+                               for keep, batch in batches.items()}
                 for keep, batch in batches.items():
                     graph_client.prune_unseen_findings(
                         USER_ID, PROJECT_ID, batch, _RUN_STARTED_AT,
@@ -2482,6 +2496,7 @@ _PHASE_FINDING_SOURCES = {
     "cache_scan": ("cache_poisoning", "wcvs"),
     "origin_discovery": ("origin_discovery",),
     "serialized_scan": ("serialized_scan",),
+    **PASSIVE_CVE_SOURCES,
 }
 
 
@@ -2491,6 +2506,10 @@ def _note_phase_error(phase: str, reason: str = "the phase failed") -> None:
     if not sources:
         return
     try:
+        if phase in PASSIVE_CVE_SOURCES:
+            from recon.helpers.passive_cve_coverage import note_cve_coverage
+            note_cve_coverage(phase, phase, failed=True, reason=reason)
+            return
         from recon.helpers import circuit_breaker
         circuit_breaker.note_degraded(phase, sources=sources, reason=reason)
     except Exception:  # noqa: BLE001

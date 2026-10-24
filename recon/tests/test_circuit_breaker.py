@@ -890,3 +890,20 @@ class TestAccumulator:
             cb.note_degraded("otx_enrich", entries=[{"source": "otx:general", "reason": "r", "skipped": 5}])
         (gap,) = cb.coverage_report().gaps
         assert gap["skipped"] == 10 and gap["source"] == "otx:general"
+
+    def test_aliases_are_cut_with_their_source_under_one_gap(self):
+        # One provider stamps its findings with several source values.
+        cb.note_degraded("shodan_enrich", sources=["shodan"], aliases=["internetdb", "shodan_api"],
+                         reason="the lookup failed")
+        report = cb.coverage_report()
+        assert report.degraded_sources == frozenset({"shodan", "internetdb", "shodan_api"})
+        assert [g["source"] for g in report.gaps] == ["shodan"]
+
+    def test_host_aliases_keep_the_same_hosts_under_one_gap(self):
+        cb.note_degraded("shodan_enrich", hosts=["198.51.100.4"], host_source="shodan",
+                         aliases=["internetdb"], source_only_hosts=True)
+        report = cb.coverage_report()
+        assert report.keep_hostnames("shodan") == ("198.51.100.4",)
+        assert report.keep_hostnames("internetdb") == ("198.51.100.4",)
+        assert report.keep_hostnames("nuclei") == ()
+        assert [g["source"] for g in report.gaps] == ["shodan"]
