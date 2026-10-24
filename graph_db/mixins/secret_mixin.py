@@ -601,7 +601,7 @@ class SecretMixin:
 
         Prefers the scanner's own field (it alone knows whether verification was
         switched off for the run); the derivation is only a fallback for findings
-        written before the field existed. 'unvalidated' (checked, dead) and
+        written before the field existed. 'rejected' (checked, dead) and
         'unverified' (never checked) must not collapse — the difference decides
         whether a pentest report can call a credential safe.
         """
@@ -612,7 +612,7 @@ class SecretMixin:
             return "validated"
         if finding.get("verification_error"):
             return "verify_error"
-        return "unvalidated"
+        return "rejected"
 
     def clear_trufflehog_data(self, user_id: str, project_id: str,
                               source: Optional[str] = None) -> dict:

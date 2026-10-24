@@ -1256,14 +1256,15 @@ Additional properties present on this node type, not yet described:
         "groups": [{'header': None, 'properties': [{'name': 'source', 'type': 'string', 'desc': 'which source found it'}, {'name': 'detector_name', 'type': 'string', 'desc': 'detector type (e.g. "AWS", "GitHub", "PrivateKey", "Slack")'}, {'name': 'detector_description', 'type': 'string', 'desc': 'human-readable detector description'}, {'name': 'validation_status', 'type': 'string', 'desc': 'THE attribute that matters.'}, {'name': 'verified', 'type': 'boolean', 'desc': 'the raw Secret Multiscanner bool; prefer validation_status'}, {'name': 'finding_kind', 'type': 'string', 'desc': '"secret", or "image_history" for a secret baked into a Docker image\'s build history (RUN/ENV directive), whose location is a synthetic path, not a real file'}, {'name': 'redacted', 'type': 'string', 'desc': 'redacted secret value'}, {'name': 'asset', 'type': 'string', 'desc': 'the asset it was found in (`repository` is a deprecated alias)'}, {'name': 'location', 'type': 'string', 'desc': 'file path, layer path, object key or URL (`file` is a deprecated alias)'}, {'name': 'commit', 'type': 'string', 'desc': 'git commit hash — empty for non-git sources'}, {'name': 'line', 'type': 'integer', 'desc': 'line number'}, {'name': 'link', 'type': 'string', 'desc': 'URL to the finding location'}, {'name': 'extra_data', 'type': 'string', 'desc': 'JSON blob of per-source extras (Docker Tag/Layer, HF revision, ...)'}, {'name': 'timestamp', 'type': 'string', 'desc': 'commit timestamp'}, {'name': 'extra_data', 'type': 'string', 'desc': 'JSON string with additional detector-specific data'}]}],
         "relationships": [],
         "subtypes": [],
-        "notes": ['  * "validated"    = the owning API confirmed the credential is LIVE (act on this)', '  * "unvalidated"  = verification ran, the API said it is not live', '  * "verify_error" = the verify call itself failed — NOT proof it is dead', '  * "unverified"   = verification was switched off — never checked, NOT safe', '  Never treat "unverified" as "not live"; it means nobody looked.'],
+        "notes": ['  * "validated"    = the owning API confirmed the credential is LIVE (act on this)', '  * "rejected"     = verification ran, the API said it is not live', '  * "unvalidated"  = the same, on nodes written before "rejected" existed', '  * "verify_error" = the verify call itself failed — NOT proof it is dead', '  * "unverified"   = verification was switched off — never checked, NOT safe', '  Never treat "unverified" as "not live"; it means nobody looked.'],
         "body": """**MultiscannerFinding** - A secret found by Secret Multiscanner
 - source (string): which source found it
 - detector_name (string): detector type (e.g. "AWS", "GitHub", "PrivateKey", "Slack")
 - detector_description (string): human-readable detector description
 - validation_status (string): THE attribute that matters.
   * "validated"    = the owning API confirmed the credential is LIVE (act on this)
-  * "unvalidated"  = verification ran, the API said it is not live
+  * "rejected"     = verification ran, the API said it is not live
+  * "unvalidated"  = the same, on nodes written before "rejected" existed
   * "verify_error" = the verify call itself failed — NOT proof it is dead
   * "unverified"   = verification was switched off — never checked, NOT safe
   Never treat "unverified" as "not live"; it means nobody looked.

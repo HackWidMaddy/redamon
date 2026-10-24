@@ -793,7 +793,8 @@ Additional properties present on this node type, not yet described:
 - detector_description (string): human-readable detector description
 - validation_status (string): THE attribute that matters.
   * "validated"    = the owning API confirmed the credential is LIVE (act on this)
-  * "unvalidated"  = verification ran, the API said it is not live
+  * "rejected"     = verification ran, the API said it is not live
+  * "unvalidated"  = the same, on nodes written before "rejected" existed
   * "verify_error" = the verify call itself failed — NOT proof it is dead
   * "unverified"   = verification was switched off — never checked, NOT safe
   Never treat "unverified" as "not live"; it means nobody looked.

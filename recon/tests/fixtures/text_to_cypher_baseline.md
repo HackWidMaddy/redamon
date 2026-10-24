@@ -970,7 +970,8 @@ Additional properties present on this node type, not yet described:
 - extra_data (string): JSON string with additional detector-specific data
 
   * "validated"    = the owning API confirmed the credential is LIVE (act on this)
-  * "unvalidated"  = verification ran, the API said it is not live
+  * "rejected"     = verification ran, the API said it is not live
+  * "unvalidated"  = the same, on nodes written before "rejected" existed
   * "verify_error" = the verify call itself failed — NOT proof it is dead
   * "unverified"   = verification was switched off — never checked, NOT safe
   Never treat "unverified" as "not live"; it means nobody looked.

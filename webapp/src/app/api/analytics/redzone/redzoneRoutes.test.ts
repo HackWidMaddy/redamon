@@ -469,6 +469,20 @@ describe('/api/analytics/redzone/secrets', () => {
     expect(c).toMatch(/s\.public_client_key\s+AS publicClientKey/)
   })
 
+  test('a TruffleHog credential checked and dead sorts the same under either word (plan 05.8)', async () => {
+    runReturnFor = [
+      { match: /MATCH \(s:Secret/, rows: [] },
+      { match: /MultiscannerFinding/, rows: [
+        { id: 'never', secretType: 'AWS', validationStatus: 'unverified' },
+        { id: 'dead-new', secretType: 'AWS', validationStatus: 'rejected' },
+        { id: 'errored', secretType: 'AWS', validationStatus: 'verify_error' },
+        { id: 'dead-old', secretType: 'AWS', validationStatus: 'unvalidated' },
+      ] },
+    ]
+    const body = await (await secretsRoute.GET(makeRequest('p1'))).json()
+    expect(body.rows.map((r: { id: string }) => r.id)).toEqual(['errored', 'dead-new', 'dead-old', 'never'])
+  })
+
   test('the explicit validation states sort as they read (plan 05.7)', async () => {
     // No verdict ranks above a dead key; a legacy 'invalid' keeps its old place.
     runReturnFor = [
