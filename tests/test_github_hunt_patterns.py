@@ -69,3 +69,67 @@ class TestBoundedPatterns:
     def test_a_mailgun_public_key_is_not_an_api_key(self, ghh):
         assert _hits(ghh, "Mailgun API Key", "pubkey-4e9a1c7f3b5d8e2a6c0f9b1d7e3a5c8f") == []
         assert _hits(ghh, "Mailgun API Key", 'k="key-8d2f6b0a4c9e1f7b3d5a8c2e6f0b4d9a"') != []
+
+
+def _scan(ghh, content):
+    """scan_file_content on a network-free hunter: (findings, stdout)."""
+    import io
+    from contextlib import redirect_stdout
+    hunter = ghh.GitHubSecretHunter.__new__(ghh.GitHubSecretHunter)
+    hunter.findings = []
+    hunter.stats = {"secrets_found": 0, "sensitive_files": 0, "high_entropy": 0}
+    hunter._save_incremental = lambda: None
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        hunter.scan_file_content("acme/app", content, "config.py")
+    return {f["secret_type"]: f for f in hunter.findings if f["type"] == "SECRET"}, buf.getvalue()
+
+
+AWS_KEY = "AKIA" + "Q7R2M9X4K1T8B3V6"
+PASSWORD = "Xk9mP2vL7qR4tZ8w"
+
+
+class TestSampleIsTheRedactedValue:
+    """05.9: `re.findall` returned the capturing group, which for the generic
+    patterns is the KEYWORD, so the sample of every generic secret read
+    "password"; for every other pattern it was the raw value."""
+
+    def test_a_generic_secret_samples_its_value_not_its_keyword(self, ghh):
+        found, _ = _scan(ghh, f'db_password = "{PASSWORD}"\n')
+        sample = found["Generic Secret"]["details"]["sample"]
+        assert sample != "password"
+        assert sample == ghh.redact_sample(f'password = "{PASSWORD}"')
+        assert sample.endswith(PASSWORD[-3:] + '"')
+        assert PASSWORD not in sample
+
+    def test_a_key_is_sampled_redacted(self, ghh):
+        found, out = _scan(ghh, f'aws = "{AWS_KEY}"\n')
+        details = found["AWS Access Key ID"]["details"]
+        assert details["sample"] == AWS_KEY[:6] + "..." + AWS_KEY[-4:]
+        # The on-disk artifact keeps the value (tracker decision); stdout never shows it.
+        assert details["value"] == AWS_KEY
+        assert AWS_KEY not in out
+
+    def test_a_pattern_whose_group_is_the_value_samples_the_whole_match(self, ghh):
+        url = "https://reports-bucket.s3.amazonaws.com/q3.pdf"
+        found, _ = _scan(ghh, f'u = "{url}"\n')
+        details = found["S3 Bucket (path-style)" if "S3 Bucket (path-style)" in found
+                        else "S3 Bucket (virtual-hosted)"]["details"]
+        assert details["sample"] == ghh.redact_sample(details["value"])
+        assert details["value"].startswith("https://reports-bucket")
+
+    def test_every_match_is_counted(self, ghh):
+        other = "AKIA" + "Z3FPLB7QW4XN6R2T"
+        found, _ = _scan(ghh, f'a = "{AWS_KEY}"\nb = "{other}"\n')
+        assert found["AWS Access Key ID"]["details"]["matches"] == 2
+
+    def test_redaction_is_the_js_recon_rule_and_idempotent(self, ghh):
+        for value, want in ((AWS_KEY, AWS_KEY[:6] + "..." + AWS_KEY[-4:]),
+                            ("abcdefgh", "abc..."), ("abc", "***")):
+            assert ghh.redact_sample(value) == want
+            assert ghh.redact_sample(want) == want
+
+    def test_the_graph_writer_redacts_the_same_way(self, ghh):
+        from graph_db.mixins.secret_mixin import _redact_sample
+        for value in (AWS_KEY, f'password = "{PASSWORD}"', "abcdefgh", "abc", ""):
+            assert _redact_sample(value) == ghh.redact_sample(value)

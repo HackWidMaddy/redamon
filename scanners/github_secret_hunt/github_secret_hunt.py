@@ -397,6 +397,17 @@ SECRET_PATTERNS = {
     "IP Address (Private)": r"(?:^|[^0-9])(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3})(?:[^0-9]|$)",
 }
 
+def redact_sample(text: str) -> str:
+    """The stored form of a matched value: its first and last characters, as
+    js_recon's `redacted_value` (recon/helpers/js_recon/patterns.py `redact`).
+    Idempotent, so the graph writer can apply it again to an older artifact."""
+    if len(text) > 12:
+        return text[:6] + '...' + text[-4:]
+    if len(text) > 4:
+        return text[:3] + '...'
+    return '***'
+
+
 # Pre-compile all patterns at module load time for performance
 COMPILED_SECRET_PATTERNS = {}
 for _name, _regex in SECRET_PATTERNS.items():
@@ -758,11 +769,17 @@ class GitHubSecretHunter:
                           repository_public: Optional[bool] = None):
         """Scan file content for secrets using regex patterns."""
         for secret_type, compiled_re in COMPILED_SECRET_PATTERNS.items():
-            matches = compiled_re.findall(content)
+            # The whole match, as js_recon stores it: `findall` returns a
+            # pattern's capturing group, which for the generic ones is the
+            # keyword ("password"), not the value.
+            matches = [m.group(0) for m in compiled_re.finditer(content)]
             if matches:
                 self._add_finding(
                     "SECRET", repo_name, path, secret_type,
-                    {"matches": len(matches), "sample": str(matches[0])[:100]},
+                    # `value` stays in the on-disk artifact only (stdout prints
+                    # it [REDACTED]); the graph gets the redacted `sample`.
+                    {"matches": len(matches), "sample": redact_sample(matches[0]),
+                     "value": matches[0][:100]},
                     repository_public=repository_public,
                 )
 
