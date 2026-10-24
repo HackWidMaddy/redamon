@@ -597,7 +597,7 @@ export type ReconPresetParams = z.infer<typeof reconPresetSchema>
 
 export const RECON_PARAMETER_CATALOG = `
 ## Scan Modules & Global
-- scanModules: string[] - Pipeline phases to run. Values: "domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan", "js_recon"
+- scanModules: string[] - Pipeline phases to run. Values: "domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan". JS recon is not one of them: set jsReconEnabled, and keep resource_enum or http_probe on, since it analyzes the JS files those phases found
 - stealthMode: boolean - Reduce scan aggressiveness and network noise
 - aiInPipeline: boolean - Master toggle that enables AI-powered enhancements across all recon modules that support them. Cascades on/off to per-tool AI flags (ffufAiExtensions, nucleiAiTags, wafAiClassifier, nucleiAiResponseFilter, takeoverAiClassifier).
 - aiPipelineModel: string - Model identifier for the AI hooks in recon (e.g. "claude-opus-4-6", "claude-haiku-4-5-20251001"). Independent of agentOpenaiModel.
@@ -828,7 +828,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - serializedScanJevRank: boolean - Ask TypeSafe AI Jev (jev-1.13.0), per distinct flagged blob, which serialization format it is and how likely it is to be an attacker-reachable sink, to rank the serialized-object candidates for the agent. Only when aiInPipeline=true and serializedScanEnabled=true; needs a Jev token on the owner's account. Annotates and ranks only: never drops a candidate. Default false.
 
 ## JavaScript Analysis - JS Recon (deep)
-- jsReconEnabled: boolean - Run deep JS analysis
+- jsReconEnabled: boolean - Run deep JS analysis. This flag alone switches it on (no scanModules entry); it reads the JS URLs from resource_enum and http_probe
 - jsReconMaxFiles: integer
 - jsReconTimeout: integer - Seconds
 - jsReconConcurrency: integer

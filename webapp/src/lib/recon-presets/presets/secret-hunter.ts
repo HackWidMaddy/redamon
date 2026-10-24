@@ -41,7 +41,7 @@ Bug bounty hunters and red teamers who want to maximize credential and secret di
   environment: 'external',
   parameters: {
     // Pipeline modules
-    scanModules: ['domain_discovery', 'http_probe', 'resource_enum', 'vuln_scan', 'js_recon'],
+    scanModules: ['domain_discovery', 'http_probe', 'resource_enum', 'vuln_scan'],
 
     // Stealth
     stealthMode: false,

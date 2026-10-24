@@ -1967,7 +1967,9 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'back to the default, a wordlist path outside this project\'s directory is dropped. An ' +
         'agent that only read the first would believe a rejected value was accepted.\n\n' +
         'It also names every enabled tool whose PHASE is not in scanModules. Those are the ' +
-        'silent no-ops: the scan succeeds, that tool never runs, and no result field says why.\n\n' +
+        'silent no-ops: the scan succeeds, that tool never runs, and no result field says why. ' +
+        'JS recon is no phase: it is named when jsReconEnabled is on with neither resource_enum ' +
+        'nor http_probe to feed it, and its options when jsReconEnabled is off.\n\n' +
         '`aiHooks` gives, for each recon hook that can run on Jev, its kind, the engine the row ' +
         'asks for and the one that will run. An `engine` hook asks for llm or jev; an `enable` ' +
         'hook (Jev-only) asks for off or jev. Every hook is off when ' +

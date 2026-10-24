@@ -4602,9 +4602,10 @@ fields:
     mcp: settable
     group: llm
     meaning: >-
-      Whether JS recon runs. Configuration is two levels: this flag decides
-      whether the tool runs INSIDE its phase, and scanModules decides whether the
-      phase runs at all. Setting one without the other is a silent no-op.
+      Whether JS recon looks for AI SDKs in the JS it analyzes: LLM and vector
+      database SDK imports, hard-coded provider keys, browser-mode opt-ins and
+      AI front-end markers. Sends no extra traffic. Does nothing while
+      jsReconEnabled is off.
   jsReconConcurrency:
     tool: js_recon
     runtime_key: "JS_RECON_CONCURRENCY"
@@ -4735,9 +4736,11 @@ fields:
     roe_capped: false
     mcp: settable
     meaning: >-
-      Whether JS recon runs. Configuration is two levels: this flag decides
-      whether the tool runs INSIDE its phase, and scanModules decides whether the
-      phase runs at all. Setting one without the other is a silent no-op.
+      Whether JS recon runs. This flag alone switches it on: JS recon is not a
+      scanModules phase. It runs after resource enumeration and analyzes the JS
+      files the crawlers and HTTP probing found (and any uploaded files), so
+      with neither resource_enum nor http_probe in scanModules it has nothing
+      to read.
   jsReconEndpointAcceptStatus:
     tool: js_recon
     runtime_key: "JS_RECON_ENDPOINT_ACCEPT_STATUS"
@@ -4852,9 +4855,10 @@ fields:
     governor: { model: budget, family: js_file, floor: 50 }
     group: not-tuning
     meaning: >-
-      The most results JS recon accumulates in one pass. The memory governor
-      budgets it against available RAM, so the effective value can be below what
-      is written here.
+      The most JS files JS recon downloads and analyzes in one run, shared
+      round-robin between hosts; files over the cap are recorded as a coverage
+      gap. The memory governor budgets it against available RAM, so the effective
+      value can be below what is written here.
   jsReconMinConfidence:
     tool: js_recon
     runtime_key: "JS_RECON_MIN_CONFIDENCE"
@@ -5005,9 +5009,9 @@ fields:
     roe_capped: false
     mcp: settable
     meaning: >-
-      Whether jsluice runs. Configuration is two levels: this flag decides whether
-      the tool runs INSIDE its phase, and scanModules decides whether the phase
-      runs at all. Setting one without the other is a silent no-op.
+      Whether jsluice runs. It runs inside resource enumeration, on the JS files
+      the crawlers found, so it is a silent no-op unless resource_enum is in
+      scanModules.
   jsluiceExcludePatterns:
     tool: jsluice
     runtime_key: "JSLUICE_EXCLUDE_PATTERNS"
@@ -7817,7 +7821,9 @@ fields:
     validator: scan_modules
     meaning: >-
       Pipeline phases to run. Values: "domain_discovery", "port_scan",
-      "http_probe", "resource_enum", "vuln_scan", "js_recon"
+      "http_probe", "resource_enum", "vuln_scan". "js_recon" is still accepted
+      so older projects and presets load, but it does nothing: JS recon runs on
+      jsReconEnabled alone.
   securityCheckAdminPortExposed:
     tool: security_check
     runtime_key: "SECURITY_CHECK_ADMIN_PORT_EXPOSED"
