@@ -485,6 +485,7 @@ JS Recon secret properties (source="js_recon" only):
 - validation_status (string): validated, invalid, unvalidated, skipped, incomplete, format_validated, error
 - detection_method (string): "regex"
 - context (string): the code around the match, at most 400 characters, with this key and every other secret-shaped value in it shown redacted
+- public_client_key (boolean): true for a key that is public by design (a browser key, a publishable key, a DSN, a write-only analytics key); written at severity info. Absent on nodes written before it existed: readers then also treat a secret_type in the public-client list as public
 
 - matched_text
 **Traceroute** - Network route from scanner to target (from GVM)

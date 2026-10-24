@@ -106,7 +106,8 @@ _RAW_PATTERNS = [
     ("Twilio Account SID", r"\bAC[a-zA-Z0-9]{32}\b", "medium", "high", "auth", "validate_twilio_format"),
     ("Twilio App SID", r"\bAP[a-zA-Z0-9_\-]{32}\b", "medium", "high", "auth", None),
     ("SendGrid API Key", r"SG\.[a-zA-Z0-9]{22}\.[a-zA-Z0-9\-_]{43}", "high", "high", "auth", "validate_sendgrid"),
-    ("Mailgun API Key", r"key-[0-9a-zA-Z]{32}", "high", "high", "auth", "validate_mailgun"),
+    # Not inside `pubkey-...`, the public key below.
+    ("Mailgun API Key", r"(?<![A-Za-z0-9])key-[0-9a-zA-Z]{32}", "high", "high", "auth", "validate_mailgun"),
     ("Mailgun Public Key", r"pubkey-[a-f0-9]{32}", "medium", "high", "auth", None),
     ("Mailchimp API Key", r"[0-9a-f]{32}-us[0-9]{1,2}", "high", "high", "auth", "validate_mailchimp"),
     ("SendinBlue API Key", r"xkeysib-[a-f0-9]{64}-[a-zA-Z0-9]{16}", "high", "high", "auth", None),
@@ -301,6 +302,51 @@ _RAW_PATTERNS = [
     ("UUID v4", r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", "info", "low", "info", None),
     ("Debug Flag", r"(?i)(debug|NODE_ENV)\s*[:=]\s*['\"]?(true|development|1)['\"]?", "low", "medium", "info", None),
 ]
+
+#: Names a scan writes that no pattern above carries: a hit re-read from its
+#: value or label (see `_reclassify`).
+DERIVED_SECRET_NAMES = (
+    "Algolia Search Key",
+)
+
+#: Keys that are PUBLIC BY DESIGN: they ship to every browser that loads the
+#: page, and the service limits what they can do. Written as Secret findings at
+#: severity info with `public_client_key`, never dropped: an unrestricted
+#: Google key can still be spent on a paid API. Exact names, mirrored
+#: (lowercased) by score_model.PUBLIC_CLIENT_KEY_TYPES and the webapp's
+#: publicClientKeys.ts; tests pin the three equal.
+PUBLIC_CLIENT_KEY_NAMES = frozenset({
+    "GCP API Key",
+    "Firebase API Key",
+    "Segment Write Key",
+    "Amplitude API Key",
+    "New Relic Browser API Token",
+    "Sentry DSN",
+    "Stripe Publishable Key",
+    "Google reCAPTCHA Key",
+    "Mapbox Token",
+    "Algolia App ID",
+    "Algolia Search Key",
+    "Intercom App ID",
+    "Pusher Key",
+    "Clerk Publishable Key",
+    "Mailgun Public Key",
+    "Flutterwave Public Key",
+})
+
+# A search-only Algolia key has the admin key's format; only its label tells
+# them apart, so an unlabelled key stays the (high) API key.
+_ALGOLIA_SEARCH_LABEL = re.compile(
+    r'(?i)search[_-]?(?:only[_-]?)?(?:api[_-]?)?key["\']?\s*[:=]\s*["\'][a-f0-9]{32}["\']$')
+
+
+def _reclassify(name: str, matched_text: str) -> str:
+    """The name a hit is reported under, when its value or label says more
+    than the pattern that matched it."""
+    if name == 'Algolia API Key' and _ALGOLIA_SEARCH_LABEL.search(matched_text):
+        return 'Algolia Search Key'
+    return name
+
 
 # Pre-compile all patterns at module load time
 JS_SECRET_PATTERNS = []
@@ -831,18 +877,23 @@ def scan_js_content(
                         filtered_counts['repetitive'] += 1
                         continue
 
-                # Deduplicate by content hash
+                # Deduplicate by content hash. Keyed on the PATTERN's name, so a
+                # hit `_reclassify` renames keeps the node id (and the mute,
+                # verdict and fix item on it) it had before the rename.
                 finding_id = _make_finding_id(pattern['name'], matched_text, source_url)
                 if finding_id in seen_hashes:
                     continue
                 seen_hashes.add(finding_id)
 
+                name = _reclassify(pattern['name'], matched_text)
+                public = name in PUBLIC_CLIENT_KEY_NAMES
                 findings.append({
                     'id': finding_id,
-                    'name': pattern['name'],
+                    'name': name,
                     'matched_text': matched_text,
                     'redacted_value': redact(matched_text),
-                    'severity': pattern['severity'],
+                    'severity': 'info' if public else pattern['severity'],
+                    'public_client_key': public,
                     'confidence': pattern['confidence'],
                     'category': pattern['category'],
                     'line_number': line_num,

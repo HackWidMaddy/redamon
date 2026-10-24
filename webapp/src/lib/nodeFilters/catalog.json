@@ -2085,6 +2085,11 @@
             "regex"
           ]
         },
+        "public_client_key": {
+          "type": "bool",
+          "normalizer": "public_client_key",
+          "label": "Public by design"
+        },
         "source_url": {
           "type": "url",
           "prop": "source_url",

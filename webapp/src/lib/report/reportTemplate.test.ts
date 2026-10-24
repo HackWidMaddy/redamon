@@ -959,3 +959,45 @@ describe('Endpoints known only from an API specification', () => {
     expect(html).toContain('<div class="metric-value-sm">4</div><div class="metric-label-sm">Parameters (+13 declared)</div>')
   })
 })
+
+describe('keys that are public by design (plan 05.2)', () => {
+  const publicKeys = { total: 4, byType: [{ secretType: 'GCP API Key', count: 3 }, { secretType: 'Sentry DSN', count: 1 }] }
+
+  test('they are listed on their own line, apart from the severity counts', () => {
+    const html = generateReportHtml(makeReportData({
+      secrets: {
+        total: 1, bySeverity: [{ severity: 'high', count: 1 }], bySource: [], byType: [],
+        findings: [], publicClientKeys: publicKeys,
+      },
+    }), null)
+    expect(html).toContain('1 secret(s) detected across web resources and JavaScript files.')
+    expect(html).toContain('Expected-public client keys: 4 (GCP API Key: 3, Sentry DSN: 1)')
+    expect(html).toContain('not counted above')
+  })
+
+  test('the section appears when only public client keys were found', () => {
+    const html = generateReportHtml(makeReportData({
+      secrets: { total: 0, bySeverity: [], bySource: [], byType: [], findings: [], publicClientKeys: publicKeys },
+    }), null)
+    expect(html).toContain('id="secrets"')
+    expect(html).toContain('No secret was detected beyond keys that are public by design.')
+    expect(html).toContain('Expected-public client keys: 4')
+  })
+
+  test('report data stored before the split renders as before', () => {
+    const html = generateReportHtml(makeReportData({
+      secrets: { total: 2, bySeverity: [], bySource: [], byType: [], findings: [] },
+    }), null)
+    expect(html).toContain('2 secret(s) detected')
+    expect(html).not.toContain('Expected-public client keys')
+  })
+
+  test('the GitHub section names public client keys found in repositories', () => {
+    const html = generateReportHtml(makeReportData({
+      cveIntelligence: { cveChains: [], exploits: [],
+        githubSecrets: { repos: 1, secrets: 0, publicClientKeys: 2, sensitiveFiles: 0 } },
+    }), null)
+    expect(html).toContain('id="github-secrets"')
+    expect(html).toContain('<tr><td>Expected-public client keys (not counted)</td><td>2</td></tr>')
+  })
+})

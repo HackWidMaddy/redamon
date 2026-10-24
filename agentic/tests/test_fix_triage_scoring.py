@@ -78,11 +78,27 @@ def producer_check_types() -> set:
     return types
 
 
+def _python_string_block(text: str, opener: str) -> set:
+    """The quoted strings of the tuple or frozenset that starts at `opener`."""
+    start = text.index(opener)
+    end = text.index(")", start)
+    return set(re.findall(r'"([^"]+)"', text[start + len(opener):end]))
+
+
 def producer_secret_names() -> dict:
-    """{producer: {secret_type names}} from the two pattern tables."""
+    """{producer: {secret_type names}} from the two pattern tables. js_recon
+    also writes the names it re-reads a hit under (DERIVED_SECRET_NAMES)."""
     hunt = set(re.findall(r'^\s*"([^"]+)":\s*r["\']', _read(GITHUB_HUNT_SRC), re.M))
-    js = set(re.findall(r'^\s*\("([^"]+)",\s*r["\']', _read(JS_PATTERNS_SRC), re.M))
+    js_src = _read(JS_PATTERNS_SRC)
+    js = set(re.findall(r'^\s*\("([^"]+)",\s*r["\']', js_src, re.M))
+    js |= _python_string_block(js_src, "DERIVED_SECRET_NAMES = (")
     return {"github_hunt": hunt, "js_recon": js}
+
+
+def js_public_client_key_names() -> set:
+    """js_recon's PUBLIC_CLIENT_KEY_NAMES, read from its source: the recon
+    module is not importable in the agent image."""
+    return _python_string_block(_read(JS_PATTERNS_SRC), "PUBLIC_CLIENT_KEY_NAMES = frozenset({")
 
 
 # ---------------------------------------------------------------------------
@@ -311,21 +327,47 @@ class TestSecurityCheckClasses(unittest.TestCase):
 # F3: public-by-design client keys
 # ---------------------------------------------------------------------------
 class TestPublicClientKeys(unittest.TestCase):
-    PRODUCER_NAMES = ("GCP API Key", "Stripe Publishable Key", "Google reCAPTCHA Key",
-                      "Sentry DSN", "Mapbox Token")
+    PRODUCER_NAMES = ("GCP API Key", "Firebase API Key", "Segment Write Key",
+                      "Amplitude API Key", "New Relic Browser API Token", "Sentry DSN",
+                      "Stripe Publishable Key", "Google reCAPTCHA Key", "Mapbox Token",
+                      "Algolia App ID", "Algolia Search Key", "Intercom App ID",
+                      "Pusher Key", "Clerk Publishable Key", "Mailgun Public Key",
+                      "Flutterwave Public Key")
 
-    def test_the_public_names_exist_in_both_producers(self):
+    def test_the_list_is_js_recons_list(self):
+        """js_recon writes these at info with the flag; the board must agree on
+        every name, or a key the detector calls public is ranked as a secret."""
+        self.assertEqual(set(sm.PUBLIC_CLIENT_KEY_TYPES) - {"gcpkey"},
+                         {n.lower() for n in js_public_client_key_names()})
+        self.assertEqual({n.lower() for n in self.PRODUCER_NAMES},
+                         {n.lower() for n in js_public_client_key_names()})
+
+    def test_the_public_names_exist_in_a_producer(self):
         """A rename in a producer would silently turn the rule off."""
         names = producer_secret_names()
-        for producer, found in names.items():
-            for name in self.PRODUCER_NAMES:
-                with self.subTest(producer=producer, name=name):
-                    self.assertIn(name, found)
+        for name in self.PRODUCER_NAMES:
+            with self.subTest(name=name):
+                self.assertIn(name, names["js_recon"])
+        # The GitHub hunt shares most of them; these are js_recon-only.
+        hunt_only_missing = {"Intercom App ID", "Algolia Search Key"}
+        for name in set(self.PRODUCER_NAMES) - hunt_only_missing:
+            with self.subTest(producer="github_hunt", name=name):
+                self.assertIn(name, names["github_hunt"])
 
     def test_every_public_name_is_one_a_producer_writes(self):
         known = {n.lower() for found in producer_secret_names().values() for n in found}
         # jsluice is a Go binary; its AIza key kind is "gcpKey".
         self.assertEqual(set(sm.PUBLIC_CLIENT_KEY_TYPES) - known, {"gcpkey"})
+
+    def test_each_public_family_lands_in_t4(self):
+        for name in self.PRODUCER_NAMES:
+            for severity in ("info", "critical"):  # critical: a node written before the flag
+                with self.subTest(name=name, severity=severity):
+                    row = js_secret(name, "js_service", severity=severity,
+                                    validation_status="unvalidated")
+                    self.assertEqual(sm.score(row, LIVE).tier, "T4")
+                    hunt = secret("GithubSecret", "github_hunt", name, severity=severity)
+                    self.assertEqual(sm.score(hunt, LIVE).tier, "T4")
 
     def test_public_keys_are_classed_as_public(self):
         for name in self.PRODUCER_NAMES + ("gcpKey",):
@@ -595,10 +637,12 @@ GUARD = {
         {'confidence': 'high', 'detector_name': 'payment', 'host': 'h1', 'id': 's', 'label': 'Secret', 'secret_type': 'Stripe Secret Key', 'severity': 'critical', 'source': 'js_recon', 'validation_info': '{"status": "invalid", "valid": false, "info": "status=429", "error": ""}', 'validation_status': 'invalid'},
         ('open', 'T2', 60.125),
         ('open', 'T2', 58.1)),
+    # The Firebase web config's apiKey is public by design (plan 05.2): it
+    # left T3 for T4 on purpose, as a node written before the flag.
     'js_firebase_api_key': (
         {'confidence': 'medium', 'detector_name': 'cloud', 'host': 'h1', 'id': 's', 'label': 'Secret', 'secret_type': 'Firebase API Key', 'severity': 'high', 'source': 'js_recon', 'validation_status': 'unvalidated'},
-        ('open', 'T3', 28.6),
-        ('open', 'T3', 27.88)),
+        ('open', 'T4', 0.3),
+        ('open', 'T4', 0.24)),
     'jsluice_aws': (
         {'detector_name': 'AWSAccessKey', 'host': 'h1', 'id': 's', 'label': 'Secret', 'secret_type': 'AWSAccessKey', 'severity': 'high', 'source': 'jsluice'},
         ('open', 'T3', 31.75),

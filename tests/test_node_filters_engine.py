@@ -642,3 +642,37 @@ class TestPerformance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSecretPublicClientKey(unittest.TestCase):
+    """Plan 05.2: a mute rule on `public_client_key` matches what every reader
+    calls public, including a node written before the flag existed."""
+
+    def _decide(self, props):
+        fs, cfg = filterset("secret", rule(conds=[{"field": "public_client_key", "op": "is_true"}]))
+        self.assertTrue(cfg.kinds["secret"].active, cfg.kinds["secret"].errors)
+        return fs.decide("secret", fs.values("secret", props))[0]
+
+    def test_the_field_reads_the_flag_and_the_name(self):
+        fs, _ = filterset("secret", rule(conds=[{"field": "public_client_key", "op": "is_true"}]))
+        self.assertEqual(fs.props_needed("secret"), {"public_client_key", "secret_type"})
+
+    def test_a_flagged_key_is_muted(self):
+        self.assertTrue(self._decide({"public_client_key": True, "secret_type": "Pusher Key"}))
+
+    def test_a_key_written_before_the_flag_is_muted_by_its_name(self):
+        self.assertTrue(self._decide({"secret_type": "GCP API Key"}))
+        self.assertTrue(self._decide({"public_client_key": False, "secret_type": "sentry dsn"}))
+
+    def test_a_secret_key_is_not(self):
+        self.assertFalse(self._decide({"public_client_key": False, "secret_type": "Stripe Secret Key"}))
+        self.assertFalse(self._decide({}))
+
+    def test_the_name_list_is_the_score_models(self):
+        sys.path.insert(0, str(_REPO / "agentic"))
+        try:
+            from cypherfix_triage import score_model as sm
+        except ImportError as e:  # pragma: no cover - the agent image has it
+            self.skipTest(f"score_model is not importable here: {e}")
+        from graph_db.node_filters import normalize
+        self.assertEqual(set(normalize.PUBLIC_CLIENT_KEY_TYPES), set(sm.PUBLIC_CLIENT_KEY_TYPES))

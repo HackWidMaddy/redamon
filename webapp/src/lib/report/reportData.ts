@@ -9,6 +9,8 @@ import { RISK_TOP_N, projectRisk } from '@/lib/projectRisk'
 import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
 import { type JudgedFindingCounts, queryJudgedFindings, reportCountable } from '@/lib/triage/reportable'
 import { DECLARED_ONLY } from '@/lib/declaredOnly'
+import { publicClientKeyCypher } from '@/lib/secrets/publicClientKeys'
+import { githubSecretCounts, githubSecretCountsCypher } from '@/lib/secrets/githubSecretCounts'
 import { ipVersionIs } from '@/lib/ipVersion'
 import { type CoverageGap, currentScanRoots, gapInScope } from '@/lib/scanCoverage'
 import type { Project, Remediation } from '@prisma/client'
@@ -353,7 +355,9 @@ export interface ReportData {
   cveIntelligence: {
     cveChains: CveChain[]
     exploits: ExploitRecord[]
-    githubSecrets: { repos: number; secrets: number; sensitiveFiles: number }
+    /** `secrets` leaves out keys that are public by design, counted apart in
+     *  `publicClientKeys` (optional: older stored report data lacks it). */
+    githubSecrets: { repos: number; secrets: number; publicClientKeys?: number; sensitiveFiles: number }
   }
 
   // TruffleHog
@@ -369,13 +373,16 @@ export interface ReportData {
     findings: TrufflehogFindingRecord[]
   }
 
-  // Secrets (generic, from jsluice / js_recon / etc.)
+  // Secrets (generic, from jsluice / js_recon / etc.). Every count and the
+  // detail list leave out keys that are public by design; those are only
+  // listed, in `publicClientKeys`.
   secrets: {
     total: number
     bySeverity: { severity: string; count: number }[]
     bySource: { source: string; count: number }[]
     byType: { secretType: string; count: number }[]
     findings: SecretRecord[]
+    publicClientKeys?: { total: number; byType: { secretType: string; count: number }[] }
   }
 
   // JS Recon
@@ -1366,7 +1373,7 @@ export async function queryVulnerabilities(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryCveIntelligence(session: any, pid: string) {
+export async function queryCveIntelligence(session: any, pid: string) {
   const chainRes = await session.run(
     `MATCH (t:Technology {project_id: $pid})-[:HAS_KNOWN_CVE]->(c:CVE)
      OPTIONAL MATCH (c)-[:HAS_CWE]->(m:MitreData)
@@ -1389,15 +1396,7 @@ async function queryCveIntelligence(session: any, pid: string) {
      ORDER BY ex.cvss_score DESC`,
     { pid }
   )
-  const ghRes = await session.run(
-    `OPTIONAL MATCH (d:Domain {project_id: $pid})-[:HAS_GITHUB_HUNT]->()-[:HAS_REPOSITORY]->(r:GithubRepository)
-     OPTIONAL MATCH (r)-[:HAS_PATH]->()-[:CONTAINS_SECRET]->(sec:GithubSecret)
-       WHERE ${notMuted('sec')} AND ${reportCountable('sec')}
-     OPTIONAL MATCH (r)-[:HAS_PATH]->()-[:CONTAINS_SENSITIVE_FILE]->(sf:GithubSensitiveFile)
-       WHERE ${notMuted('sf')} AND ${reportCountable('sf')}
-     RETURN count(DISTINCT r) AS repos, count(DISTINCT sec) AS secrets, count(DISTINCT sf) AS sensitiveFiles`,
-    { pid }
-  )
+  const ghRes = await session.run(githubSecretCountsCypher(), { pid })
 
   const ghRec = ghRes.records[0]
 
@@ -1424,9 +1423,7 @@ async function queryCveIntelligence(session: any, pid: string) {
       evidence: r.get('evidence') as string | null,
       cveIds: r.get('cveIds') as string[],
     })),
-    githubSecrets: ghRec
-      ? { repos: toNum(ghRec.get('repos')), secrets: toNum(ghRec.get('secrets')), sensitiveFiles: toNum(ghRec.get('sensitiveFiles')) }
-      : { repos: 0, secrets: 0, sensitiveFiles: 0 },
+    githubSecrets: githubSecretCounts(ghRec),
   }
 }
 
@@ -1587,33 +1584,42 @@ async function queryTrufflehog(session: any, pid: string) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function querySecrets(session: any, pid: string) {
+  // A key that is public by design is no exposed secret: it is left out of
+  // every count here (and so of the risk weight) and listed apart below.
+  const notPublic = `AND NOT ${publicClientKeyCypher('s')}`
   const totalRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')} AND ${reportCountable('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN count(s) AS total`,
     { pid }
   )
   const bySevRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')} AND ${reportCountable('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN s.severity AS severity, count(s) AS count ORDER BY count DESC`,
     { pid }
   )
   const bySrcRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')} AND ${reportCountable('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN s.source AS source, count(s) AS count ORDER BY count DESC`,
     { pid }
   )
   const byTypeRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')} AND ${reportCountable('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN s.secret_type AS secretType, count(s) AS count ORDER BY count DESC LIMIT 20`,
+    { pid }
+  )
+  const publicRes = await session.run(
+    `MATCH (s:Secret {project_id: $pid})
+    WHERE ${notMuted('s')} AND ${reportCountable('s')} AND ${publicClientKeyCypher('s')}
+     RETURN s.secret_type AS publicType, count(s) AS count ORDER BY count DESC LIMIT 20`,
     { pid }
   )
   const findingsRes = await session.run(
     `MATCH (s:Secret {project_id: $pid})
-    WHERE ${notMuted('s')} AND ${reportCountable('s')}
+    WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN s.secret_type AS secretType, s.severity AS severity,
             s.source AS source, s.source_url AS sourceUrl,
             s.sample AS sample, s.validation_status AS validationStatus,
@@ -1647,6 +1653,13 @@ export async function querySecrets(session: any, pid: string) {
       confidence: r.get('confidence') as string | null,
       keyType: r.get('keyType') as string | null,
     })),
+    publicClientKeys: (() => {
+      const byType = publicRes.records.map((r: any) => ({
+        secretType: (r.get('publicType') as string) || 'unknown',
+        count: toNum(r.get('count')),
+      }))
+      return { total: byType.reduce((n: number, t: { count: number }) => n + t.count, 0), byType }
+    })(),
   }
 }
 

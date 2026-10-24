@@ -545,6 +545,7 @@ kinds:
         label: Validation
         values: [validated, invalid, unvalidated, skipped, incomplete, format_validated, error]
       detection_method: { type: enum, prop: detection_method, label: Detection, values: [regex] }
+      public_client_key: { type: bool, normalizer: public_client_key, label: Public by design }
       source_url:       { type: url, prop: source_url, label: Found in }
       base_url:         { type: url, prop: base_url, label: Base URL }
       updated_at:       { type: date, prop: updated_at, label: Last reported }

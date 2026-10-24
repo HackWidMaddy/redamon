@@ -3,6 +3,7 @@ import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
 import { queryJudgedFindings, reportCountable } from '@/lib/triage/reportable'
+import { githubSecretCounts, githubSecretCountsCypher } from '@/lib/secrets/githubSecretCounts'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -172,20 +173,10 @@ export async function GET(request: NextRequest) {
       cveIds: r.get('cveIds') as string[],
     }))
 
-    // Q8: GitHub secrets summary
-    const ghResult = await session.run(
-      `OPTIONAL MATCH (d:Domain {project_id: $pid})-[:HAS_GITHUB_HUNT]->()-[:HAS_REPOSITORY]->(r:GithubRepository)
-       OPTIONAL MATCH (r)-[:HAS_PATH]->()-[:CONTAINS_SECRET]->(sec:GithubSecret)
-         WHERE ${notMuted('sec')} AND ${reportCountable('sec')}
-       OPTIONAL MATCH (r)-[:HAS_PATH]->()-[:CONTAINS_SENSITIVE_FILE]->(sf:GithubSensitiveFile)
-         WHERE ${notMuted('sf')} AND ${reportCountable('sf')}
-       RETURN count(DISTINCT r) AS repos, count(DISTINCT sec) AS secrets, count(DISTINCT sf) AS sensitiveFiles`,
-      { pid: projectId }
-    )
-    const ghRec = ghResult.records[0]
-    const githubSecrets = ghRec
-      ? { repos: toNum(ghRec.get('repos')), secrets: toNum(ghRec.get('secrets')), sensitiveFiles: toNum(ghRec.get('sensitiveFiles')) }
-      : { repos: 0, secrets: 0, sensitiveFiles: 0 }
+    // Q8: GitHub secrets summary, as the report counts it: a key that is
+    // public by design is counted apart, never as an exposed secret.
+    const ghResult = await session.run(githubSecretCountsCypher(), { pid: projectId })
+    const githubSecrets = githubSecretCounts(ghResult.records[0])
 
     // Q9: GVM remediation status
     const remResult = await session.run(

@@ -317,8 +317,11 @@ _PROOF_CONFIDENCE = (f"coalesce(toInteger(cf.confidence), {_PROOF_DEFAULT_CONFID
 #: score_model.PUBLIC_CLIENT_KEY_TYPES. graph_db cannot import the agent's
 #: model, so a test pins the two lists equal.
 _PUBLIC_CLIENT_KEY_TYPES = sorted({
-    "gcp api key", "gcpkey", "stripe publishable key", "google recaptcha key",
-    "sentry dsn", "mapbox token",
+    "gcp api key", "gcpkey", "firebase api key", "segment write key",
+    "amplitude api key", "new relic browser api token", "sentry dsn",
+    "stripe publishable key", "google recaptcha key", "mapbox token",
+    "algolia app id", "algolia search key", "intercom app id", "pusher key",
+    "clerk publishable key", "mailgun public key", "flutterwave public key",
 })
 
 #: A validated public client key proves only that it works as designed, so like

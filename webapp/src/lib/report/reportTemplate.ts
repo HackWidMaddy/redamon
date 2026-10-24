@@ -573,13 +573,13 @@ function renderTOC(data: ReportData): string {
     { id: 'attack-surface', label: 'Attack Surface' },
     { id: 'cve-intelligence', label: 'CVE Intelligence' },
   ]
-  if (data.cveIntelligence.githubSecrets.secrets > 0 || data.cveIntelligence.githubSecrets.sensitiveFiles > 0) {
+  if (hasGithubSecretsSection(data)) {
     dynamicSections.push({ id: 'github-secrets', label: 'GitHub Secrets' })
   }
   if (data.trufflehog.totalFindings > 0) {
     dynamicSections.push({ id: 'trufflehog', label: 'Secret Multiscanner Findings' })
   }
-  if (data.secrets.total > 0) {
+  if (hasSecretsSection(data)) {
     dynamicSections.push({ id: 'secrets', label: 'Secret Detection' })
   }
   if (data.jsRecon.totalFindings > 0) {
@@ -1200,9 +1200,17 @@ function renderCveIntelligence(data: ReportData): string {
 </div>`
 }
 
+function hasGithubSecretsSection(data: ReportData): boolean {
+  const gh = data.cveIntelligence.githubSecrets
+  return gh.secrets > 0 || gh.sensitiveFiles > 0 || (gh.publicClientKeys ?? 0) > 0
+}
+
 function renderGithubSecrets(data: ReportData): string {
   const gh = data.cveIntelligence.githubSecrets
-  if (gh.secrets === 0 && gh.sensitiveFiles === 0) return ''
+  if (!hasGithubSecretsSection(data)) return ''
+  const publicRow = (gh.publicClientKeys ?? 0) > 0
+    ? `\n      <tr><td>Expected-public client keys (not counted)</td><td>${gh.publicClientKeys}</td></tr>`
+    : ''
 
   return `
 <div class="page-break"></div>
@@ -1215,7 +1223,7 @@ function renderGithubSecrets(data: ReportData): string {
     <tbody>
       <tr><td>Repositories Analyzed</td><td>${gh.repos}</td></tr>
       <tr><td>Secrets Found</td><td style="color:#dc2626;font-weight:600">${gh.secrets}</td></tr>
-      <tr><td>Sensitive Files</td><td style="color:#ea580c;font-weight:600">${gh.sensitiveFiles}</td></tr>
+      <tr><td>Sensitive Files</td><td style="color:#ea580c;font-weight:600">${gh.sensitiveFiles}</td></tr>${publicRow}
     </tbody>
   </table>
 </div>`
@@ -1291,9 +1299,33 @@ function renderTrufflehog(data: ReportData): string {
 </div>`
 }
 
+function hasSecretsSection(data: ReportData): boolean {
+  return data.secrets.total > 0 || (data.secrets.publicClientKeys?.total ?? 0) > 0
+}
+
+/** Keys that are public by design (a browser key, a DSN, a publishable key):
+ *  named, but never counted with the exposed secrets. */
+function renderPublicClientKeys(sec: ReportData['secrets']): string {
+  const pub = sec.publicClientKeys
+  if (!pub || pub.total === 0) return ''
+  const types = pub.byType.map(t => `${esc(t.secretType)}: ${t.count}`).join(', ')
+  return `
+  <p class="muted">Expected-public client keys: ${pub.total} (${types}). These ship to every browser
+    that loads the page by design, so they are not counted above; check that each is restricted
+    to its intended use (an unrestricted Google key can still be billed).</p>`
+}
+
 function renderSecrets(data: ReportData): string {
   const sec = data.secrets
-  if (sec.total === 0) return ''
+  if (!hasSecretsSection(data)) return ''
+  if (sec.total === 0) {
+    return `
+<div class="page-break"></div>
+<div class="section" id="secrets">
+  <h2 class="section-title">Secret Detection</h2>
+  <p>No secret was detected beyond keys that are public by design.</p>${renderPublicClientKeys(sec)}
+</div>`
+  }
 
   const sevRows = sec.bySeverity.map(s => `
     <tr><td>${sevBadge(s.severity)}</td><td>${s.count}</td></tr>`).join('')
@@ -1316,7 +1348,7 @@ function renderSecrets(data: ReportData): string {
   <h2 class="section-title">Secret Detection</h2>
   <div class="alert alert-critical">
     ${sec.total} secret(s) detected across web resources and JavaScript files.
-  </div>
+  </div>${renderPublicClientKeys(sec)}
   <div class="two-col">
     <div>
       <h3>By Severity</h3>

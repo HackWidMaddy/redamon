@@ -64,7 +64,8 @@ export interface VulnerabilityData {
   cveSeverity: { severity: string; count: number }[]
   cveChains: CveChain[]
   exploits: Exploit[]
-  githubSecrets: { repos: number; secrets: number; sensitiveFiles: number }
+  /** `secrets` leaves out keys that are public by design, counted in `publicClientKeys`. */
+  githubSecrets: { repos: number; secrets: number; publicClientKeys?: number; sensitiveFiles: number }
   gvmRemediation: { status: string; count: number }[]
   /** Findings the Priority Board set aside; null when they could not be read. */
   judged?: JudgedFindingCounts | null

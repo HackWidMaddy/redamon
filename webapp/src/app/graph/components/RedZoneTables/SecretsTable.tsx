@@ -42,6 +42,9 @@ interface SecretRow {
   keyType: string | null
   detectionMethod: string | null
   validationStatus: string | null
+  /** A key that is public by design (a browser, publishable or analytics key),
+   *  shown at info. Absent on rows from an older server. */
+  publicClientKey?: boolean
   baseUrl: string | null
   subdomain: string | null
   jsFileUrl: string | null
@@ -184,7 +187,15 @@ export const SecretsTable = memo(function SecretsTable({ projectId }: Props) {
           {sliced.map((r, i) => (
             <tr key={r.id || `${r.sourceUrl}-${i}`}>
               <td><NodeIdCell value={r.nodeId} /></td>
-              <td><Mono>{r.secretType}</Mono></td>
+              <td>
+                <Mono>{r.secretType}</Mono>
+                {r.publicClientKey && (
+                  <span className={rowStyles.listChip}
+                    title="Public by design: it ships to every browser that loads the page. Check it is restricted to its intended use.">
+                    public key
+                  </span>
+                )}
+              </td>
               <td>{r.keyType ? <span className={rowStyles.listChip}>{r.keyType}</span> : <span className={rowStyles.nullCell}>-</span>}</td>
               <td><Mono>{redactSecret(r.valueSample || r.matchedText)}</Mono></td>
               <td>{r.entropy != null ? <span className={rowStyles.numCell}>{r.entropy.toFixed(2)}</span> : <span className={rowStyles.nullCell}>-</span>}</td>

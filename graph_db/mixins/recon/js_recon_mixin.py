@@ -714,10 +714,12 @@ class JsReconMixin:
                             s.matched_text = $matched_text,
                             s.validation_info = $validation_info,
                             s.context = $context,
+                            s.public_client_key = $public_client_key,
                             s.discovered_at = $discovered_at,
                             s.updated_at = datetime()
                         """,
                         id=node_id, user_id=user_id, project_id=project_id,
+                        public_client_key=bool(secret.get("public_client_key")),
                         # Already masked by the detector; the cap guards the node.
                         context=(secret.get("context") or "")[:400],
                         secret_type=secret.get("name", "unknown"),

@@ -412,14 +412,26 @@ SECRET_CLASSES = {
 #: page, and the service limits what they can do. Exact producer names (the
 #: GitHub hunt's SECRET_PATTERNS and js_recon's _RAW_PATTERNS share them), never
 #: substrings: "gcp" alone is also a service-account key and "stripe" alone
-#: also a secret key, and both must stay credentials.
+#: also a secret key, and both must stay credentials. js_recon's
+#: PUBLIC_CLIENT_KEY_NAMES, lowercased, plus jsluice's name; a test pins them.
 PUBLIC_CLIENT_KEY_TYPES = frozenset({
     "gcp api key",              # AIza..., a Google browser (Maps / Firebase) key
     "gcpkey",                   # jsluice's name for the same AIza key
+    "firebase api key",         # the web config's apiKey
+    "segment write key",        # write-only analytics
+    "amplitude api key",
+    "new relic browser api token",  # NRJS-
+    "sentry dsn",
     "stripe publishable key",   # pk_live_
     "google recaptcha key",     # 6L..., the site key
-    "sentry dsn",
     "mapbox token",             # the pattern only matches public pk. tokens
+    "algolia app id",
+    "algolia search key",       # only when labelled as the search key
+    "intercom app id",
+    "pusher key",
+    "clerk publishable key",
+    "mailgun public key",       # pubkey-
+    "flutterwave public key",   # FLWPUBK-
 })
 
 #: Substrings matched against the lowercased detector / secret_type, most

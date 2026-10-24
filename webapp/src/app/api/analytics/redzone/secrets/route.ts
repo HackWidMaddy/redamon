@@ -4,6 +4,7 @@ import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
 import { reportCountable } from '@/lib/triage/reportable'
+import { isPublicClientKey } from '@/lib/secrets/publicClientKeys'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -88,6 +89,7 @@ export async function GET(request: NextRequest) {
               s.key_type                                AS keyType,
               s.detection_method                        AS detectionMethod,
               s.validation_status                       AS validationStatus,
+              s.public_client_key                       AS publicClientKey,
               bu.url                                    AS baseUrl,
               sd.name                                   AS subdomain,
               j.source_url                              AS jsFileUrl,
@@ -192,30 +194,36 @@ export async function GET(request: NextRequest) {
       { pid: projectId }
     )
 
-    const rows = result.records.map(r => ({
-      nodeId: (r.get('nodeId') as string | null) ?? null,
-      origin: r.get('origin') as string,
-      id: (r.get('id') as string) || '',
-      secretType: (r.get('secretType') as string) || 'unknown',
-      valueSample: r.get('valueSample') as string | null,
-      matchedText: r.get('matchedText') as string | null,
-      entropy: r.get('entropy') != null ? toNum(r.get('entropy')) : null,
-      confidence: (r.get('confidence') as string | number | null) ?? null,
-      severity: (r.get('severity') as string) || 'medium',
-      sourceModule: r.get('sourceModule') as string | null,
-      sourceUrl: r.get('sourceUrl') as string | null,
-      secretBaseUrl: r.get('secretBaseUrl') as string | null,
-      keyType: r.get('keyType') as string | null,
-      detectionMethod: r.get('detectionMethod') as string | null,
-      validationStatus: r.get('validationStatus') as string | null,
-      baseUrl: r.get('baseUrl') as string | null,
-      subdomain: r.get('subdomain') as string | null,
-      jsFileUrl: r.get('jsFileUrl') as string | null,
-      trufflehogSource: null as string | null,
-      asset: null as string | null,
-      location: null as string | null,
-      updatedAt: (r.get('updatedAt') ?? null) as unknown,
-    }))
+    const rows = result.records.map(r => {
+      // A node written before `public_client_key` keeps its old severity
+      // until JS Recon runs again; its pattern name still says public.
+      const publicClientKey = isPublicClientKey(r.get('publicClientKey'), r.get('secretType'))
+      return {
+        nodeId: (r.get('nodeId') as string | null) ?? null,
+        origin: r.get('origin') as string,
+        id: (r.get('id') as string) || '',
+        secretType: (r.get('secretType') as string) || 'unknown',
+        valueSample: r.get('valueSample') as string | null,
+        matchedText: r.get('matchedText') as string | null,
+        entropy: r.get('entropy') != null ? toNum(r.get('entropy')) : null,
+        confidence: (r.get('confidence') as string | number | null) ?? null,
+        severity: publicClientKey ? 'info' : ((r.get('severity') as string) || 'medium'),
+        publicClientKey,
+        sourceModule: r.get('sourceModule') as string | null,
+        sourceUrl: r.get('sourceUrl') as string | null,
+        secretBaseUrl: r.get('secretBaseUrl') as string | null,
+        keyType: r.get('keyType') as string | null,
+        detectionMethod: r.get('detectionMethod') as string | null,
+        validationStatus: r.get('validationStatus') as string | null,
+        baseUrl: r.get('baseUrl') as string | null,
+        subdomain: r.get('subdomain') as string | null,
+        jsFileUrl: r.get('jsFileUrl') as string | null,
+        trufflehogSource: null as string | null,
+        asset: null as string | null,
+        location: null as string | null,
+        updatedAt: (r.get('updatedAt') ?? null) as unknown,
+      }
+    })
 
     rows.push(...thResult.records.map(r => {
       const findingKind = r.get('findingKind') as string | null
@@ -233,6 +241,7 @@ export async function GET(request: NextRequest) {
         // finding this table can hold; anything else is informational until
         // someone checks it.
         severity: r.get('validationStatus') === 'validated' ? 'critical' : 'medium',
+        publicClientKey: false,
         sourceModule: `trufflehog:${r.get('trufflehogSource') ?? 'unknown'}`,
         sourceUrl: r.get('sourceUrl') as string | null,
         secretBaseUrl: null as string | null,
@@ -257,6 +266,7 @@ export async function GET(request: NextRequest) {
 
     rows.push(...ghResult.records.map(r => {
       const secretType = (r.get('secretType') as string) || 'unknown'
+      const publicClientKey = isPublicClientKey(null, secretType)
       const matches = r.get('matches') != null ? toNum(r.get('matches')) : null
       return {
         nodeId: (r.get('nodeId') as string | null) ?? null,
@@ -270,7 +280,8 @@ export async function GET(request: NextRequest) {
         // not a confidence score, but it is the only per-finding weight the hunt
         // produces and the column is otherwise dead for these rows.
         confidence: matches,
-        severity: githubSeverity(secretType),
+        severity: publicClientKey ? 'info' : githubSeverity(secretType),
+        publicClientKey,
         sourceModule: 'github_hunt',
         sourceUrl: null as string | null,
         secretBaseUrl: null as string | null,
@@ -299,6 +310,7 @@ export async function GET(request: NextRequest) {
       entropy: null as number | null,
       confidence: null as string | number | null,
       severity: 'low',
+      publicClientKey: false,
       sourceModule: 'github_hunt',
       sourceUrl: null as string | null,
       secretBaseUrl: null as string | null,
@@ -329,6 +341,7 @@ export async function GET(request: NextRequest) {
         entropy: null as number | null,
         confidence: null as string | number | null,
         severity: (r.get('severity') as string) || 'high',
+        publicClientKey: false,
         sourceModule: 'attack_chain',
         sourceUrl: null as string | null,
         secretBaseUrl: null as string | null,

@@ -361,6 +361,14 @@ export default function InsightsPage() {
                 {formatNumber(vulns.data.githubSecrets.sensitiveFiles)}
               </div>
             </div>
+            {(vulns.data.githubSecrets.publicClientKeys ?? 0) > 0 && (
+              <div className="statCard" title="Keys that are public by design (publishable, browser or analytics keys). Not counted as secrets.">
+                <div className="statLabel">Public Client Keys</div>
+                <div className="statValue">
+                  {formatNumber(vulns.data.githubSecrets.publicClientKeys ?? 0)}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

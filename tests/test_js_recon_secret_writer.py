@@ -86,5 +86,19 @@ class TestSecretContext(unittest.TestCase):
         self.assertEqual(kwargs["context"], "")
 
 
+class TestPublicClientKeyFlag(unittest.TestCase):
+    def test_a_public_key_is_written_at_info_with_the_flag(self):
+        query, kwargs = _secret_write(_secret(
+            name="GCP API Key", severity="info", public_client_key=True,
+            matched_text="AIzaSy8Kq2Lm7Zx4Wp9Rt1Vb6Nc3Hd5Jf0Gs2Ue"))
+        self.assertIn("s.public_client_key = $public_client_key", query)
+        self.assertIs(kwargs["public_client_key"], True)
+        self.assertEqual(kwargs["severity"], "info")
+
+    def test_any_other_secret_is_written_false(self):
+        _, kwargs = _secret_write(_secret())
+        self.assertIs(kwargs["public_client_key"], False)
+
+
 if __name__ == "__main__":
     unittest.main()
