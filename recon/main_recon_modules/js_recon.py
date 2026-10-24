@@ -38,6 +38,7 @@ from recon.helpers.js_recon.framework import (
     detect_frameworks, detect_dom_sinks, detect_dev_comments,
     load_custom_frameworks,
 )
+from recon.helpers.js_recon.urls import accept_js_response, is_js_content_type, is_js_url
 from recon.helpers.ai_signal_catalog import match_ai_sdk
 
 try:
@@ -115,9 +116,6 @@ def _safe_redirect_get(url, *, timeout, headers, max_redirects=5):
     return None
 
 
-# File extensions to include as JS files
-_JS_EXTENSIONS = {'.js', '.mjs', '.jsx', '.ts', '.tsx'}
-
 # Framework JS paths that Katana typically excludes but contain app code
 _FRAMEWORK_JS_PATTERNS = [
     re.compile(r'/_next/static/chunks/'),
@@ -133,7 +131,7 @@ _SKIP_PATTERNS = [
     # jQuery itself (core, slim, migrate, UI), not its plugins: a plugin such as
     # jquery.prettyPhoto.js is where hash-reading DOM XSS has lived, and the sink
     # detector already rates library code by whether a source is in sight.
-    re.compile(r'/jquery(?:-ui|-migrate)?(?:[.-]\d+(?:\.\d+)*)?(?:\.slim)?(?:\.min)?\.js(?:[?#]|$)'),
+    re.compile(r'/jquery(?:-ui|-migrate)?(?:[.-]\d+(?:\.\d+)*)?(?:\.slim)?(?:\.min)?\.js(?:[?#_~\-]|$)'),
     re.compile(r'bootstrap\.min\.js'),
     re.compile(r'lodash\.min\.js'),
     re.compile(r'react\.production\.min\.js'),
@@ -418,19 +416,7 @@ def _endpoint_probe_headers(endpoint: dict, resolved_url: str, custom_header_lin
 
 
 def _is_js_url(url: str) -> bool:
-    """Check if a URL points to a JavaScript file."""
-    try:
-        path = urlparse(url).path.lower()
-        # Check extension
-        for ext in _JS_EXTENSIONS:
-            if path.endswith(ext):
-                return True
-        # Check common JS path patterns without extension
-        if '/js/' in path or '/javascript/' in path:
-            return True
-    except Exception:
-        pass
-    return False
+    return is_js_url(url)
 
 
 def _keep_work_dir(settings: dict) -> bool:
@@ -470,28 +456,43 @@ def _collect_js_urls(combined_result: dict, settings: dict) -> list:
     Collect JS file URLs from the recon pipeline output.
 
     Sources:
-    - resource_enum discovered_urls (filtered to .js)
+    - resource_enum js_urls: every in-scope JS URL the crawlers saw, before
+      their exclude list (which hides /static/ and /_next/static bundles)
+    - resource_enum discovered_urls (filtered to JS)
+    - http_probe URLs
     - GAU/Wayback archived URLs (if JS_RECON_INCLUDE_ARCHIVED_JS)
+
+    A Rules-of-Engagement exclusion is dropped whichever source named it.
     """
     js_urls = set()
 
-    # Primary source: all discovered URLs from resource_enum
     resource_enum = combined_result.get('resource_enum', {})
-    discovered_urls = resource_enum.get('discovered_urls', [])
+    discovered_urls = list(resource_enum.get('js_urls') or []) + list(resource_enum.get('discovered_urls') or [])
 
     for url in discovered_urls:
         if isinstance(url, str) and _is_js_url(url) and _should_include_url(url, settings):
             js_urls.add(url)
 
-    # Also check httpx probed URLs (the by_url dict keys are URLs)
+    # httpx probed URLs; one it saw answer with a JavaScript type counts
+    # whatever its name.
     http_probe = combined_result.get('http_probe', {})
     if isinstance(http_probe, dict):
-        for url in http_probe.get('by_url', {}).keys():
-            if isinstance(url, str) and _is_js_url(url) and _should_include_url(url, settings):
+        for url, info in (http_probe.get('by_url') or {}).items():
+            served_js = isinstance(info, dict) and is_js_content_type(info.get('content_type'))
+            if isinstance(url, str) and (served_js or _is_js_url(url)) and _should_include_url(url, settings):
                 js_urls.add(url)
 
+    settings = settings or {}
+    excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
+    excluded = [e for e in (excluded or []) if isinstance(e, str) and e.strip()]
+    if excluded:
+        kept = {u for u in js_urls if not _is_roe_excluded(_host_of(u), excluded)}
+        if len(kept) < len(js_urls):
+            print(f"[-][JsRecon] Dropped {len(js_urls) - len(kept)} JS URL(s) on RoE-excluded hosts")
+        js_urls = kept
+
     print(f"[*][JsRecon] Collected {len(js_urls)} JS URLs from pipeline")
-    return list(js_urls)
+    return sorted(js_urls)
 
 
 def _load_uploaded_files(settings: dict, project_id: str) -> list:
@@ -587,6 +588,10 @@ def _download_js_files(
 
             content = resp.text
             if not content or len(content) > _MAX_JS_FILE_SIZE:
+                return None
+            accepted, why = accept_js_response(url, resp.headers.get('Content-Type'), content)
+            if not accepted:
+                print(f"[-][JsRecon] {url} -- not a JS file ({why})")
                 return None
 
             filepath = work_dir / f"js_{idx}.js"

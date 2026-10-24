@@ -1139,8 +1139,12 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
 
     jsluice_urls_pre_verify_count = 0
 
+    # In-scope JS the crawlers saw, before the exclude list hid it. For js_recon
+    # and jsluice only: these never become Endpoints or discovered_urls.
+    crawl_js_urls = sorted(set((katana_meta.get("js_urls") or []) + (hakrawler_meta.get("js_urls") or [])))
+
     if JSLUICE_ENABLED and (JSLUICE_EXTRACT_URLS or JSLUICE_EXTRACT_SECRETS):
-        all_crawl_urls = list(set(katana_urls + hakrawler_urls))
+        all_crawl_urls = sorted(set(katana_urls + hakrawler_urls + crawl_js_urls))
         if JSLUICE_EXTRACT_SECRETS:
             _note_jsluice_feed_cut(
                 jsluice_feed_cut, all_crawl_urls,
@@ -1680,6 +1684,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
             'total_discovered_urls': len(all_discovered_urls)
         },
         'discovered_urls': all_discovered_urls,
+        'js_urls': crawl_js_urls,
         'by_base_url': organized_data['by_base_url'],
         'forms': organized_data['forms'],
         'summary': {

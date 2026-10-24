@@ -3772,7 +3772,7 @@ class TestRunJsRecon(unittest.TestCase):
     """Tests for run_jsrecon using module-level mocks."""
 
     def _run_with_mocks(self, config, neo4j_connected=True, graph_endpoints=None, graph_baseurls=None,
-                        graph_subdomains=None, settings_override=None):
+                        graph_subdomains=None, settings_override=None, graph_js_files=()):
         """Helper that sets up all mocks and runs run_jsrecon."""
         mock_settings = MagicMock()
         mock_settings.return_value = {
@@ -3839,6 +3839,13 @@ class TestRunJsRecon(unittest.TestCase):
                 record.__getitem__ = lambda self, key: _graph_subdomains
                 result.single.return_value = record
                 result.__iter__ = lambda self: iter([])
+            elif "JsReconFinding" in query and "js_file" in query:
+                records = []
+                for url in graph_js_files:
+                    record = MagicMock()
+                    record.__getitem__ = lambda self, key, u=url: u
+                    records.append(record)
+                result.__iter__ = lambda self, r=records: iter(r)
             else:
                 result.__iter__ = lambda self: iter([])
                 result.single.return_value = None
@@ -3914,6 +3921,20 @@ class TestRunJsRecon(unittest.TestCase):
         mocks = self._run_with_mocks({"domain": "example.com", "user_inputs": []})
         mocks["run_js_recon"].assert_called_once()
         mocks["neo4j_client"].update_graph_from_js_recon.assert_called_once()
+
+    def test_js_files_a_full_run_analyzed_are_read_again(self):
+        """Plan 06.1: a bundle under /static/ never became an Endpoint (the
+        crawler's exclude list), so the graph's Endpoints alone never fed it to a
+        partial run. The js_file nodes the last run wrote name it."""
+        bundle = "https://example.com/static/js/main.4f3a.js"
+        mocks = self._run_with_mocks(
+            {"domain": "example.com", "user_inputs": []},
+            graph_js_files=[bundle, "https://example.com/static/js/main.4f3a.js.map#src/config.ts",
+                            "upload://local.js", "https://cdn.vendor-example.test/lib.js"],
+        )
+        resource_enum = mocks["run_js_recon"].call_args[0][0]["resource_enum"]
+        self.assertEqual(resource_enum["js_urls"], [bundle])
+        self.assertNotIn(bundle, resource_enum["discovered_urls"])
 
     def test_user_urls_injected(self):
         """User-provided URLs are added to JS Recon targets."""
