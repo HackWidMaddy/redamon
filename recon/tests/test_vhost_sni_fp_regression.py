@@ -648,3 +648,122 @@ def test_controls_use_the_apex_so_a_zone_routed_cdn_is_calibrated():
     ctrl = [h for h in seen if h and h.startswith(vsm._CONTROL_LABEL_PREFIX)]
     assert any(re.fullmatch(rf"{vsm._CONTROL_LABEL_PREFIX}[0-9a-f]{{10}}-\d\.{re.escape(APEX)}", h) for h in ctrl)
     assert any(h.endswith(".invalid") for h in ctrl)
+
+
+# ===========================================================================
+# 7. A name public DNS already points at this IP is never a hidden vhost
+# ===========================================================================
+DNS_KNOWN = [f"www.{APEX}", f"shop.{APEX}", f"blog.{APEX}"]
+
+
+def _site(host: str) -> bytes:
+    return f"<html><head><title>{host.split('.')[0]} site</title></head><body>{host} home</body></html>".encode()
+
+
+class _OnlyHttps(FakeCurl):
+    """The DNS block gives every IP a default port 80; keep these cases to 443."""
+
+    def __call__(self, cmd, **kwargs):
+        if any(arg.startswith("http://") for arg in cmd):
+            self.calls.append((None, "dead"))
+            return _proc(0)
+        return super().__call__(cmd, **kwargs)
+
+
+def _shared_ip_recon(extra_dns=None):
+    subs = {h: {"ips": {"ipv4": [IP], "ipv6": []}} for h in DNS_KNOWN}
+    subs.update(extra_dns or {})
+    return _recon(dns={"subdomains": subs})
+
+
+def _shared_ip_responder(served: dict):
+    def responder(host, layer, attempt):
+        if layer == "baseline" or host not in served:
+            return _proc(404, b"<h1>no route</h1>")
+        return served[host](layer)
+    return responder
+
+
+def _run_https(responder, words, recon, **settings):
+    fake = _OnlyHttps(responder)
+    with patch.object(vsm, "_is_curl_available", return_value=True), \
+         patch("subprocess.run", side_effect=fake):
+        run_vhost_sni_enrichment(recon, settings=_settings(words, **settings))
+    return recon["vhost_sni"], fake
+
+
+def _same_page(host):
+    return lambda layer: _proc(200, _site(host))
+
+
+class TestDnsKnownNamesAreNotHidden:
+    def test_three_dns_known_sites_on_a_shared_ip_are_not_hidden(self):
+        served = {h: _same_page(h) for h in DNS_KNOWN}
+        out, fake = _run_https(_shared_ip_responder(served), [], _shared_ip_recon(),
+                               VHOST_SNI_USE_GRAPH_CANDIDATES=True)
+        assert out["findings"] == []
+        # Still probed: a routing check needs the request.
+        assert set(DNS_KNOWN) <= fake.probed_hosts()
+        assert out["by_ip"][IP]["suppressed_dns_known"] == 3
+
+    def test_a_name_with_no_dns_here_is_still_a_hidden_vhost(self):
+        served = {h: _same_page(h) for h in DNS_KNOWN + [f"intranet.{APEX}"]}
+        out, _ = _run_https(_shared_ip_responder(served), ["intranet"], _shared_ip_recon(),
+                            VHOST_SNI_USE_GRAPH_CANDIDATES=True)
+        assert [f["hostname"] for f in out["findings"]] == [f"intranet.{APEX}"]
+        assert out["findings"][0]["dns_known"] is False
+
+    def test_a_name_whose_dns_points_elsewhere_is_still_reported(self):
+        elsewhere = f"legacy.{APEX}"
+        recon = _shared_ip_recon({elsewhere: {"ips": {"ipv4": ["198.51.100.7"], "ipv6": []}}})
+        served = {h: _same_page(h) for h in DNS_KNOWN + [elsewhere]}
+        out, _ = _run_https(_shared_ip_responder(served), [elsewhere], recon,
+                            VHOST_SNI_USE_GRAPH_CANDIDATES=True)
+        assert [f["hostname"] for f in out["findings"]] == [elsewhere]
+
+    def test_dns_known_names_are_never_injected_as_baseurls(self):
+        served = {h: _same_page(h) for h in DNS_KNOWN + [f"intranet.{APEX}"]}
+        recon = _shared_ip_recon()
+        out, _ = _run_https(_shared_ip_responder(served), ["intranet"], recon,
+                            VHOST_SNI_USE_GRAPH_CANDIDATES=True, VHOST_SNI_INJECT_DISCOVERED=True)
+        assert out["discovered_baseurls"] == [f"https://intranet.{APEX}"]
+        injected = set((recon.get("http_probe") or {}).get("by_url") or {})
+        assert injected == {f"https://intranet.{APEX}"}
+
+    def test_a_dns_known_name_whose_layers_disagree_is_a_routing_finding(self):
+        # Host header and SNI reach different backends: that is a routing
+        # inconsistency whatever DNS says, so it stays, flagged dns_known.
+        host = f"shop.{APEX}"
+
+        def split(layer):
+            if layer == "L7":
+                return _proc(200, _site(host))
+            return _proc(200, b"<html><head><title>internal admin</title></head><body>panel</body></html>")
+
+        served = {h: _same_page(h) for h in DNS_KNOWN}
+        served[host] = split
+        out, _ = _run_https(_shared_ip_responder(served), [], _shared_ip_recon(),
+                            VHOST_SNI_USE_GRAPH_CANDIDATES=True, VHOST_SNI_INJECT_DISCOVERED=True)
+        assert [f["hostname"] for f in out["findings"]] == [host]
+        f = out["findings"][0]
+        assert f["type"] == "host_header_bypass" and f["layer"] == "both"
+        assert f["dns_known"] is True
+        assert out["discovered_baseurls"] == []
+
+    def test_the_apex_resolving_here_is_dns_known(self):
+        recon = _recon(dns={"domain": {"ips": {"ipv4": [IP], "ipv6": []}}, "subdomains": {}})
+        out, _ = _run_https(_shared_ip_responder({APEX: _same_page(APEX)}), [APEX], recon)
+        assert out["findings"] == []
+        assert out["by_ip"][IP]["suppressed_dns_known"] == 1
+
+    def test_dns_known_set_reads_the_current_resolution_only(self):
+        recon = {"domain": APEX, "dns": {
+            "domain": {"ips": {"ipv4": ["198.51.100.1"], "ipv6": []}},
+            "subdomains": {
+                f"www.{APEX}": {"ips": {"ipv4": [IP], "ipv6": []}},
+                f"v6.{APEX}": {"ips": {"ipv4": [], "ipv6": ["2001:db8::1"]}},
+                f"gone.{APEX}": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
+            }}}
+        assert vsm._dns_known_names(recon, IP) == {f"www.{APEX}"}
+        assert vsm._dns_known_names(recon, "2001:db8::1") == {f"v6.{APEX}"}
+        assert vsm._dns_known_names(recon, "198.51.100.1") == {APEX}

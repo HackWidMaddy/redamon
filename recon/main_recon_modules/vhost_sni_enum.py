@@ -218,6 +218,7 @@ def run_vhost_sni_enrichment(
                 size_tolerance=size_tolerance,
                 max_candidates=max_candidates_per_ip,
                 scope=candidate_scope,
+                dns_known=_dns_known_names(combined_result, ip),
             )
         except Exception as e:
             print(f"[!][VhostSni] IP {ip} probing failed: {e}")
@@ -243,7 +244,9 @@ def run_vhost_sni_enrichment(
 
             findings_flat.append(_build_finding_record(anomaly, ip, ip_result))
 
-            if inject_discovered:
+            # http_probe already has a DNS-known name; injecting it would only
+            # re-label a public site as discovered by this module.
+            if inject_discovered and not anomaly.get("dns_known"):
                 base_url = _build_baseurl(anomaly["hostname"], anomaly["port"], anomaly.get("scheme", "https"))
                 if base_url:
                     discovered_baseurls.add(base_url)
@@ -356,8 +359,15 @@ def _probe_single_ip(
     size_tolerance: int,
     max_candidates: int,
     scope: Optional["_CandidateScope"] = None,
+    dns_known: Iterable[str] = (),
 ) -> dict:
-    """Run baseline + L7/L4 anomaly probes for one IP across all its ports."""
+    """Run baseline + L7/L4 anomaly probes for one IP across all its ports.
+
+    ``dns_known`` names resolve to this IP in public DNS: they are probed, but
+    only a routing inconsistency (L7 and L4 serving different pages) on one of
+    them is kept, since a site anyone can resolve is not a hidden vhost.
+    """
+    dns_known = {h.strip().lower().rstrip(".") for h in dns_known if isinstance(h, str)}
 
     candidates, out_of_scope_skipped = _scoped_candidates(
         apex_domain, default_prefixes, custom_lines, graph_candidates, scope)
@@ -374,6 +384,7 @@ def _probe_single_ip(
     is_permissive_frontend = False
     suppressed_by_control_total = 0
     suppressed_unstable_total = 0
+    suppressed_dns_known: set[str] = set()
     suppressed_as_noise: list[str] = []
     dead_ports: list[str] = []
 
@@ -500,6 +511,8 @@ def _probe_single_ip(
                 "port": port,
                 "scheme": scheme,
                 "layer": layer,
+                "layers_differ": layer == "both" and not _same_response(l7_res, l4_res, size_tolerance),
+                "dns_known": hostname in dns_known,
                 "baseline_status": baseline["status"],
                 "baseline_size": baseline["size"],
                 "observed_status": obs["status"],
@@ -528,6 +541,10 @@ def _probe_single_ip(
             )
         suppressed_by_control_total += port_suppressed_by_control
 
+        # Set aside before the re-probe (no traffic for a name that cannot be
+        # reported) and again after it, since a re-probe can reduce a routing
+        # inconsistency to one layer.
+        kept = _set_aside_dns_known(kept, suppressed_dns_known)
         if port_key in dead_ports:
             unstable = 0  # the port stopped answering: a second probe would only time out
         else:
@@ -536,6 +553,7 @@ def _probe_single_ip(
                 scheme=scheme, ip=ip, port=port, timeout=timeout, concurrency=concurrency,
                 baseline=baseline, size_tolerance=size_tolerance,
             )
+        kept = _set_aside_dns_known(kept, suppressed_dns_known)
         if unstable:
             print(
                 f"[*][VhostSni] IP {ip}:{port} ({scheme}) dropped {unstable} "
@@ -543,6 +561,10 @@ def _probe_single_ip(
             )
         suppressed_unstable_total += unstable
         anomalies.extend(kept)
+
+    if suppressed_dns_known:
+        print(f"[*][VhostSni] IP {ip}: {len(suppressed_dns_known)} name(s) public DNS already "
+              f"points here served their own site -- not reported as hidden")
 
     # Build the per-IP summary
     primary_baseline = next(iter(baselines.values()), None)
@@ -560,6 +582,7 @@ def _probe_single_ip(
         "is_permissive_frontend": is_permissive_frontend,
         "suppressed_by_control": suppressed_by_control_total,
         "suppressed_unstable": suppressed_unstable_total,
+        "suppressed_dns_known": len(suppressed_dns_known),
         "out_of_scope_skipped": out_of_scope_skipped,
         # A permissive frontend's anomalies are discarded as noise, not written
         # as findings; the count and a bounded sample keep that discard visible.
@@ -922,13 +945,25 @@ def _drop_unstable(
         else:
             (layer,) = fired - bad
             obs = (first_results.get(a["hostname"]) or {})[layer]
-            a = dict(a, layer=layer, observed_status=obs["status"], observed_size=obs["size"],
-                     observed_fingerprint=obs.get("canon_hash") or "")
+            a = dict(a, layer=layer, layers_differ=False, observed_status=obs["status"],
+                     observed_size=obs["size"], observed_fingerprint=obs.get("canon_hash") or "")
             if baseline is not None:
                 a["size_delta"] = obs["size"] - baseline["size"]
                 a["severity"] = _classify_severity(a["hostname"], layer, baseline, obs, None, None, size_tolerance)
             kept.append(a)
     return kept, dropped
+
+
+def _set_aside_dns_known(anomalies: list[dict], set_aside: set) -> list[dict]:
+    """Drop the anomalies on DNS-known names that are not a routing
+    inconsistency, adding their hostnames to ``set_aside``."""
+    kept = []
+    for a in anomalies:
+        if a.get("dns_known") and not a.get("layers_differ"):
+            set_aside.add(a["hostname"])
+        else:
+            kept.append(a)
+    return kept
 
 
 def _detect_noisy_frontend(
@@ -1130,24 +1165,44 @@ def _is_valid_hostname(hostname: str) -> bool:
     return all(allowed.match(label) for label in hostname.split("."))
 
 
+def _resolves_here(dns_entry, ip: str) -> bool:
+    ip_set = (dns_entry or {}).get("ips") if isinstance(dns_entry, dict) else None
+    if not isinstance(ip_set, dict):
+        return False
+    return ip in (ip_set.get("ipv4") or []) or ip in (ip_set.get("ipv6") or [])
+
+
+def _dns_subdomains_on(combined_result: dict, ip: str) -> set[str]:
+    """Subdomains whose A/AAAA in this run's dns block include ``ip``."""
+    subs = ((combined_result.get("dns") or {}).get("subdomains")) or {}
+    return {name.strip().lower().rstrip(".") for name, info in subs.items()
+            if isinstance(name, str) and _resolves_here(info, ip)}
+
+
+def _dns_known_names(combined_result: dict, ip: str) -> set[str]:
+    """Names public DNS points at ``ip`` this run: its subdomains and the apex.
+
+    Anyone can resolve them, so a site served for one of them is not hidden,
+    however much it differs from the raw-IP answer. On a shared CDN or proxy IP
+    every customer's site does differ, so without this each DNS-known name was
+    reported as a hidden vhost.
+    """
+    names = _dns_subdomains_on(combined_result, ip)
+    apex = _detect_apex_domain(combined_result)
+    if apex and _resolves_here((combined_result.get("dns") or {}).get("domain"), ip):
+        names.add(apex)
+    return names
+
+
 def _collect_graph_candidates(combined_result: dict, ip: str) -> list[str]:
     """
     Pull every hostname from the recon data that resolves to (or sits on) this
     IP. Sources: dns map, http_probe.by_host, urlscan/external domains, TLS
     SAN list captured by httpx.
     """
-    out: set[str] = set()
-
     # 1. DNS resolved subdomains pointing at this IP
+    out: set[str] = set(_dns_subdomains_on(combined_result, ip))
     dns = combined_result.get("dns") or {}
-    for sub_name, sub_info in (dns.get("subdomains") or {}).items():
-        if not isinstance(sub_info, dict):
-            continue
-        ip_set = (sub_info.get("ips") or {})
-        ipv4 = ip_set.get("ipv4") if isinstance(ip_set, dict) else None
-        ipv6 = ip_set.get("ipv6") if isinstance(ip_set, dict) else None
-        if (ipv4 and ip in ipv4) or (ipv6 and ip in ipv6):
-            out.add(sub_name.strip().lower())
 
     # 2. http_probe.by_host (alive hosts httpx already resolved)
     http_probe = combined_result.get("http_probe") or {}
@@ -1450,6 +1505,7 @@ def _build_finding_record(anomaly: dict, ip: str, ip_result: dict) -> dict:
         "observed_size": anomaly["observed_size"],
         "size_delta": anomaly["size_delta"],
         "internal_pattern_match": internal_kw,
+        "dns_known": bool(anomaly.get("dns_known")),
         "description": description,
         "discovered_at": datetime.now(timezone.utc).isoformat(),
     }

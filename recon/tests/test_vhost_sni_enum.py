@@ -796,9 +796,11 @@ class TestRunVhostSniEnrichment:
         assert cr["vhost_sni"]["summary"]["high_severity"] == 0
 
     def test_l7_only_anomaly_creates_low_finding(self):
-        # blog (no internal keyword) returns different status -> low
+        # blog (no internal keyword) returns different status -> low. It comes
+        # from a certificate SAN: a name DNS points at this IP is never hidden.
         cr = self._basic_recon()
-        cr["dns"] = {"subdomains": {"blog.example.com": {"ips": {"ipv4": ["1.2.3.4"], "ipv6": []}}}}
+        cr["http_probe"] = {"by_url": {"https://1.2.3.4": {
+            "host": "1.2.3.4", "tls": {"certificate": {"san": ["blog.example.com"]}}}}}
         settings = self._basic_settings()
         settings["VHOST_SNI_CUSTOM_WORDLIST"] = ""  # only graph candidate
         responses = {
