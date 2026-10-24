@@ -127,6 +127,7 @@ PUBLIC_CLIENT_KEY_TYPES = frozenset({
     "stripe publishable key", "google recaptcha key", "mapbox token",
     "algolia app id", "algolia search key", "intercom app id", "pusher key",
     "clerk publishable key", "mailgun public key", "flutterwave public key",
+    "supabase anon key", "supabase publishable key",
 })
 
 

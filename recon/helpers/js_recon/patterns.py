@@ -12,7 +12,9 @@ github_secret_hunt SECRET_PATTERNS with JS-specific additions and validators.
 import re
 import json
 import math
+import base64
 import hashlib
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 
@@ -37,6 +39,10 @@ _RAW_PATTERNS = [
     ("Azure Storage Key", r"(?i)DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{88}", "critical", "high", "cloud", None),
     ("Azure Connection String", r"(?i)(AccountKey|SharedAccessKey)=[A-Za-z0-9+/=]{40,}", "critical", "medium", "cloud", None),
     ("Azure SAS Token", r"(?i)[?&]sig=[A-Za-z0-9%]{40,}", "high", "medium", "cloud", None),
+    # A presigned S3 URL (SigV4: the signature and the credential it was made
+    # with) or a GCS V4 signed URL: whoever holds it reads or writes the object
+    # until it expires. Low once X-*-Date + X-*-Expires has passed (_refine).
+    ("Signed URL in client code", r"https?://[^\s'\"<>\\]{1,1024}?\?(?:(?=[^\s'\"<>\\]{0,1024}?X-Amz-Credential=)[^\s'\"<>\\]{0,1024}?X-Amz-Signature=[0-9a-fA-F]{64}|[^\s'\"<>\\]{0,1024}?X-Goog-Signature=[0-9a-fA-F]{64,})[^\s'\"<>\\]{0,1024}", "medium", "high", "cloud", None),
     # The value must be ASSIGNED to the client-secret key, near an Azure keyword:
     # "azure" anywhere plus any long quoted string later used to be enough.
     # Medium: the value itself has no provider prefix.
@@ -109,6 +115,9 @@ _RAW_PATTERNS = [
     ("Slack Webhook", r"https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+", "high", "high", "auth", None),
     ("Discord Bot Token", r"[MN][A-Za-z\d]{23,}\.[\w-]{4,7}\.[\w-]{27,}", "high", "high", "auth", "validate_discord"),
     ("Discord Webhook", r"https://discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+", "high", "high", "auth", None),
+    # Automation webhooks: a POST runs the owner's scenario, as Slack/Discord ones post.
+    ("Zapier Webhook", r"https://hooks\.zapier\.com/hooks/catch/[0-9]+/[A-Za-z0-9]+/?", "high", "high", "auth", None),
+    ("Make Webhook", r"https://hook\.[a-z0-9]+\.make\.com/[A-Za-z0-9]+", "high", "high", "auth", None),
     ("Twilio API Key", r"\bSK[0-9a-fA-F]{32}\b", "high", "high", "auth", "validate_twilio"),
     ("Twilio Account SID", r"\bAC[a-zA-Z0-9]{32}\b", "medium", "high", "auth", "validate_twilio_format"),
     ("Twilio App SID", r"\bAP[a-zA-Z0-9_\-]{32}\b", "medium", "high", "auth", None),
@@ -169,7 +178,11 @@ _RAW_PATTERNS = [
     ("LaunchDarkly SDK Key", r"(?i)sdk-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", "medium", "high", "js_service", None),
     ("LaunchDarkly Access Token", r"(?i)api-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", "high", "high", "js_service", None),
     ("Contentful Token", r"(?i)contentful[^\n]{0,120}?['\"][a-zA-Z0-9_-]{43}['\"]", "medium", "medium", "js_service", None),
+    # A JWT: its `role` claim renames it "Supabase anon key" (public) or
+    # "Supabase service_role key" (critical); see _refine.
     ("Supabase Key", r"(?i)supabase[^\n]{0,120}?(?:anon|service)[^\n]{0,120}?key[^\n]{0,120}?eyJ[A-Za-z0-9-_]+", "high", "medium", "js_service", None),
+    ("Supabase Secret Key", r"\bsb_secret_[A-Za-z0-9_-]{20,}", "critical", "high", "js_service", None),
+    ("Supabase Publishable Key", r"\bsb_publishable_[A-Za-z0-9_-]{20,}", "low", "high", "js_service", None),
     ("PlanetScale Token", r"pscale_tkn_[a-zA-Z0-9_-]{43}", "high", "high", "js_service", None),
     ("PlanetScale OAuth Token", r"pscale_otkn_[a-zA-Z0-9_-]{43}", "high", "high", "js_service", None),
     ("PlanetScale Password", r"pscale_pw_[a-zA-Z0-9_-]{43}", "high", "high", "js_service", None),
@@ -311,9 +324,11 @@ _RAW_PATTERNS = [
 ]
 
 #: Names a scan writes that no pattern above carries: a hit re-read from its
-#: value or label (see `_reclassify`).
+#: value or label (see `_refine`).
 DERIVED_SECRET_NAMES = (
     "Algolia Search Key",
+    "Supabase anon key",
+    "Supabase service_role key",
 )
 
 #: Keys that are PUBLIC BY DESIGN: they ship to every browser that loads the
@@ -339,6 +354,8 @@ PUBLIC_CLIENT_KEY_NAMES = frozenset({
     "Clerk Publishable Key",
     "Mailgun Public Key",
     "Flutterwave Public Key",
+    "Supabase anon key",
+    "Supabase Publishable Key",
 })
 
 # A search-only Algolia key has the admin key's format; only its label tells
@@ -346,13 +363,71 @@ PUBLIC_CLIENT_KEY_NAMES = frozenset({
 _ALGOLIA_SEARCH_LABEL = re.compile(
     r'(?i)search[_-]?(?:only[_-]?)?(?:api[_-]?)?key["\']?\s*[:=]\s*["\'][a-f0-9]{32}["\']$')
 
+#: A JWT's payload is read only up to this size; the token is target-controlled.
+_JWT_PAYLOAD_MAX = 4096
+_JWT = re.compile(r'eyJ[A-Za-z0-9_-]+\.(eyJ[A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*')
+_JWT_HEADER_AT_END = re.compile(r'eyJ[A-Za-z0-9_-]+$')
+_JWT_REST = re.compile(r'\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*')
 
-def _reclassify(name: str, matched_text: str) -> str:
-    """The name a hit is reported under, when its value or label says more
-    than the pattern that matched it."""
+_SIGNED_DATE = re.compile(r'X-(?:Amz|Goog)-Date=(\d{8}T\d{6}Z)')
+_SIGNED_EXPIRES = re.compile(r'X-(?:Amz|Goog)-Expires=(\d{1,7})(?!\d)')
+
+
+def _jwt_role(token: str):
+    """The `role` claim of a JWT, or None. The payload is base64url-decoded,
+    never verified; anything unreadable or oversized is "role unknown"."""
+    m = _JWT.fullmatch(token or '')
+    if not m or len(m.group(1)) > _JWT_PAYLOAD_MAX:
+        return None
+    payload = m.group(1)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+    except (ValueError, TypeError):
+        return None
+    role = claims.get('role') if isinstance(claims, dict) else None
+    return role if isinstance(role, str) else None
+
+
+def _supabase_token(name: str, matched_text: str, tail: str):
+    """The whole JWT a Supabase-key or JWT hit names. The Supabase pattern
+    stops at the token's header, so the rest comes from the text after it."""
+    if name == 'JWT Token':
+        return matched_text
+    head = _JWT_HEADER_AT_END.search(matched_text)
+    rest = _JWT_REST.match(tail)
+    return head.group(0) + rest.group(0) if head and rest else None
+
+
+def _signed_url_expired(url: str, now=None) -> bool:
+    date, expires = _SIGNED_DATE.search(url), _SIGNED_EXPIRES.search(url)
+    if not (date and expires):
+        return False
+    try:
+        signed = datetime.strptime(date.group(1), '%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return signed + timedelta(seconds=int(expires.group(1))) < (now or datetime.now(timezone.utc))
+
+
+def _refine(name: str, matched_text: str, tail: str = '') -> dict:
+    """What a hit's value or label says beyond the pattern that matched it:
+    a different `name`, `severity` or `confidence`, and for a JWT the `jwt`
+    itself, which makes the Supabase pattern and the JWT pattern one finding.
+    `tail` is the text right after the match."""
     if name == 'Algolia API Key' and _ALGOLIA_SEARCH_LABEL.search(matched_text):
-        return 'Algolia Search Key'
-    return name
+        return {'name': 'Algolia Search Key'}
+    if name in ('Supabase Key', 'JWT Token'):
+        token = _supabase_token(name, matched_text, tail)
+        role = _jwt_role(token) if token else None
+        if role == 'service_role':
+            # It bypasses row-level security: the project's whole database.
+            return {'name': 'Supabase service_role key', 'severity': 'critical',
+                    'confidence': 'high', 'jwt': token}
+        if role == 'anon':
+            return {'name': 'Supabase anon key', 'jwt': token}
+    if name == 'Signed URL in client code' and _signed_url_expired(matched_text):
+        return {'severity': 'low'}
+    return {}
 
 
 # Pre-compile all patterns at module load time
@@ -600,7 +675,12 @@ def _collapse_span_duplicates(findings: list) -> list:
     groups: dict = {}
     order: list = []
     for f in findings:
-        key = (f['matched_text'], f['source_url'], f['line_number'])
+        # A Supabase key matches both the Supabase pattern (up to the token's
+        # header) and the JWT pattern (the token): one key, one finding.
+        if f.get('_jwt'):
+            key = ('jwt', f['_jwt'], f['source_url'], f['line_number'])
+        else:
+            key = (f['matched_text'], f['source_url'], f['line_number'])
         if key not in groups:
             groups[key] = []
             order.append(key)
@@ -612,10 +692,12 @@ def _collapse_span_duplicates(findings: list) -> list:
         if len(group) == 1:
             collapsed.append(group[0])
             continue
-        # Rank: higher severity > higher confidence > longer pattern name (specificity proxy)
+        # Rank: higher severity > higher confidence > the match that IS the
+        # token > longer pattern name (specificity proxy)
         group.sort(key=lambda f: (
             SEVERITY_ORDER.get(f['severity'], 0),
             CONFIDENCE_ORDER.get(f['confidence'], 0),
+            f.get('_jwt') is not None and f['matched_text'] == f['_jwt'],
             len(f['name']),
         ), reverse=True)
         primary = group[0]
@@ -901,27 +983,31 @@ def scan_js_content(
                     continue
                 seen_hashes.add(finding_id)
 
-                name = _reclassify(pattern['name'], matched_text)
+                refined = _refine(pattern['name'], matched_text,
+                                  line[match.end():match.end() + _JWT_PAYLOAD_MAX + 200])
+                name = refined.get('name', pattern['name'])
                 public = name in PUBLIC_CLIENT_KEY_NAMES
                 findings.append({
                     'id': finding_id,
                     'name': name,
                     'matched_text': matched_text,
                     'redacted_value': redact(matched_text),
-                    'severity': 'info' if public else pattern['severity'],
+                    'severity': 'info' if public else refined.get('severity', pattern['severity']),
                     'public_client_key': public,
-                    'confidence': pattern['confidence'],
+                    'confidence': refined.get('confidence', pattern['confidence']),
                     'category': pattern['category'],
                     'line_number': line_num,
                     'source_url': source_url,
                     'validator_ref': pattern['validator_ref'],
                     'detection_method': 'regex',
                     '_span': (offset + match.start(), offset + match.end()),
+                    '_jwt': refined.get('jwt'),
                 })
 
     findings = _collapse_span_duplicates(findings)
     spans_by_line = {n: _merge_spans(s) for n, s in spans_by_line.items()}
     for finding in findings:
+        finding.pop('_jwt', None)
         start, end = finding.pop('_span')
         finding['context'] = _finding_context(lines, spans_by_line,
                                               finding['line_number'], start, end)

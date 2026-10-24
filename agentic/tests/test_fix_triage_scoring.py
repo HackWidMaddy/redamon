@@ -332,7 +332,7 @@ class TestPublicClientKeys(unittest.TestCase):
                       "Stripe Publishable Key", "Google reCAPTCHA Key", "Mapbox Token",
                       "Algolia App ID", "Algolia Search Key", "Intercom App ID",
                       "Pusher Key", "Clerk Publishable Key", "Mailgun Public Key",
-                      "Flutterwave Public Key")
+                      "Flutterwave Public Key", "Supabase anon key", "Supabase Publishable Key")
 
     def test_the_list_is_js_recons_list(self):
         """js_recon writes these at info with the flag; the board must agree on
@@ -349,7 +349,8 @@ class TestPublicClientKeys(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(name, names["js_recon"])
         # The GitHub hunt shares most of them; these are js_recon-only.
-        hunt_only_missing = {"Intercom App ID", "Algolia Search Key"}
+        hunt_only_missing = {"Intercom App ID", "Algolia Search Key", "Supabase anon key",
+                             "Supabase Publishable Key"}
         for name in set(self.PRODUCER_NAMES) - hunt_only_missing:
             with self.subTest(producer="github_hunt", name=name):
                 self.assertIn(name, names["github_hunt"])
@@ -834,3 +835,17 @@ class TestKeywordAnchoredConfidence(unittest.TestCase):
                      "Stripe Secret Key", "HashiCorp Terraform Token", "Azure Storage Key"):
             with self.subTest(name=name):
                 self.assertEqual(js_pattern(name)[1], "high")
+
+
+class TestPrivilegedSupabaseKeys(unittest.TestCase):
+    """Plan 05.6: a service_role JWT or an sb_secret_ key is a credential."""
+
+    def test_they_are_credentials(self):
+        for name in ("Supabase service_role key", "Supabase Secret Key"):
+            with self.subTest(name=name):
+                self.assertEqual(sm.classify_secret(name, name).name, "credential")
+                self.assertEqual(sm.classify_secret("js_service", name).name, "credential")
+
+    def test_the_anon_key_is_public(self):
+        self.assertEqual(sm.classify_secret("Supabase anon key", "Supabase anon key").name,
+                         "public_client_id")

@@ -31,6 +31,8 @@ export const PUBLIC_CLIENT_KEY_TYPES: readonly string[] = [
   'clerk publishable key',
   'mailgun public key',
   'flutterwave public key',
+  'supabase anon key',
+  'supabase publishable key',
 ]
 
 const PUBLIC_SET: ReadonlySet<string> = new Set(PUBLIC_CLIENT_KEY_TYPES)

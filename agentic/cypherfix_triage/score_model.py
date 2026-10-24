@@ -432,6 +432,8 @@ PUBLIC_CLIENT_KEY_TYPES = frozenset({
     "clerk publishable key",
     "mailgun public key",       # pubkey-
     "flutterwave public key",   # FLWPUBK-
+    "supabase anon key",        # a Supabase JWT whose role is anon
+    "supabase publishable key",  # sb_publishable_
 })
 
 #: Substrings matched against the lowercased detector / secret_type, most
@@ -448,6 +450,9 @@ SECRET_CLASS_PATTERNS = (
         "slack", "stripe", "twilio", "sendgrid", "github", "gitlab", "npm",
         "docker", "kubernetes", "kubeconfig", "database", "postgres", "mysql",
         "mongodb", "redis", "credential",
+        # A Supabase service_role JWT or sb_secret_ key bypasses row-level
+        # security: the project's whole database.
+        "service_role", "supabase secret",
     )),
     ("secret", ("api key", "apikey", "token", "secret", "key")),
 )
