@@ -9,6 +9,7 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     # the orchestrator must forward the Shodan stub (see README.md)
     python3 e2e_fp.py                       # new project + full run
     python3 e2e_fp.py --rerun <projectId>   # a second run on the same project
+    python3 e2e_fp.py --http-layer          # the plan-03 HTTP-layer project (own hosts)
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
 never prints it.
@@ -71,6 +72,19 @@ SETTINGS = {
 }
 
 
+# The HTTP-layer cases (plan 03) run as their own project: the security checks
+# and endpoint validation they need are off in the main one. .21 (the vendor
+# host serving the SAML page .23 redirects to) stays OUTSIDE the target list.
+HTTP_LAYER_TARGETS = [f"{NET}.{n}" for n in (15, 20, 22, 23, 25, 26, 27, 28)]
+HTTP_LAYER_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "resource_enum", "vuln_scan", "js_recon"],
+    "securityCheckEnabled": True,
+    "jsReconValidateEndpoints": True,
+    "vhostSniEnabled": False, "shodanEnabled": False, "webCachePoisonEnabled": False,
+}
+
+
 def call(tool, args):
     out, err = mcp.call(tool, args)
     if err:
@@ -116,6 +130,8 @@ def main():
     ap.add_argument("--rerun", metavar="PROJECT_ID")
     ap.add_argument("--timeout", type=int, default=3600)
     ap.add_argument("--no-triage", action="store_true")
+    ap.add_argument("--http-layer", action="store_true",
+                    help="create the plan-03 HTTP-layer project instead of the main one")
     args = ap.parse_args()
 
     mcp.init()
@@ -123,10 +139,12 @@ def main():
     if args.rerun:
         project_id = args.rerun
     else:
-        name = f"FP regression lab {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        kind = " (HTTP layer)" if args.http_layer else ""
+        name = f"FP regression lab{kind} {time.strftime('%Y-%m-%d %H:%M:%S')}"
         out = call("create_project", {"name": name, "engagementKind": "internal",
                                       "description": "Guinea pig: testing/guinea_pigs/fp_regression_target",
-                                      "targetIps": TARGETS, "settings": SETTINGS})
+                                      "targetIps": HTTP_LAYER_TARGETS if args.http_layer else TARGETS,
+                                      "settings": HTTP_LAYER_SETTINGS if args.http_layer else SETTINGS})
         project_id = (out.get("project") or {}).get("id") or out.get("id") or out.get("projectId")
         print(f"[+] project {project_id} ({name})", flush=True)
     print("[*] preflight:", json.dumps(call("preflight_scope_check", {"projectId": project_id}))[:600], flush=True)

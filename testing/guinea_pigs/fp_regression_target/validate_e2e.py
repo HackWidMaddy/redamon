@@ -1,6 +1,7 @@
 """End-to-end assertions for the false-positive lab, run entirely over MCP.
 
 Run after e2e_fp.py:   python3 validate_e2e.py <projectId>
+The HTTP-layer project (e2e_fp.py --http-layer): python3 validate_e2e.py <projectId> --http-layer
 
 N-01, a run with no JS input keeps the earlier js_recon findings, takes a second
 run: `--js-count` prints the count, then switch resource_enum off, rerun, and
@@ -18,7 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mcp_client as mcp  # noqa: E402
 
-USAGE = "usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n>]"
+USAGE = "usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer]"
 if len(sys.argv) not in (2, 3, 4):
     sys.exit(USAGE)
 P = sys.argv[1]
@@ -38,6 +39,61 @@ def check(case, ok, detail):
     results.append((case, bool(ok), detail))
 
 
+def report():
+    width = max(len(c) for c, _, _ in results)
+    for case, ok, detail in results:
+        print(f"{'PASS' if ok else 'FAIL'}  {case:<{width}}  {detail}")
+    failed = [c for c, ok, _ in results if not ok]
+    print(f"\n{len(results) - len(failed)}/{len(results)} passed" + (f"; FAILED: {', '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
+
+
+def http_layer_checks():
+    """Plan 03 cases, on the project e2e_fp.py --http-layer creates."""
+    api = q("""MATCH (v:Vulnerability) WHERE v.source = 'security_check' AND v.type = 'ip_api_exposed'
+               RETURN v.matched_ip AS ip, v.severity AS sev, v.evidence AS ev, v.control_check AS cc""")
+    by_ip = {r["ip"]: r for r in api}
+    silent = sorted(ip for ip in (f"{NET}.15", f"{NET}.20", f"{NET}.25") if ip in by_ip)
+    check("A-01", not silent, f"API Endpoint Exposed on IP on catch-alls: {silent} (expect none on the cache "
+                              f"and SPA hosts, nor on the JSON catch-all .25)")
+    r = by_ip.get(f"{NET}.22")
+    check("A-02", r and r["sev"] == "high" and r["cc"] == "passed" and "control_check: passed" in (r["ev"] or ""),
+          f"the real API on .22: {r}")
+
+    ep = q(f"""MATCH (e:Endpoint) WHERE e.baseurl = 'http://{NET}.23' AND e.path = '/'
+               OPTIONAL MATCH (e)-[:USES_TECHNOLOGY]->(t:Technology)
+               RETURN e.title AS title, e.server AS server, e.first_status_code AS first,
+                      e.status_code AS last, e.redirect_chain_codes AS chain,
+                      e.redirected_off_host AS off, e.final_url AS final, collect(t.name) AS techs""")
+    r = ep[0] if ep else None
+    check("R-01", r and not r["title"] and not r["server"] and not [t for t in r["techs"] if "SAP" in (t or "")],
+          f".23's root Endpoint keeps nothing from the third-party IdP page: {r}")
+    check("R-02", r and r["first"] == 302 and r["off"] is True and (r["chain"] or [None])[0] == 302
+          and (r["final"] or "").endswith("/saml/login"), f".23's redirect chain: {r}")
+    ext = q(f"""MATCH (d:ExternalDomain) WHERE d.domain = '{NET}.21'
+                RETURN d.sources AS src, d.redirect_from_urls AS frm, d.titles_seen AS titles""")
+    r = ext[0] if ext else None
+    check("R-03", r and "http_probe_redirect" in (r["src"] or [])
+          and any(f"{NET}.23" in u for u in (r["frm"] or [])), f"the IdP host is an external domain: {r}")
+
+    js = q(f"""MATCH (e:Endpoint) WHERE (e.source = 'js_recon' OR e.js_recon_source = true)
+               AND e.baseurl IN ['http://{NET}.20', 'http://{NET}.22']
+               RETURN e.baseurl AS b, e.path AS p, e.validation_status AS vs ORDER BY b, p""")
+    shell = [x for x in js if x["b"] == f"http://{NET}.20" and x["p"] in ("/api/read", "/api/list")]
+    check("E-02", not shell, f"js_recon Endpoints for paths the SPA shell answers like any path: {shell}")
+    real = [x for x in js if x["b"] == f"http://{NET}.22" and x["p"] == "/api/v1"]
+    check("E-03", real and real[0]["vs"] == "hittable", f"the real API path from the bundle: {real}")
+
+    deny_hosts = [f"http://{NET}.{n}" for n in (26, 27, 28)]
+    roots = q(f"""MATCH (e:Endpoint) WHERE e.path = '/' AND e.baseurl STARTS WITH 'http://{NET}.'
+                  RETURN e.baseurl AS b, e.shared_body_cluster AS n""")
+    marks = {r["b"]: r["n"] for r in roots}
+    check("D-01", all((marks.get(b) or 0) >= 3 for b in deny_hosts),
+          f"the shared deny page: { {b: marks.get(b) for b in deny_hosts} } (expect shared_body_cluster >= 3)")
+    others = {b: n for b, n in marks.items() if n is not None and b not in deny_hosts}
+    check("D-02", not others, f"pages no other host serves are not marked: {others}")
+
+
 def js_recon_count():
     """JsReconFinding + Secret written by js_recon: what a run with no JS input must keep."""
     findings = q("MATCH (f:JsReconFinding) WHERE f.source = 'js_recon' RETURN count(f) AS n")
@@ -54,6 +110,9 @@ if len(sys.argv) > 2:
         print(f"{'PASS' if got == expected else 'FAIL'}  N-01  js_recon findings after a run with "
               f"no JS input: {got} (expect the {expected} from before)")
         sys.exit(0 if got == expected else 1)
+    if sys.argv[2] == "--http-layer" and len(sys.argv) == 3:
+        http_layer_checks()
+        sys.exit(report())
     sys.exit(USAGE)
 
 
@@ -261,9 +320,4 @@ check("S-03", aws and {r["d"] for r in aws} == {"js_recon:aws-access-key-id"},
 
 
 # --------------------------------------------------------------------------- report
-width = max(len(c) for c, _, _ in results)
-for case, ok, detail in results:
-    print(f"{'PASS' if ok else 'FAIL'}  {case:<{width}}  {detail}")
-failed = [c for c, ok, _ in results if not ok]
-print(f"\n{len(results) - len(failed)}/{len(results)} passed" + (f"; FAILED: {', '.join(failed)}" if failed else ""))
-sys.exit(1 if failed else 0)
+sys.exit(report())

@@ -6,7 +6,7 @@ Every case that must stay silent sits next to one that must still fire, so a
 green run proves both halves.
 
 ```bash
-docker compose up -d --build        # nine hosts on 192.88.94.0/24, no host ports
+docker compose up -d --build        # sixteen hosts on 192.88.94.0/24, no host ports
 docker compose down
 ```
 
@@ -48,7 +48,25 @@ the host.
    Cypher through MCP `query_graph`; exit 0 only when every case holds. The MCP
    token is read from the repo `.env` and never printed.
 
-4. **A run with no JS input (N-01).** `python3 validate_e2e.py <id> --js-count`
+4. **The HTTP layer (plan 03).** `python3 e2e_fp.py --http-layer` creates a
+   second `internal` IP-mode project over `.15`, `.20`, `.22`, `.23`, `.25` and
+   `.26`-`.28` with the security checks and JS Recon endpoint validation on
+   (both off in the main project), then `python3 validate_e2e.py <id>
+   --http-layer` asserts its cases. `.21` stays outside that project on
+   purpose: it is the third-party IdP `.23` redirects to. The WAF case runs the
+   check directly, because an IP-mode run has no hostname to put behind an
+   edge: with the `waf-bypass` lab up (its edge at `<edge>`),
+
+   ```bash
+   docker run --rm --network host -v "$PWD/../../..:/repo" -w /repo/recon \
+     -e PYTHONPATH=/repo/recon:/repo --entrypoint python redamon-recon:latest -c \
+     'from recon.helpers import security_checks as sc; print(sc.check_waf_bypass("<edge>", "192.88.94.24"))'
+   ```
+
+   must print `None` (W-01), while the same call with the `waf-bypass` origin
+   still returns the `payload_differential` finding.
+
+5. **A run with no JS input (N-01).** `python3 validate_e2e.py <id> --js-count`
    prints the project's js_recon findings. Switch Resource Enumeration off
    (`update_recon_settings` with `scanModules` minus `resource_enum`), run
    `python3 e2e_fp.py --rerun <id> --no-triage`, then
@@ -83,6 +101,12 @@ the host.
 | `.10`-`.13` | Shodan stub (`.30`): an unverified version-matched CVE, a verified one, a catalog-only CVE, a cloud-host org, a `cdn` tag | H-01..H-04 | the version match stays a high candidate on its own port; the verified CVE is marked verified; the catalog CVE carries no severity; the CDN and cloud hosts get no Shodan finding |
 | `.15` | a shared cache keyed on the URL only: `/promo` alternates two variants, `/home` reflects `X-Forwarded-Host` | C-01, C-02 | `/home` is reported as poisoned; the A/B page is not |
 | `.20` | two different AWS keys (main and theme bundles), and the theme key shipped again in a config bundle | S-01/02/03 | after the Priority Board: one board group per key value, never one per category; the same key in two files is one group; the detector is the pattern (`js_recon:aws-access-key-id`) |
+| `.22` | a JSON API: `200` on `/api/v1`, `404 {"code":"NOT_FOUND"}` on every other path | A-02 | one High "API Endpoint Exposed on IP" whose evidence says `control_check: passed` |
+| `.25`, `.15`, `.20` | `.25` answers `200 {"code":"NOT_FOUND"}` to every path (a made-up control path included); `.15` and `.20` are the catch-all apps | A-01 | no "API Endpoint Exposed on IP" |
+| `.23` | `/` answers `302` to `.21`'s "SAP NetWeaver SAML Login" page, outside the project | R-01/02/03 | `.23`'s root Endpoint has no title, server or SAP technology; `first_status_code` 302, `redirected_off_host` true, `final_url` the IdP page; `.21` is an ExternalDomain from `http_probe_redirect` |
+| `.20`, `.22` | the SPA shell answers `/api/read` and `/api/list` like any path; a bundle also calls `.22`'s `/api/v1` | E-02/03 | with endpoint validation on, no js_recon Endpoint for the shell's paths; `/api/v1` on `.22` is `hittable` |
+| `.26`-`.28` | one gateway deny page, the same bytes, on three hosts | D-01/02 | their root Endpoints carry `shared_body_cluster` 3; no other root page is marked |
+| `.24` | an HTTPS origin that `302`s every path, WAF probe payloads included, to `/login` | W-01 | behind the `waf-bypass` edge: no WAF-bypass finding (the old rule counted the 302 as "served") |
 | all | the Priority Board after the run | X-01a/b/c | no DOM sink, developer reference or Shodan CVE reaches T1/T2; the catalog-only CVE and the developer references sit in T4 |
 
 ## Not covered here

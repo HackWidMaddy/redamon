@@ -75,6 +75,49 @@ services:
     environment: { ROLE: shodan, PORTS: "80" }
     networks: { fp_lab: { ipv4_address: 192.88.94.30 } }
 
+  # HTTP layer (plan 03): each silent case next to one that must fire.
+  fp-api:
+    <<: *lab
+    container_name: redamon-fp-api
+    environment: { ROLE: api, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.22 } }
+
+  fp-sso:
+    <<: *lab
+    container_name: redamon-fp-sso
+    environment: { ROLE: sso, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.23 } }
+
+  fp-loginwall:
+    <<: *lab
+    container_name: redamon-fp-loginwall
+    environment: { ROLE: loginwall, PORTS: "443", TLS_PORTS: "443" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.24 } }
+
+  fp-jsonall:
+    <<: *lab
+    container_name: redamon-fp-jsonall
+    environment: { ROLE: jsonall, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.25 } }
+
+  fp-deny-a:
+    <<: *lab
+    container_name: redamon-fp-deny-a
+    environment: { ROLE: deny, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.26 } }
+
+  fp-deny-b:
+    <<: *lab
+    container_name: redamon-fp-deny-b
+    environment: { ROLE: deny, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.27 } }
+
+  fp-deny-c:
+    <<: *lab
+    container_name: redamon-fp-deny-c
+    environment: { ROLE: deny, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.28 } }
+
 networks:
   fp_lab:
     name: redamon_fp_lab

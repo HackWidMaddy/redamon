@@ -12,8 +12,13 @@ real finding that must survive. Stdlib only. See README.md for the case table.
     ROLE=ratelimit  a third of the names get 429; admin answers once, then 429
     ROLE=cache      a tiny shared cache: an A/B page and a real unkeyed-header poisoning
     ROLE=spa        single-page app + JS bundles + source maps (catch-all HTML shell)
-    ROLE=vendor     a third-party script host
+    ROLE=vendor     a third-party script host, and a third-party SAML login page
     ROLE=shodan     canned Shodan host API + InternetDB answers for the lab IPs
+    ROLE=api        a JSON API: 200 on /api/v1, 404 {"code":"NOT_FOUND"} elsewhere
+    ROLE=jsonall    a JSON catch-all: 200 {"code":"NOT_FOUND"} on every path
+    ROLE=sso        / answers 302 to the vendor host's SAML login (outside the project)
+    ROLE=loginwall  an HTTPS origin that 302s every path to /login
+    ROLE=deny       one gateway deny page (403) on every path, the same bytes on every host
 """
 
 import base64
@@ -256,7 +261,60 @@ class Vendor(Base):
             return self.send(200, json.dumps({
                 "version": 3, "mappings": "AAAA", "sources": ["webpack:///./src/tracker.ts"],
                 "sourcesContent": ["export const track = (e) => e;"]}), "application/json")
+        if path == "/saml/login":
+            # A third-party identity provider's page: never the target's own.
+            return self.send(200, "<html><head><title>SAP NetWeaver SAML Login</title></head><body>"
+                                  "<form method=post action=/saml/acs><input name=j_username>"
+                                  "<input type=password name=j_password></form></body></html>",
+                             headers={"Server": "SAP NetWeaver Application Server 7.53 / AS Java 7.50",
+                                      "sap-server": "true"})
         return self.send(404, "<h1>not found</h1>")
+
+
+# --------------------------------------------------------------------------- HTTP layer (plan 03)
+NOT_FOUND_JSON = '{"code":"NOT_FOUND","message":"No route matches the request"}'
+
+
+class Api(Base):
+    """A real API next to its catch-all twin (JsonAll): only /api/v1 exists."""
+    def do_GET(self):
+        if self.path.split("?", 1)[0] == "/api/v1":
+            return self.send(200, '{"service":"orders","version":"2.1","endpoints":["/api/v1/orders"]}',
+                             "application/json")
+        return self.send(404, NOT_FOUND_JSON, "application/json")
+
+
+class JsonAll(Base):
+    """`200 {"code":"NOT_FOUND"}` to every path: a status-only check reports an API."""
+    def do_GET(self):
+        return self.send(200, NOT_FOUND_JSON, "application/json")
+
+
+class Sso(Base):
+    """An in-scope host whose only page redirects to a third-party IdP."""
+    def do_GET(self):
+        if self.path.split("?", 1)[0] == "/":
+            return self.send(302, b"", ctype=None, headers={"Location": f"http://{NET}.21/saml/login"})
+        return self.send(404, "<h1>not found</h1>")
+
+
+class LoginWall(Base):
+    """An origin that redirects everything, WAF probe payloads included, to /login."""
+    def do_GET(self):
+        if self.path.split("?", 1)[0] == "/login":
+            return self.send(200, "<html><head><title>Sign in</title></head><body><form method=post>"
+                                  "<input name=user><input type=password name=pass></form></body></html>")
+        return self.send(302, b"", ctype=None, headers={"Location": "/login"})
+
+
+DENY_PAGE = ("<html><head><title>Access denied</title></head><body><h1>Access denied</h1>"
+             "<p>This request was blocked by the gateway policy.</p></body></html>")
+
+
+class Deny(Base):
+    """One gateway's deny page: the same bytes on every host that runs it."""
+    def do_GET(self):
+        return self.send(403, DENY_PAGE)
 
 
 # --------------------------------------------------------------------------- Shodan stub
@@ -307,7 +365,8 @@ class Shodan(Base):
 
 # --------------------------------------------------------------------------- main
 ROLES = {"fastly": Fastly, "cloudflare": Cloudflare, "redirect": Redirect, "akamai": Akamai,
-         "ratelimit": RateLimit, "cache": Cache, "spa": Spa, "vendor": Vendor, "shodan": Shodan}
+         "ratelimit": RateLimit, "cache": Cache, "spa": Spa, "vendor": Vendor, "shodan": Shodan,
+         "api": Api, "jsonall": JsonAll, "sso": Sso, "loginwall": LoginWall, "deny": Deny}
 
 
 def _tls_context():
