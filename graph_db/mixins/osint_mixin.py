@@ -1969,6 +1969,7 @@ class OsintMixin:
             // Global reference node: no tenant stamp.
             MERGE (c:CVE {id: $cve_id})
             ON CREATE SET c.source = 'netlas'
+            SET c.updated_at = datetime()
             WITH c
             MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
             MERGE (v)-[:INCLUDES_CVE]->(c)
