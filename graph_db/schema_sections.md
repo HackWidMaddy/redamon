@@ -364,6 +364,7 @@ JS Recon secret properties (source="js_recon" only):
 - confidence (string): high, medium, low
 - validation_status (string): validated, invalid, unvalidated, skipped, incomplete, format_validated, error
 - detection_method (string): "regex"
+- context (string): the code around the match, at most 400 characters, with this key and every other secret-shaped value in it shown redacted
 
 **Traceroute** - Network route from scanner to target (from GVM)
 - target_ip (string): target IP address

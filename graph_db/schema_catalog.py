@@ -565,7 +565,7 @@ Additional properties present on this node type, not yet described:
         "section": 'Node Types and Key Properties :: Technology & Security Nodes',
         "documents": ['Secret'],
         "description": 'Secrets discovered in live web resources (JS files, configs)',
-        "groups": [{'header': None, 'properties': [{'name': 'secret_type', 'type': 'string', 'desc': 'type of secret (AWSAccessKey, APIKey, GCPCredential, GitHubToken, etc.)'}, {'name': 'severity', 'type': 'string', 'desc': 'high, medium, low, info'}, {'name': 'source', 'type': 'string', 'desc': 'discovery tool (jsluice, etc.)'}, {'name': 'source_url', 'type': 'string', 'desc': 'URL of file containing the secret'}, {'name': 'base_url', 'type': 'string', 'desc': 'parent BaseURL'}, {'name': 'sample', 'type': 'string', 'desc': 'redacted sample of matched data'}]}, {'header': 'Additional properties present on this node type, not yet described:', 'properties': []}, {'header': 'JS Recon secret properties (source="js_recon" only):', 'properties': [{'name': 'key_type', 'type': 'string', 'desc': "the matching pattern's category"}, {'name': 'confidence', 'type': 'string', 'desc': 'high, medium, low'}, {'name': 'validation_status', 'type': 'string', 'desc': 'validated, invalid, unvalidated, skipped, incomplete, format_validated, error'}, {'name': 'detection_method', 'type': 'string', 'desc': '"regex"'}]}],
+        "groups": [{'header': None, 'properties': [{'name': 'secret_type', 'type': 'string', 'desc': 'type of secret (AWSAccessKey, APIKey, GCPCredential, GitHubToken, etc.)'}, {'name': 'severity', 'type': 'string', 'desc': 'high, medium, low, info'}, {'name': 'source', 'type': 'string', 'desc': 'discovery tool (jsluice, etc.)'}, {'name': 'source_url', 'type': 'string', 'desc': 'URL of file containing the secret'}, {'name': 'base_url', 'type': 'string', 'desc': 'parent BaseURL'}, {'name': 'sample', 'type': 'string', 'desc': 'redacted sample of matched data'}]}, {'header': 'Additional properties present on this node type, not yet described:', 'properties': []}, {'header': 'JS Recon secret properties (source="js_recon" only):', 'properties': [{'name': 'key_type', 'type': 'string', 'desc': "the matching pattern's category"}, {'name': 'confidence', 'type': 'string', 'desc': 'high, medium, low'}, {'name': 'validation_status', 'type': 'string', 'desc': 'validated, invalid, unvalidated, skipped, incomplete, format_validated, error'}, {'name': 'detection_method', 'type': 'string', 'desc': '"regex"'}, {'name': 'context', 'type': 'string', 'desc': 'the code around the match, at most 400 characters, with this key and every other secret-shaped value in it shown redacted'}]}],
         "relationships": [],
         "subtypes": [],
         "notes": ['- matched_text'],
@@ -583,6 +583,7 @@ JS Recon secret properties (source="js_recon" only):
 - confidence (string): high, medium, low
 - validation_status (string): validated, invalid, unvalidated, skipped, incomplete, format_validated, error
 - detection_method (string): "regex"
+- context (string): the code around the match, at most 400 characters, with this key and every other secret-shaped value in it shown redacted
 
 """,
     },

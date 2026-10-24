@@ -580,7 +580,8 @@ _WINDOW_OVERLAP = 5_000
 
 def _window_line(line: str, size: int = _MAX_SCAN_LINE_LEN,
                  overlap: int = _WINDOW_OVERLAP) -> list:
-    """Split an over-long line into overlapping windows of `size` chars.
+    """Split an over-long line into overlapping windows of `size` chars, as
+    (offset in the line, text).
 
     Consecutive windows advance by (size - overlap) so any match up to `overlap`
     chars long is fully contained in at least one window. Duplicate hits in the
@@ -591,11 +592,115 @@ def _window_line(line: str, size: int = _MAX_SCAN_LINE_LEN,
     start = 0
     n = len(line)
     while start < n:
-        segments.append(line[start:start + size])
+        segments.append((start, line[start:start + size]))
         if start + size >= n:
             break
         start += step
     return segments
+
+
+# ---------------------------------------------------------------------------
+# The context stored with each finding
+# ---------------------------------------------------------------------------
+#: The longest context a finding carries; the graph writer caps it here too.
+CONTEXT_MAX_CHARS = 400
+_CONTEXT_SIDE = 150
+#: Above this a line is minified code: the context is a character window
+#: around the match, since the surrounding LINES may be the whole bundle.
+_CONTEXT_LONG_LINE = 1000
+#: Matches of these categories are not credentials (an email, a private IP, a
+#: bucket URL, a staging host) and stay readable in a context.
+_UNMASKED_CATEGORIES = frozenset({'info', 'infrastructure'})
+
+
+def redact(text: str) -> str:
+    """The stored form of a secret: its first and last characters only."""
+    if len(text) > 12:
+        return text[:6] + '...' + text[-4:]
+    if len(text) > 4:
+        return text[:3] + '...'
+    return '***'
+
+
+def _merge_spans(spans: list) -> list:
+    merged: list = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def _render(text: str, start: int, end: int, spans: list, focus: int = -1) -> tuple:
+    """text[start:end] with every span touching it replaced by its redacted
+    form, WHOLE: a key the window edge cuts in half is masked, not left as a
+    fragment no pattern would recognise. Returns (rendered, where the span or
+    character at `focus` begins in it, or -1)."""
+    out: list = []
+    size = 0
+    mark = -1
+    pos = start
+    for s, e in spans:
+        if e <= start:
+            continue
+        if s >= end:
+            break
+        if s > pos:
+            if pos <= focus < s:
+                mark = size + focus - pos
+            out.append(text[pos:s])
+            size += s - pos
+        if s <= focus < e:
+            mark = size
+        masked = redact(text[s:e])
+        out.append(masked)
+        size += len(masked)
+        pos = e
+    if pos < end:
+        if pos <= focus < end:
+            mark = size + focus - pos
+        out.append(text[pos:end])
+    return ''.join(out), mark
+
+
+def _finding_context(lines: list, spans_by_line: dict, line_num: int,
+                     start: int, end: int) -> str:
+    """The text around a match, every secret-shaped span in it masked.
+
+    A long line gets a character window of about 150 characters either side;
+    a short one keeps its neighbour lines (their nearest 150 characters). The
+    result is trimmed to CONTEXT_MAX_CHARS around the match.
+    """
+    idx = line_num - 1
+    line = lines[idx]
+    if len(line) > _CONTEXT_LONG_LINE:
+        context, mark = _render(line, max(0, start - _CONTEXT_SIDE),
+                                min(len(line), end + _CONTEXT_SIDE),
+                                spans_by_line.get(line_num, []), focus=start)
+    else:
+        parts: list = []
+        offset = 0
+        if idx > 0:
+            prev = lines[idx - 1]
+            text, _ = _render(prev, max(0, len(prev) - _CONTEXT_SIDE), len(prev),
+                              spans_by_line.get(line_num - 1, []))
+            parts.append(text + '\n')
+            offset = len(parts[0])
+        text, mark = _render(line, 0, len(line), spans_by_line.get(line_num, []), focus=start)
+        parts.append(text)
+        mark = offset + mark if mark >= 0 else -1
+        if idx + 1 < len(lines):
+            nxt = lines[idx + 1]
+            text, _ = _render(nxt, 0, min(len(nxt), _CONTEXT_SIDE),
+                              spans_by_line.get(line_num + 1, []))
+            parts.append('\n' + text)
+        context = ''.join(parts)
+    if len(context) > CONTEXT_MAX_CHARS:
+        centre = mark if mark >= 0 else 0
+        cut = max(0, min(centre - CONTEXT_MAX_CHARS // 2, len(context) - CONTEXT_MAX_CHARS))
+        context = context[cut:cut + CONTEXT_MAX_CHARS]
+    return context
 
 
 def scan_js_content(
@@ -658,22 +763,35 @@ def scan_js_content(
     # minified lines are broken into overlapping windows so each regex call
     # stays small (ReDoS-safe) and no content is skipped; normal lines pass
     # through untouched. Line numbers still refer to the original file line.
-    scan_units = []  # list of (line_num, segment_text)
+    scan_units = []  # list of (line_num, offset in the line, segment_text)
     for line_num, line in enumerate(lines, 1):
         if len(line) > _MAX_SCAN_LINE_LEN:
-            for segment in _window_line(line):
-                scan_units.append((line_num, segment))
+            for offset, segment in _window_line(line):
+                scan_units.append((line_num, offset, segment))
         else:
-            scan_units.append((line_num, line))
+            scan_units.append((line_num, 0, line))
+
+    # Every secret-shaped span per line, so each context can mask its
+    # neighbours too: a minified line often holds several keys. Collected from
+    # matches the filters below drop as well (a low-entropy or below-threshold
+    # key is still not something to print), never from generic-keyword noise.
+    spans_by_line: dict = {}
 
     for pattern in patterns:
-        conf_val = CONFIDENCE_ORDER.get(pattern['confidence'], 1)
-        if conf_val < min_conf_val:
+        reportable = CONFIDENCE_ORDER.get(pattern['confidence'], 1) >= min_conf_val
+        maskable = pattern['category'] not in _UNMASKED_CATEGORIES
+        if not reportable and not maskable:
             continue
 
-        for line_num, line in scan_units:
+        for line_num, offset, line in scan_units:
             for match in pattern['regex'].finditer(line):
                 matched_text = match.group(0)
+                noise = _generic_value_is_noise(pattern['name'], matched_text)
+                if maskable and not noise and matched_text:
+                    spans_by_line.setdefault(line_num, []).append(
+                        (offset + match.start(), offset + match.end()))
+                if not reportable:
+                    continue
 
                 # Skip email false positives
                 if pattern['name'] == 'Email Address' and _is_false_positive_email(matched_text):
@@ -684,7 +802,7 @@ def scan_js_content(
                     filtered_counts['url_whitelist'] += 1
                     continue
 
-                if _generic_value_is_noise(pattern['name'], matched_text):
+                if noise:
                     filtered_counts['generic_noise'] += 1
                     continue
 
@@ -719,42 +837,27 @@ def scan_js_content(
                     continue
                 seen_hashes.add(finding_id)
 
-                # Redact the matched text for storage (show first/last chars)
-                if len(matched_text) > 12:
-                    redacted = matched_text[:6] + '...' + matched_text[-4:]
-                elif len(matched_text) > 4:
-                    redacted = matched_text[:3] + '...'
-                else:
-                    redacted = '***'
-
-                # Extract context (surrounding code)
-                if len(lines) <= 3 and len(line) > 1000:
-                    # Minified JS: extract chars around match position
-                    ctx_start_char = max(0, match.start() - 150)
-                    ctx_end_char = min(len(line), match.end() + 150)
-                    context = line[ctx_start_char:ctx_end_char]
-                else:
-                    # Multi-line JS: extract surrounding lines
-                    ctx_start = max(0, line_num - 2)
-                    ctx_end = min(len(lines), line_num + 1)
-                    context = '\n'.join(lines[ctx_start:ctx_end])
-
                 findings.append({
                     'id': finding_id,
                     'name': pattern['name'],
                     'matched_text': matched_text,
-                    'redacted_value': redacted,
+                    'redacted_value': redact(matched_text),
                     'severity': pattern['severity'],
                     'confidence': pattern['confidence'],
                     'category': pattern['category'],
                     'line_number': line_num,
                     'source_url': source_url,
-                    'context': context[:500],
                     'validator_ref': pattern['validator_ref'],
                     'detection_method': 'regex',
+                    '_span': (offset + match.start(), offset + match.end()),
                 })
 
     findings = _collapse_span_duplicates(findings)
+    spans_by_line = {n: _merge_spans(s) for n, s in spans_by_line.items()}
+    for finding in findings:
+        start, end = finding.pop('_span')
+        finding['context'] = _finding_context(lines, spans_by_line,
+                                              finding['line_number'], start, end)
     return findings, filtered_counts
 
 

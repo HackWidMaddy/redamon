@@ -567,17 +567,19 @@ class TestLongLineWindowing(unittest.TestCase):
     # --- _window_line helper unit tests ---
 
     def test_window_short_line_single_segment(self):
-        self.assertEqual(patterns._window_line('abc', size=100, overlap=10), ['abc'])
+        self.assertEqual(patterns._window_line('abc', size=100, overlap=10), [(0, 'abc')])
 
     def test_window_covers_entire_line(self):
         line = ''.join(chr(65 + (i % 26)) for i in range(250_000))
         segs = patterns._window_line(line, size=100_000, overlap=5_000)
         self.assertGreater(len(segs), 1)
-        # Every index of the original line is covered by at least one window.
+        # Every index of the original line is covered by at least one window,
+        # and each window's offset is where its text sits in the line.
         step = 100_000 - 5_000
         covered = [False] * len(line)
-        for w, seg in enumerate(segs):
-            start = w * step
+        for w, (start, seg) in enumerate(segs):
+            self.assertEqual(start, w * step)
+            self.assertEqual(seg, line[start:start + 100_000])
             for i in range(start, min(start + 100_000, len(line))):
                 covered[i] = True
         self.assertTrue(all(covered))
@@ -690,14 +692,15 @@ class TestContextExtraction(unittest.TestCase):
         js = 'line1\nAKIA1234567890ABCDEF\nline3\nline4'
         findings = _scan(js)
         f = [x for x in findings if x['name'] == 'AWS Access Key ID'][0]
-        self.assertIn('AKIA1234567890ABCDEF', f['context'])
+        # The neighbour lines, with the key itself shown redacted, never raw.
+        self.assertEqual(f['context'], 'line1\nAKIA12...CDEF\nline3')
         self.assertEqual(f['line_number'], 2)
 
-    def test_context_max_500_chars(self):
+    def test_context_max_chars(self):
         js = 'A' * 200 + 'AKIA1234567890ABCDEF' + 'B' * 200
         findings = _scan(js)
         if findings:
-            self.assertLessEqual(len(findings[0]['context']), 500)
+            self.assertLessEqual(len(findings[0]['context']), patterns.CONTEXT_MAX_CHARS)
 
 
 # ============================================================
