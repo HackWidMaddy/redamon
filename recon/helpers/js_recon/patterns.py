@@ -523,6 +523,13 @@ _CODE_SHAPED_VALUE = re.compile(
     r'|\$[A-Z_][A-Z0-9_]*'              # $ENV_VAR (upper case, by convention)
     r'|<[^>]*>)$'                     # markup
 )
+# A CSS-modules class name: `<Component>_<class>__<hash>` (Next.js), or
+# css-loader's `___` / `--` forms. A build names a form field's class after the
+# field, so `password: "LoginForm_password__3xYz9"` is a selector, not a
+# password. Tested only on short values: the nested quantifiers would backtrack
+# quadratically on a long one, and a class name is never long.
+_CSS_MODULE_CLASS = re.compile(r'^[A-Za-z][\w-]*_[\w-]+(?:__|--)[\w-]{5}$')
+_CSS_MODULE_CLASS_MAX = 128
 # A base64 secret is not a route even when it starts with "/": it has no
 # lower-case path words between its slashes and usually ends in "=".
 _BASE64ISH = re.compile(r'^[A-Za-z0-9+/]{16,}={0,2}$')
@@ -547,6 +554,8 @@ def _generic_value_is_noise(name: str, matched_text: str) -> bool:
     if _PLACEHOLDER_VALUE.match(value) or _I18N_KEY.match(value):
         return True
     if _CODE_SHAPED_VALUE.match(value) and not _BASE64ISH.match(value):
+        return True
+    if len(value) <= _CSS_MODULE_CLASS_MAX and _CSS_MODULE_CLASS.match(value):
         return True
     if '${' in value or '://' in value:
         return True

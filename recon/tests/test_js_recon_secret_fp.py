@@ -117,6 +117,30 @@ class TestGenericPatternsJudgeTheValue(unittest.TestCase):
         self.assertIn("AWS Access Key ID", names('password: "Enter it", key = "AKIAIOSFODNN7EXAMPLE"'))
 
 
+class TestCssModuleClassNames(unittest.TestCase):
+    """Plan 05.3: a CSS-modules build names a form field's class after the
+    field (`<Component>_<class>__<hash>`), and the generic patterns read the
+    class name as the password."""
+
+    def test_css_module_class_names_are_noise(self):
+        for js in ('password:"LoginForm_password__3xYz9"',
+                   'secret:"Secret_secret__a1B2c"',
+                   'apiKey:"ApiKeyField_apiKey__x7Fq2"',
+                   # css-loader's `[name]__[local]___[hash:base64:5]` and `--` forms
+                   'password:"LoginForm__password___3xYz9"',
+                   'password:"login-form__password--3xYz9"'):
+            with self.subTest(js=js):
+                self.assertEqual(generic(js), [])
+
+    def test_a_real_looking_generic_secret_is_kept(self):
+        self.assertEqual(generic('password:"Xk9_mP2vL7qR4tZ"'), ["Generic Secret"])
+        self.assertEqual(generic('apiKey: "kGp_qXR4tLmzWcVb_NhJ9sYdF"'), ["Generic API Key"])
+
+    def test_the_class_names_count_as_filtered_noise(self):
+        _, filtered = patterns.scan_js_content('password:"LoginForm_password__3xYz9"', "a.js")
+        self.assertGreaterEqual(filtered["generic_noise"], 1)
+
+
 class TestInternalUrlNeedsAWholeWord(unittest.TestCase):
     def _hits(self, url):
         return "Internal/Staging URL" in names(f'fetch("{url}/v1")')
