@@ -608,14 +608,25 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
 
     all_ports_set = set()
 
-    def _add_host(host: str, ip_addr: str, port_numbers: list, port_details: list) -> None:
-        """Record one host -> IP -> ports row in by_ip, by_host and ip_to_hostnames."""
+    def _add_host(host: str, ip_addr: str, port_numbers: list, port_details: list,
+                  record=None) -> None:
+        """Record one host -> IP -> ports row in by_ip, by_host and ip_to_hostnames.
+
+        The IP's CDN tag rides along: a partial run writes this data back through
+        update_graph_from_port_scan, which sets IP.is_cdn from it, so an entry
+        without the tag would reset every tagged IP to false.
+        """
+        get = getattr(record, "get", None)
+        is_cdn = bool(get("is_cdn")) if get else False
+        cdn = (get("cdn_name") if get else None) or None
         if ip_addr not in recon_data["port_scan"]["by_ip"]:
             recon_data["port_scan"]["by_ip"][ip_addr] = {
                 "ip": ip_addr,
                 "hostnames": [host],
                 "ports": list(port_numbers),
                 "port_details": list(port_details),
+                "is_cdn": is_cdn,
+                "cdn": cdn,
             }
         else:
             existing = recon_data["port_scan"]["by_ip"][ip_addr]
@@ -634,6 +645,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                 "ip": ip_addr,
                 "ports": list(port_numbers),
                 "port_details": list(port_details),
+                "is_cdn": is_cdn,
+                "cdn": cdn,
             }
         else:
             existing = recon_data["port_scan"]["by_host"][host]
@@ -680,6 +693,7 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                     session, user_id, project_id, apex_roots,
                     "OPTIONAL MATCH (i)-[:HAS_PORT]->(p:Port)\n"
                     "RETURN {ROOT}, i.address AS ip, i.version AS version, "
+                    "i.is_cdn AS is_cdn, i.cdn_name AS cdn_name, "
                     "collect(DISTINCT {number: p.number, protocol: p.protocol}) AS ports")
             for record in apex_records:
                 root = record["root"]
@@ -694,7 +708,7 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                     if ip_addr not in ips:
                         ips.append(ip_addr)
                 port_numbers, port_details = _ports(record["ports"])
-                _add_host(root, ip_addr, port_numbers, port_details)
+                _add_host(root, ip_addr, port_numbers, port_details, record)
 
             # Subdomain -> IP -> Port relationships
             result = session.run(
@@ -704,6 +718,7 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                 WHERE toLower(d.name) IN $domains
                 OPTIONAL MATCH (i)-[:HAS_PORT]->(p:Port)
                 RETURN d.name AS root, s.name AS subdomain, i.address AS ip, i.version AS version,
+                       i.is_cdn AS is_cdn, i.cdn_name AS cdn_name,
                        collect(DISTINCT {number: p.number, protocol: p.protocol}) AS ports
                 """,
                 domains=scope.orgs, uid=user_id, pid=project_id,
@@ -718,7 +733,7 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                 if ip_addr not in sub_ips[bucket]:
                     sub_ips[bucket].append(ip_addr)
                 port_numbers, port_details = _ports(record["ports"])
-                _add_host(subdomain, ip_addr, port_numbers, port_details)
+                _add_host(subdomain, ip_addr, port_numbers, port_details, record)
 
     recon_data["port_scan"]["all_ports"] = sorted(all_ports_set)
     return recon_data

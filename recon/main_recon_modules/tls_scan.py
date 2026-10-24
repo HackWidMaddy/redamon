@@ -427,6 +427,19 @@ def _attribute_cdn(combined_result: dict, by_target: dict) -> int:
     return filled
 
 
+def _cdn_attributions(combined_result: dict) -> dict:
+    """{ip: cdn} for the IPs whose CDN tag came from tlsx's certificate issuer.
+
+    In a full run the port graph write happens before tlsx, so the tag
+    _attribute_cdn puts on port_scan.by_ip would never reach IP.is_cdn; the tlsx
+    writer reads this map from the payload instead.
+    """
+    by_ip = ((combined_result.get("port_scan") or {}).get("by_ip")) or {}
+    return {ip: info["cdn"] for ip, info in by_ip.items()
+            if ip and isinstance(info, dict) and info.get("cdn")
+            and info.get("cdn_source") == "tls_certificate"}
+
+
 def _discovered_hostnames(by_target: dict) -> list:
     out = set()
     for cert in by_target.values():
@@ -451,7 +464,7 @@ def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
         if not lines:
             _print("-", "no eligible TLS targets (all HTTP ports or filtered)")
             combined_result["tlsx"] = {
-                "by_target": {}, "discovered_hostnames": [],
+                "by_target": {}, "discovered_hostnames": [], "cdn_by_ip": {},
                 "summary": {"targets": 0, "with_cert": 0},
                 "scan_metadata": {"targets": 0, "skipped": "no eligible targets"},
             }
@@ -493,6 +506,7 @@ def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
         combined_result["tlsx"] = {
             "by_target": by_target,
             "discovered_hostnames": _discovered_hostnames(by_target),
+            "cdn_by_ip": _cdn_attributions(combined_result),
             "summary": {
                 "targets": len(lines),
                 "responded": sum(1 for c in by_target.values() if c.get("probe_status")),
@@ -511,7 +525,8 @@ def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
         _print("!", f"tlsx failed: {e}")
         combined_result["metadata"].setdefault("phase_errors", {})["tlsx"] = str(e)
         combined_result.setdefault("tlsx", {"by_target": {}, "discovered_hostnames": [],
-                                            "summary": {}, "scan_metadata": {"error": str(e)}})
+                                            "cdn_by_ip": {}, "summary": {},
+                                            "scan_metadata": {"error": str(e)}})
     finally:
         try:
             import shutil
