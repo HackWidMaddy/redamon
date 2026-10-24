@@ -201,6 +201,21 @@ def run_vhost_sni_enrichment(
     from recon.helpers import circuit_breaker as _cb
     vhost_scope = _cb.scope((), label="VhostSni", unit="port(s)")
     candidate_scope = _build_candidate_scope(combined_result, settings)
+
+    # A shared CDN edge answers almost any name with some customer's site or
+    # its own catch-all, so a wordlist there finds the CDN, not the target.
+    # Its graph names (and the custom lines) are still tried. Only edges are
+    # skipped: a Kubernetes ingress or a shared reverse proxy is exactly where
+    # real hidden apps live.
+    edge_ips = _shared_edge_ips(combined_result, ip_port_map) if use_default_wordlist else set()
+    wordlist_skipped = sorted(edge_ips)
+    if wordlist_skipped:
+        print(f"[-][VhostSni] Default wordlist skipped on {len(wordlist_skipped)} shared CDN edge IP(s)")
+        _cb.note_degraded("vhost_sni", entries=[{
+            "source": "vhost_sni_wordlist", "reason": "shared CDN edge",
+            "skipped": len(wordlist_skipped),
+        }])
+
     print(f"[*][VhostSni] Probing {len(ip_port_map)} IP target(s) with concurrency={concurrency}")
     for ip, ports in ip_port_map.items():
         try:
@@ -208,7 +223,7 @@ def run_vhost_sni_enrichment(
                 ip=ip,
                 ports=ports,
                 apex_domain=apex,
-                default_prefixes=default_prefixes if use_default_wordlist else [],
+                default_prefixes=default_prefixes if use_default_wordlist and ip not in edge_ips else [],
                 custom_lines=custom_lines,
                 graph_candidates=_collect_graph_candidates(combined_result, ip) if use_graph_candidates else [],
                 test_l7=test_l7,
@@ -271,6 +286,7 @@ def run_vhost_sni_enrichment(
             "scan_timestamp": now_iso,
             "wordlist_default_used": use_default_wordlist,
             "wordlist_default_count": len(default_prefixes),
+            "wordlist_skipped_edge_ips": wordlist_skipped,
             "wordlist_custom_count": len(custom_lines),
             "graph_candidates_used": use_graph_candidates,
             "test_l7": test_l7,
@@ -1347,6 +1363,14 @@ def _collect_ip_targets(combined_result: dict) -> dict[str, list[dict]]:
         ip_to_ports[ip] = unique
 
     return ip_to_ports
+
+
+def _shared_edge_ips(combined_result: dict, ips: Iterable[str]) -> set[str]:
+    """The target IPs a known edge CDN serves: flagged by naabu, httpx or tlsx
+    with an edge-only CDN name. Plain cloud-hosting labels (aws, azure, gcp)
+    do not count; those IPs serve the application itself."""
+    from recon.helpers.cdn_ranges import collect_reliable_edge_ips
+    return collect_reliable_edge_ips(combined_result) & set(ips)
 
 
 def _scheme_for_port(port: int) -> str:

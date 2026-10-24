@@ -767,3 +767,84 @@ class TestDnsKnownNamesAreNotHidden:
         assert vsm._dns_known_names(recon, IP) == {f"www.{APEX}"}
         assert vsm._dns_known_names(recon, "2001:db8::1") == {f"v6.{APEX}"}
         assert vsm._dns_known_names(recon, "198.51.100.1") == {APEX}
+
+
+# ===========================================================================
+# 8. The default wordlist is not brute-forced against a shared CDN edge
+# ===========================================================================
+EDGE_WORDS = ["admin", "dev", "jenkins"]
+
+
+def _edge_recon(cdn="cloudflare", is_cdn=True):
+    r = _recon()
+    r["port_scan"]["by_ip"] = {IP: {"ip": IP, "is_cdn": is_cdn, "cdn": cdn}}
+    return r
+
+
+def _run_wordlist(recon, words=EDGE_WORDS, **settings):
+    def responder(host, layer, attempt):
+        return _proc(404, b"<h1>no route</h1>")
+
+    fake = FakeCurl(responder)
+    with patch.object(vsm, "_is_curl_available", return_value=True), \
+         patch.object(vsm, "_load_default_wordlist", return_value=list(words)), \
+         patch("subprocess.run", side_effect=fake):
+        run_vhost_sni_enrichment(recon, settings=_settings([], VHOST_SNI_USE_DEFAULT_WORDLIST=True,
+                                                           **settings))
+    return recon["vhost_sni"], fake
+
+
+def _wordlist_gaps():
+    from recon.helpers import circuit_breaker as cb
+    return [g for g in cb.coverage_report().gaps if g["source"] == "vhost_sni_wordlist"]
+
+
+class TestNoWordlistOnCdnEdges:
+    def test_an_edge_ip_gets_no_wordlist_name(self):
+        out, fake = _run_wordlist(_edge_recon())
+        assert not ({f"{w}.{APEX}" for w in EDGE_WORDS} & fake.probed_hosts())
+        assert out["scan_metadata"]["wordlist_skipped_edge_ips"] == [IP]
+
+    def test_a_non_edge_ip_still_gets_the_wordlist(self):
+        out, fake = _run_wordlist(_recon())
+        assert {f"{w}.{APEX}" for w in EDGE_WORDS} <= fake.probed_hosts()
+        assert out["scan_metadata"]["wordlist_skipped_edge_ips"] == []
+        assert _wordlist_gaps() == []
+
+    def test_plain_cloud_hosting_is_not_an_edge(self):
+        # httpx/naabu flag aws/azure/gcp as CDN too, but such an IP serves the
+        # application itself, often behind a Kubernetes ingress with real
+        # hidden vhosts: the wordlist must still run there.
+        _out, fake = _run_wordlist(_edge_recon(cdn="aws"))
+        assert {f"{w}.{APEX}" for w in EDGE_WORDS} <= fake.probed_hosts()
+
+    def test_graph_candidates_and_custom_lines_are_still_probed_on_an_edge(self):
+        recon = _edge_recon()
+        recon["http_probe"] = {"by_url": {f"https://{IP}": {
+            "host": IP, "tls": {"certificate": {"san": [f"staging.{APEX}"]}}}}}
+        _out, fake = _run_wordlist(recon, VHOST_SNI_USE_GRAPH_CANDIDATES=True,
+                                   VHOST_SNI_CUSTOM_WORDLIST="payments")
+        assert f"staging.{APEX}" in fake.probed_hosts()
+        assert f"payments.{APEX}" in fake.probed_hosts()
+        assert f"admin.{APEX}" not in fake.probed_hosts()
+
+    def test_the_skip_is_a_coverage_note_with_no_prune_effect(self):
+        from recon.helpers import circuit_breaker as cb
+        _run_wordlist(_edge_recon())
+        gaps = _wordlist_gaps()
+        assert len(gaps) == 1
+        assert gaps[0]["reason"] == "shared CDN edge" and gaps[0]["skipped"] == 1
+        assert re.fullmatch(r"[a-z0-9_]{1,64}", gaps[0]["source"])
+        assert re.fullmatch(r"[a-z0-9_]{1,64}", gaps[0]["module"])
+        report = cb.coverage_report()
+        assert "vhost_sni_wordlist" not in report.degraded_sources
+        assert "vhost_sni_enum" not in report.degraded_sources
+
+    def test_no_note_when_the_wordlist_is_off_anyway(self):
+        recon = _edge_recon()
+        fake = FakeCurl(lambda h, l, a: _proc(404, b"x"))
+        with patch.object(vsm, "_is_curl_available", return_value=True), \
+             patch("subprocess.run", side_effect=fake):
+            run_vhost_sni_enrichment(recon, settings=_settings(["admin"]))
+        assert _wordlist_gaps() == []
+        assert recon["vhost_sni"]["scan_metadata"]["wordlist_skipped_edge_ips"] == []
