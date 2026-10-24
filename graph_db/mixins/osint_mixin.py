@@ -188,7 +188,8 @@ class OsintMixin:
                             """
                             MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                            user_id: $user_id, project_id: $project_id})
-                            ON CREATE SET p.state = 'open', p.source = 'shodan', p.updated_at = datetime()
+                            ON CREATE SET p.state = 'open', p.source = 'shodan', p.passive_only = true,
+                                          p.updated_at = datetime()
                             ON MATCH SET p.updated_at = datetime()
                             MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                             SET i.updated_at = datetime()
@@ -285,7 +286,8 @@ class OsintMixin:
                                 """
                                 MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                user_id: $user_id, project_id: $project_id})
-                                ON CREATE SET p.state = 'open', p.source = 'shodan', p.updated_at = datetime()
+                                ON CREATE SET p.state = 'open', p.source = 'shodan', p.passive_only = true,
+                                          p.updated_at = datetime()
                                 ON MATCH SET p.updated_at = datetime()
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                 SET i.updated_at = datetime()
@@ -475,6 +477,9 @@ class OsintMixin:
                     props = _shodan_cve_props(cve_entry)
                     method = props.pop("detection_method")
                     verified = props.pop("verified")
+                    # A full run's port scan decides port_confirmed, an unknown
+                    # (None) included; an entry with no verdict at all (partial
+                    # recon could not say) leaves the stored one alone.
                     session.run(
                         """
                         MERGE (v:Vulnerability {id: $vuln_id, user_id: $user_id,
@@ -482,13 +487,17 @@ class OsintMixin:
                         ON CREATE SET v.source = $source
                         SET v += $props, v.updated_at = datetime(),
                             v.verified = coalesce(v.verified, false) OR $verified
+                        FOREACH (_ IN CASE WHEN $set_port_confirmed THEN [1] ELSE [] END |
+                          SET v.port_confirmed = $port_confirmed)
                         WITH v, {passive_catalog: 0, passive_version_match: 1, passive_verified: 2} AS rank
                         SET v.detection_method = CASE
                             WHEN coalesce(rank[v.detection_method], -1) > rank[$method]
                             THEN v.detection_method ELSE $method END
                         """,
                         vuln_id=vuln_id, source=cve_source, props=props, method=method,
-                        verified=verified, user_id=user_id, project_id=project_id
+                        verified=verified, user_id=user_id, project_id=project_id,
+                        set_port_confirmed="port_confirmed" in cve_entry,
+                        port_confirmed=cve_entry.get("port_confirmed"),
                     )
                     stats["vulnerabilities_created"] += 1
 

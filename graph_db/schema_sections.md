@@ -170,6 +170,7 @@ Additional properties present on this node type, not yet described:
 - cpe (string): CPE string from Nmap (e.g. "cpe:/a:vsftpd:vsftpd:2.3.4")
 - nmap_scanned (boolean): true if Nmap has probed this port
 - A Port with source "nmap" was missed by the port scan and confirmed open by Nmap, which created it
+- passive_only (boolean): true on a Port only Shodan or InternetDB reported (set on create); naabu, masscan and nmap set it false when they find the same port. Absent on ports written before the mark
 Additional properties present on this node type, not yet described:
 - ip_address (string)
 
@@ -411,6 +412,7 @@ Shodan passive CVE properties (source="shodan_api" or "internetdb"):
 - target_port (integer): the banner's port, absent when no banner named the CVE
 - product (string): the banner's product, absent when the banner named none
 - version (string): the banner's version, absent when the banner named none
+- port_confirmed (boolean): whether this run's port scan found `target_port` open (true) or looked at it and did not (false). Absent means unknown: the scan did not cover that IP and port (a top-N port list, another port list, no port scan, a UDP banner, or a row written before the check). A full run writes it every time; partial recon only ever sets true
 - id pattern: `shodan-{cve}-{ip}`; a shared CDN/edge IP (Shodan's `cdn` tag or an edge provider's attribution) yields no CVE rows
 - Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`, the finding's only parent (match the Service by `target_port` and `product`)
 

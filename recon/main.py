@@ -788,6 +788,28 @@ def _drop_shodan_cdn_ips(combined_result: dict) -> None:
         print(f"[*][Shodan] Dropped results for {dropped} CDN IP(s) flagged by the port scan")
 
 
+def _reachcheck_shodan_cves(combined_result: dict, settings: dict) -> None:
+    """Mark each Shodan CVE with whether this run's port scan found its port open.
+
+    Shodan runs beside the port scan, so this is the first point where both
+    are known; nmap re-probes only what the port scan found, so nothing else
+    looks at a port only Shodan reported. No traffic. Never raises: a CVE left
+    unmarked keeps whatever it had.
+    """
+    shodan_data = combined_result.get("shodan")
+    if not shodan_data or not shodan_data.get("cves"):
+        return
+    try:
+        from recon.helpers.port_coverage import port_scan_coverage
+        from recon.main_recon_modules.shodan_enrich import reachcheck_cves
+        counts = reachcheck_cves(shodan_data, port_scan_coverage(combined_result, settings))
+    except Exception as e:  # noqa: BLE001 - an unchecked CVE beats losing the run
+        print(f"[!][Shodan] Could not check CVE ports against the port scan: {type(e).__name__}")
+        return
+    print(f"[*][Shodan] CVE ports against the port scan: {counts['open']} open, "
+          f"{counts['closed']} closed, {counts['unknown']} not scanned")
+
+
 def _apply_nmap_detail(ps_pd: dict, nmap_pd: dict) -> None:
     if nmap_pd.get("product"):
         ps_pd["product"] = nmap_pd["product"]
@@ -1227,6 +1249,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             merge_port_scan_results(combined_result)
 
         _drop_shodan_cdn_ips(combined_result)
+        _reachcheck_shodan_cves(combined_result, settings)
 
         save_recon_file(combined_result, output_file)
 
@@ -1889,6 +1912,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             merge_port_scan_results(combined_result)
 
         _drop_shodan_cdn_ips(combined_result)
+        _reachcheck_shodan_cves(combined_result, _settings)
 
         save_recon_file(combined_result, output_file)
 

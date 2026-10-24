@@ -157,6 +157,20 @@ def run_shodan(config: dict) -> dict:
             from graph_db import Neo4jClient
             with Neo4jClient() as graph_client:
                 if graph_client.verify_connection():
+                    # No port scan in this run: the graph's actively found open
+                    # ports confirm a CVE's port; a missing one stays unknown.
+                    cve_ips = {c.get("ip") for c in shodan_data.get("cves") or [] if c.get("ip")}
+                    if cve_ips:
+                        from recon.main_recon_modules.shodan_enrich import reachcheck_cves
+                        try:
+                            open_ports = graph_client.active_open_ports(user_id, project_id, cve_ips)
+                            reachcheck_cves(
+                                shodan_data,
+                                lambda ip, port: True if port in open_ports.get(ip, ()) else None,
+                                clear_unknown=False)
+                        except Exception as e:  # noqa: BLE001 - an unchecked CVE keeps its value
+                            print(f"[!][Partial Recon] Could not read open ports for the CVE "
+                                  f"check: {type(e).__name__}")
                     stats = graph_client.update_graph_from_shodan(
                         recon_data=combined_result,
                         user_id=user_id,

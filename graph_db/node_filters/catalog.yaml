@@ -426,6 +426,10 @@ kinds:
         prop: detection_method
         label: Evidence (Shodan)
         values: [passive_verified, passive_version_match, passive_catalog]
+      port_confirmed:
+        type: bool
+        prop: port_confirmed
+        label: Port open on this scan (Shodan)
     overlaps:
       - { setting: cveLookupMinCvss, tab: cve }
     examples:
@@ -433,6 +437,8 @@ kinds:
         all:
           - { field: cve_year, op: lt, value: 2015 }
           - { field: has_exploit, op: is_false }
+      - name: Shodan CVEs on a port the scan found closed
+        all: [{ field: port_confirmed, op: is_false }]
       - name: Shodan CVEs with no service version seen
         all: [{ field: detection_method, op: in, value: [passive_catalog] }]
       - name: Shodan CVEs recorded before evidence grading
@@ -449,6 +455,11 @@ kinds:
         only when its banner gave a CVSS score, plus the evidence grade
         (detection_method): a Shodan-verified banner, a banner's product and
         version, or the IP's catalog alone. CriminalIP carries the CVE alone.
+      - >-
+        port_confirmed says what this scan's port scan found on a Shodan CVE's
+        port: true open, false looked at and not open. It is missing when the
+        scan did not look at that port (a top-N port list, no port scan), so
+        "is false" never mutes a CVE nobody re-checked.
 
   vuln.osv:
     group: vulnerability

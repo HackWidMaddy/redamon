@@ -188,6 +188,39 @@ class TestReconFpWritersGraphLive(unittest.TestCase):
         self.assertEqual((banner["detection_method"], banner["verified"]), ("passive_verified", True))
         self.assertEqual((banner["product"], banner["cvss_score"], banner["severity"]), ("nginx", 7.7, "high"))
 
+    def test_the_port_recheck_round_trips(self):
+        payload = _shodan_payload()
+        cve = payload["shodan"]["cves"][0]
+        cve["port_confirmed"] = False
+        self.client.update_graph_from_shodan(payload, self.user, self.pid)
+        self.assertIs(self._vuln(BANNER_CVE)["port_confirmed"], False)
+        # Partial recon could not say: the stored verdict stays.
+        cve.pop("port_confirmed")
+        self.client.update_graph_from_shodan(payload, self.user, self.pid)
+        self.assertIs(self._vuln(BANNER_CVE)["port_confirmed"], False)
+        # A full run whose scan did not look at the port: unknown, the old verdict goes.
+        cve["port_confirmed"] = None
+        self.client.update_graph_from_shodan(payload, self.user, self.pid)
+        self.assertNotIn("port_confirmed", self._vuln(BANNER_CVE))
+
+    def test_a_port_only_shodan_saw_is_passive_until_a_scan_finds_it(self):
+        def port():
+            return self._one("MATCH (p:Port {number: 443, ip_address: $ip, project_id: $pid}) "
+                             "RETURN p.passive_only AS passive, p.source AS source", ip=IP)
+
+        self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)
+        self.assertEqual((port()["passive"], port()["source"]), (True, "shodan"))
+        self.assertEqual(self.client.active_open_ports(self.user, self.pid, {IP}), {})
+        self.client.update_graph_from_port_scan({"domain": "fp-itest.test", "port_scan": {
+            "by_ip": {IP: {"ports": [443]}},
+            "by_host": {"www.fp-itest.test": {"ip": IP, "port_details": [
+                {"port": 443, "protocol": "tcp", "service": "https"}]}}}}, self.user, self.pid)
+        self.assertIs(port()["passive"], False)
+        self.assertEqual(self.client.active_open_ports(self.user, self.pid, {IP}), {IP: {443}})
+        # Shodan seeing it again does not make it passive again.
+        self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)
+        self.assertIs(port()["passive"], False)
+
     def test_the_priority_board_reads_the_grade(self):
         from cypherfix_triage import fact_queries, score_model
         self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)

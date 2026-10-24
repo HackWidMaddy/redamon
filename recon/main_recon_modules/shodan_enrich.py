@@ -795,6 +795,32 @@ def drop_cdn_ips(shodan_data: dict, combined_result: dict) -> int:
     return len(dropped)
 
 
+def reachcheck_cves(shodan_data: dict, covers, *, clear_unknown: bool = True) -> dict:
+    """Set each CVE's `port_confirmed` from `covers(ip, port)`. No traffic.
+
+    True: this run's port scan found the port open; False: it looked at the
+    port and did not; None: it did not look, so nothing is known. With
+    `clear_unknown` an unknown is written as None, which removes an older
+    value: a full run is the authority on its own scan. Partial recon has no
+    scan and passes False, so it only ever confirms. A UDP banner is unknown:
+    the port scans are TCP. Returns how many of each.
+    """
+    transport = {
+        (h.get("ip"), svc.get("port")): str(svc.get("transport") or "tcp").lower()
+        for h in shodan_data.get("hosts") or [] for svc in h.get("services") or []
+    }
+    counts = {"open": 0, "closed": 0, "unknown": 0}
+    for cve in shodan_data.get("cves") or []:
+        ip, port = cve.get("ip"), cve.get("port")
+        state = None
+        if ip and isinstance(port, int) and transport.get((ip, port), "tcp") == "tcp":
+            state = covers(ip, port)
+        counts["open" if state is True else "closed" if state is False else "unknown"] += 1
+        if state is not None or clear_unknown:
+            cve["port_confirmed"] = state
+    return counts
+
+
 def run_shodan_enrichment_isolated(combined_result: dict, settings: dict[str, Any]) -> dict:
     """
     Run Shodan enrichment and return only the 'shodan' data dict.
