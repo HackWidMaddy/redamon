@@ -1069,8 +1069,8 @@ class OsintMixin:
                                     """
                                     MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                    user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                    SET p.source = 'censys', p.updated_at = datetime()
+                                    ON CREATE SET p.state = 'open', p.source = 'censys'
+                                    SET p.updated_at = datetime()
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                     SET i.updated_at = datetime()
                                     MERGE (i)-[:HAS_PORT]->(p)
@@ -1278,8 +1278,8 @@ class OsintMixin:
                                 """
                                 MERGE (p:Port {number: $port, protocol: 'tcp', ip_address: $ip,
                                                user_id: $user_id, project_id: $project_id})
-                                ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                SET p.source = 'fofa', p.updated_at = datetime()
+                                ON CREATE SET p.state = 'open', p.source = 'fofa'
+                                SET p.updated_at = datetime()
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                 SET i.updated_at = datetime()
                                 MERGE (i)-[:HAS_PORT]->(p)
@@ -1842,8 +1842,8 @@ class OsintMixin:
                                 """
                                 MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                user_id: $user_id, project_id: $project_id})
-                                ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                SET p.source = 'netlas', p.updated_at = datetime()
+                                ON CREATE SET p.state = 'open', p.source = 'netlas'
+                                SET p.updated_at = datetime()
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                 SET i.updated_at = datetime()
                                 MERGE (i)-[:HAS_PORT]->(p)
@@ -2116,8 +2116,8 @@ class OsintMixin:
                                     """
                                     MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                    user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                    SET p.source = 'zoomeye', p.updated_at = datetime()
+                                    ON CREATE SET p.state = 'open', p.source = 'zoomeye'
+                                    SET p.updated_at = datetime()
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                     SET i.updated_at = datetime()
                                     MERGE (i)-[:HAS_PORT]->(p)
@@ -2335,8 +2335,8 @@ class OsintMixin:
                                     """
                                     MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                    user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                    SET p.source = 'criminalip', p.updated_at = datetime()
+                                    ON CREATE SET p.state = 'open', p.source = 'criminalip'
+                                    SET p.updated_at = datetime()
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                     SET i.updated_at = datetime()
                                     MERGE (i)-[:HAS_PORT]->(p)

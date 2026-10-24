@@ -164,7 +164,7 @@ Additional properties present on this node type, not yet described:
 - number (integer): 80, 443, 22
 - protocol (string): "tcp", "udp"
 - state (string): "open", "closed", "filtered"
-- source (string): which tool discovered it ("naabu", "masscan", "shodan", "censys", "fofa", "netlas", "zoomeye", "criminalip", "uncover")
+- source (string): the passive provider that first reported it, set on create only so a later enricher never takes over a port the scan found ("shodan", "censys", "fofa", "netlas", "zoomeye", "criminalip", "uncover"); "nmap" for a port nmap found that the port scan missed; absent on a port the port scan (naabu, masscan) created
 - product (string): software product from Nmap -sV (e.g. "vsftpd", "Apache Tomcat", "MySQL")
 - version (string): software version from Nmap -sV (e.g. "2.3.4", "8.5.19")
 - cpe (string): CPE string from Nmap (e.g. "cpe:/a:vsftpd:vsftpd:2.3.4")

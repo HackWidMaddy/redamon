@@ -268,11 +268,12 @@ Additional properties present on this node type, not yet described:
 - number (integer): 80, 443, 22
 - protocol (string): "tcp", "udp"
 - state (string): "open", "closed", "filtered"
-- source (string): which tool discovered it ("naabu", "masscan", "shodan", "censys", "fofa", "netlas", "zoomeye", "criminalip", "uncover")
+- source (string): the passive provider that first reported it, set on create only so a later enricher never takes over a port the scan found ("shodan", "censys", "fofa", "netlas", "zoomeye", "criminalip", "uncover"); "nmap" for a port nmap found that the port scan missed; absent on a port the port scan (naabu, masscan) created
 - product (string): software product from Nmap -sV (e.g. "vsftpd", "Apache Tomcat", "MySQL")
 - version (string): software version from Nmap -sV (e.g. "2.3.4", "8.5.19")
 - cpe (string): CPE string from Nmap (e.g. "cpe:/a:vsftpd:vsftpd:2.3.4")
 - nmap_scanned (boolean): true if Nmap has probed this port
+- passive_only (boolean): true on a Port only Shodan or InternetDB reported (set on create); naabu, masscan and nmap set it false when they find the same port. Absent on ports written before the mark
 
 Additional properties present on this node type, not yet described:
 - ip_address (string)
@@ -529,6 +530,7 @@ Shodan passive CVE properties (source="shodan_api" or "internetdb"):
 - target_port (integer): the banner's port, absent when no banner named the CVE
 - product (string): the banner's product, absent when the banner named none
 - version (string): the banner's version, absent when the banner named none
+- port_confirmed (boolean): whether this run's port scan found `target_port` open (true) or looked at it and did not (false). Absent means unknown: the scan did not cover that IP and port (a top-N port list, another port list, no port scan, a UDP banner, or a row written before the check). A full run writes it every time; partial recon only ever sets true
 
 CriminalIP passive CVE properties (source="criminalip"):
 - target_ip (string): the IP Criminal IP reported the CVE on, refreshed every run

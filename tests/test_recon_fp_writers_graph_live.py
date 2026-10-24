@@ -221,6 +221,24 @@ class TestReconFpWritersGraphLive(unittest.TestCase):
         self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)
         self.assertIs(port()["passive"], False)
 
+    def test_passive_enrichers_leave_an_actively_found_port_active(self):
+        self.client.update_graph_from_port_scan({"domain": "fp-itest.test", "port_scan": {
+            "by_ip": {IP: {"ports": [22]}},
+            "by_host": {"www.fp-itest.test": {"ip": IP, "port_details": [
+                {"port": 22, "protocol": "tcp", "service": "ssh"}]}}}}, self.user, self.pid)
+        base = {"domain": "fp-itest.test", "domains": ["fp-itest.test"]}
+        self.client.update_graph_from_censys({**base, "censys": {"hosts": [
+            {"ip": IP, "services": [{"port": 22}]}]}}, self.user, self.pid)
+        for tool in ("fofa", "netlas", "zoomeye"):
+            getattr(self.client, f"update_graph_from_{tool}")(
+                {**base, tool: {"results": [{"ip": IP, "port": 22}]}}, self.user, self.pid)
+        self.client.update_graph_from_criminalip({**base, "criminalip": {"ip_reports": [
+            {"ip": IP, "ports": [{"port": 22}]}]}}, self.user, self.pid)
+        port = self._one("MATCH (p:Port {number: 22, ip_address: $ip, project_id: $pid}) "
+                         "RETURN p.source AS source, p.passive_only AS passive, count(*) AS n", ip=IP)
+        self.assertEqual((port["source"], port["passive"], port["n"]), (None, False, 1))
+        self.assertEqual(self.client.active_open_ports(self.user, self.pid, {IP}), {IP: {22}})
+
     def test_the_priority_board_reads_the_grade(self):
         from cypherfix_triage import fact_queries, score_model
         self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)
