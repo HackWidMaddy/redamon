@@ -976,7 +976,7 @@ def scan_js_content(
                         continue
 
                 # Deduplicate by content hash. Keyed on the PATTERN's name, so a
-                # hit `_reclassify` renames keeps the node id (and the mute,
+                # hit `_refine` renames keeps the node id (and the mute,
                 # verdict and fix item on it) it had before the rename.
                 finding_id = _make_finding_id(pattern['name'], matched_text, source_url)
                 if finding_id in seen_hashes:
