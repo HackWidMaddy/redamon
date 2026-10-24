@@ -202,7 +202,9 @@ class TestDiscovery(unittest.TestCase):
             return data
 
         js_files = [{"url": JS, "content": "console.log(1);\n//# sourceMappingURL=main.4f2a9c.js.map", "headers": {}}]
-        with patch.object(sm, "_fetch_sourcemap", side_effect=fake_fetch):
+        # A 403's sibling control (plan 06.5) is covered in test_js_recon_sourcemap_403.
+        with patch.object(sm, "_fetch_sourcemap", side_effect=fake_fetch), \
+                patch.object(sm, "_missing_key_control", return_value="passed"):
             return sm.discover_and_analyze_sourcemaps(js_files, {"JS_RECON_SOURCE_MAPS": True})
 
     def test_referenced_map_answered_by_the_spa_shell_reports_nothing(self):

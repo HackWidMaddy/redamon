@@ -10,6 +10,7 @@ import json
 import hashlib
 import threading
 import time
+import uuid
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
@@ -37,6 +38,49 @@ DEFAULT_SOURCEMAP_PROBE_PATHS = [
 
 _REFERENCE_WORTH_REPORTING = frozenset({'http_401', 'http_403'})
 _REFERENCE_WORTH_REPORTING_ELSEWHERE = frozenset({'unsafe', 'unreachable'})
+
+# Object storage refuses a key it does not hold with 403 AccessDenied when the
+# caller may not list the bucket (S3, and CloudFront in front of it with OAC),
+# so on such an answer a 403 says nothing about whether the map exists.
+_STORAGE_DENIAL_BODY = re.compile(r'<Code>\s*AccessDenied\s*</Code>', re.IGNORECASE)
+
+
+def _storage_denial(resp) -> bool:
+    headers = {str(k).lower(): str(v) for k, v in (getattr(resp, 'headers', None) or {}).items()}
+    if 'amazons3' in headers.get('server', '').lower() or any(k.startswith('x-amz-') for k in headers):
+        return True
+    try:
+        body = resp.text or ''
+    except Exception:  # noqa: BLE001
+        body = ''
+    return bool(_STORAGE_DENIAL_BODY.search(body[:4096]))
+
+
+def _roe_excluded(url: str, settings: dict) -> bool:
+    """True when the URL's host is one the Rules of Engagement exclude."""
+    settings = settings or {}
+    excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
+    excluded = [e for e in (excluded or []) if isinstance(e, str) and e.strip()]
+    if not excluded or not isinstance(url, str) or url.startswith('data:'):
+        return False
+    from recon.helpers.roe_scope import _is_roe_excluded
+    return _is_roe_excluded(urlparse(url).hostname or '', excluded)
+
+
+def _missing_key_control(map_url: str, timeout: int) -> str:
+    """Fetch a sibling that cannot exist (``<map_url>.<nonce>``): ``'denied'``
+    when it is refused alike, ``'passed'`` when it is not, ``'failed'`` when no
+    answer came (an error is no evidence either way). Same guard, user agent
+    and timeout as the map fetch itself."""
+    control = f"{map_url}.{uuid.uuid4().hex[:12]}"
+    if not is_url_safe_to_probe(control):
+        return 'failed'
+    try:
+        resp = requests.get(control, timeout=timeout, headers={'User-Agent': DEFAULT_BROWSER_UA},
+                            allow_redirects=False)
+    except requests.RequestException:
+        return 'failed'
+    return 'denied' if resp.status_code == 403 else 'passed'
 
 
 def check_sourcemap_comment(content: str) -> Optional[str]:
@@ -192,6 +236,8 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
         return None
     if resp.status_code != 200:
         outcome['reason'] = f'http_{resp.status_code}'
+        if resp.status_code == 403:
+            outcome['storage_denial'] = _storage_denial(resp)
         return None
     # Any content type: S3 and CDNs serve maps as octet-stream, and the body
     # check rejects an HTML page whatever it is labelled. The bytes are decoded
@@ -452,6 +498,8 @@ def discover_and_analyze_sourcemaps(
 
             # Method 3: Probe common paths
             if not map_url:
+                if _roe_excluded(js_url, settings):
+                    return []
                 for probe_url in _build_probe_urls(js_url, custom_paths):
                     if _past_deadline():
                         if skipped is not None:
@@ -465,23 +513,33 @@ def discover_and_analyze_sourcemaps(
                         return _served(map_data, probe_url, js_url, 'probe')
                 return []
 
-            # Fetch and analyze the discovered source map
-            if not _claim(map_url):
+            # Fetch and analyze the discovered source map. A reference to a
+            # host the Rules of Engagement exclude is not fetched at all.
+            if _roe_excluded(map_url, settings) or not _claim(map_url):
                 return []
             outcome: dict = {}
             map_data = _fetch_sourcemap(map_url, timeout=timeout, outcome=outcome)
             if map_data:
                 return _served(map_data, map_url, js_url, discovery_method)
-            # Referenced but not served. Only an access refusal says the map
-            # exists somewhere, or a reference to ANOTHER host we could not or
-            # may not reach (an internal build server leaks its name); a 404,
-            # an SPA's HTML shell or a JSON error page says nothing, and
-            # reporting those buried the board in rows.
+            # Referenced but not served. An access refusal can mean the map
+            # exists, and a reference to ANOTHER host we could not or may not
+            # reach leaks that host (an internal build server); a 404, an SPA's
+            # HTML shell or a JSON error page says nothing, and reporting those
+            # buried the board in rows.
             reason = outcome.get('reason')
             other_host = urlparse(map_url).hostname not in (None, urlparse(js_url).hostname)
             if reason not in _REFERENCE_WORTH_REPORTING and not (
                     other_host and reason in _REFERENCE_WORTH_REPORTING_ELSEWHERE):
                 return []
+            # A 403 is only evidence when a key that cannot exist is not
+            # refused alike: object storage answers 403 for missing keys.
+            control_check = None
+            if reason == 'http_403':
+                if outcome.get('storage_denial'):
+                    return []
+                control_check = _missing_key_control(map_url, timeout)
+                if control_check == 'denied':
+                    return []
             finding_id = hashlib.sha256(f"srcmap-ref:{js_url}:{map_url}".encode()).hexdigest()[:16]
             return [{
                 'id': finding_id,
@@ -489,6 +547,7 @@ def discover_and_analyze_sourcemaps(
                 'map_url': map_url,
                 'accessible': False,
                 'fetch_result': outcome['reason'],
+                'control_check': control_check,
                 'discovery_method': discovery_method,
                 'files_count': 0,
                 'first_party_files': 0,

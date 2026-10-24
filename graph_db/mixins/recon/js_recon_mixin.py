@@ -46,11 +46,14 @@ def _finding_type_props(data_key: str, finding: dict) -> dict:
             detail = (
                 f"Script references {map_url}, which answered "
                 f"{finding.get('fetch_result') or 'without a source map'}"
+                + (" (the missing-key control check could not run, so the refusal is unconfirmed)"
+                   if finding.get("control_check") == "failed" else "")
             )
         return {
             "map_url": map_url,
             "accessible": bool(finding.get("accessible")),
             "fetch_result": finding.get("fetch_result") or ("ok" if finding.get("accessible") else None),
+            "control_check": finding.get("control_check"),
             "discovery_method": finding.get("discovery_method"),
             "files_count": files,
             "first_party_files": first_party,

@@ -904,6 +904,7 @@ Source-map properties (finding_type source_map_exposure or source_map_reference)
 - map_url (string): the source map URL the script references or the probe found
 - accessible (boolean): the map was served and parsed as a v3 source map
 - fetch_result (string): ok for a served map; http_401 or http_403 for a referenced map that refused access
+- control_check (string): on an http_403 reference, the missing-key control: passed (a made-up sibling was not refused alike, so the map likely exists) or failed (the control got no answer, so the refusal is unconfirmed); absent otherwise. A 403 that object storage gives for any missing key is not reported at all
 - discovery_method (string): comment, header or probe
 - files_count (integer): sources listed in the map
 - first_party_files (integer): sources outside node_modules and the bundler runtime
