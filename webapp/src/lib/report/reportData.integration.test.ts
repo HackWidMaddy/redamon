@@ -176,3 +176,31 @@ describe('the board verdict in the report counts', () => {
     expect(overview.suppressedByPeople).toBe(1)
   })
 })
+
+describe('keys that are public by design, on a real graph (plan 05.2)', () => {
+  const PID_PUBLIC = `REPORT_PUBLIC_${Math.random().toString(36).slice(2, 10)}`
+
+  afterAll(async () => {
+    if (alive && session) await session.run('MATCH (n {project_id: $pid}) DETACH DELETE n', { pid: PID_PUBLIC })
+  })
+
+  test('flagged, legacy-named and secret keys are counted where the readers say', async (ctx) => {
+    if (!alive || !session) ctx.skip()
+    await session!.run(
+      `CREATE (:Secret {id: 'flagged', user_id: $uid, project_id: $pid, severity: 'info',
+                        secret_type: 'GCP API Key', public_client_key: true, source: 'js_recon'}),
+              (:Secret {id: 'legacy', user_id: $uid, project_id: $pid, severity: 'critical',
+                        secret_type: 'Sentry DSN', source: 'js_recon'}),
+              (:Secret {id: 'real', user_id: $uid, project_id: $pid, severity: 'critical',
+                        secret_type: 'Stripe Secret Key', public_client_key: false, source: 'js_recon'})`,
+      { uid: UID, pid: PID_PUBLIC },
+    )
+    const secrets = await querySecrets(session, PID_PUBLIC)
+    expect(secrets.total).toBe(1)
+    expect(secrets.bySeverity).toEqual([{ severity: 'critical', count: 1 }])
+    expect(secrets.findings.map((f: { secretType: string }) => f.secretType)).toEqual(['Stripe Secret Key'])
+    expect(secrets.publicClientKeys?.total).toBe(2)
+    expect(secrets.publicClientKeys?.byType.map((t: { secretType: string }) => t.secretType).sort())
+      .toEqual(['GCP API Key', 'Sentry DSN'])
+  })
+})

@@ -114,6 +114,11 @@ the host.
 | `.20` | a 228-character JWT in quotes and as a `Bearer` header | K-06 | both are Secrets, not dropped as a base64 blob |
 | `.20` | a 5-line bundle whose last line is 20,000 characters: `fontFamily` near its start, an AWS-format key 8,000 characters later | K-07 | the key is a Secret; a font marker hides only what sits next to it |
 | `.20` | `window.postMessage(1);fetch("/api/read");api.get("/api/list")` beside an `axios.post` control | E-01 | `/api/read` and `/api/list` are GET, `/api/save` is POST |
+| `.20` | `keys.8c2d.js`: an `AIza…` browser key and a Segment write key | K-08 | both are Secrets at info with `public_client_key`; after the Priority Board every public key is in T4 (X-01d) |
+| `.20` | `keys.8c2d.js`: CSS-module class names `password:"LoginForm_password__3xYz9"` | K-09 | no Secret |
+| `.20` | `keys.8c2d.js`: two Supabase-style JWTs, `role: anon` and `role: service_role` | K-10 | "Supabase anon key" at info (public), "Supabase service_role key" critical; neither is also a "JWT Token" or "Supabase Key" |
+| `.20` | `keys.8c2d.js`: a presigned S3 URL (`X-Amz-Credential` + `X-Amz-Signature`, expiring in 2099) and a `hooks.zapier.com/hooks/catch/…` URL | K-11 | "Signed URL in client code" medium; "Zapier Webhook" high |
+| `.20` | `keys.8c2d.js`: a GitHub token and a Stripe secret key 100 characters apart on a 3,000-character line | K-12 | both reported; every Secret of the file has a `context`, and no context holds any raw value of the file |
 | `.20` | a second run with Resource Enumeration off, so js_recon gets no JS file | N-01 | every earlier js_recon finding is kept |
 | `.20` | URLs back to the scanned host and to another, unreachable one | X-05 | the scanned IP is never an external domain of itself; the other host is |
 | `.10`-`.13` | Shodan stub (`.30`): an unverified version-matched CVE, a verified one, a catalog-only CVE, a cloud-host org, a `cdn` tag | H-01..H-04 | the version match stays a high candidate on its own port; the verified CVE is marked verified; the catalog CVE carries no severity; the CDN and cloud hosts get no Shodan finding |
@@ -136,3 +141,8 @@ the host.
 Subdomain takeover and origin discovery need public DNS for the lab names
 (dnspython ignores `/etc/hosts`), and routing a lab domain on the host needs
 root. Their fixes are covered by unit and regression tests in `recon/tests/`.
+
+Secret validation calls: the lab project keeps **Validate Keys** off, so no
+lab key is ever sent to a real provider. What each provider answer becomes
+(`validated`, `rejected`, `unknown`, `format_invalid`) is covered by
+`recon/tests/test_js_recon_validation_states.py`.

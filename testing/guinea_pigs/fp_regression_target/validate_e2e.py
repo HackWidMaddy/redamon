@@ -295,7 +295,8 @@ check("X-05", f"{NET}.99" in ext and not own.intersection(ext),
 long_secrets = q("""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.source_url ENDS WITH '/auth.1d2e.js'
                     RETURN s.secret_type AS t, size(s.matched_text) AS n""")
 got = sorted((r["t"], r["n"]) for r in long_secrets)
-check("K-06", any(t == "JWT Token" and n >= 220 for t, n in got)
+# The lab's JWT carries role service_role, so since plan 05.6 it is named by its role.
+check("K-06", any(t in ("JWT Token", "Supabase service_role key") and n >= 220 for t, n in got)
       and any(t == "Bearer Token" and n >= 220 for t, n in got),
       f"secrets longer than 200 characters: {got} (expect the JWT and its Bearer header, not dropped "
       f"as a base64 blob)")
@@ -303,6 +304,32 @@ font = q("""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.source_url ENDS W
             RETURN s.secret_type AS t, s.matched_text AS mt""")
 check("K-07", [(r["t"], r["mt"]) for r in font] == [("AWS Access Key ID", "AKIAZ3FPLB7QW4XN6R2T")],
       f"key 8,000 characters after a font marker on a long minified line: {font}")
+# Plan 05: keys.8c2d.js
+keys = q("""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.source_url ENDS WITH '/keys.8c2d.js'
+            RETURN s.secret_type AS t, s.severity AS sev, s.confidence AS conf,
+                   s.public_client_key AS pub, s.matched_text AS mt, s.context AS ctx""")
+by_t = {}
+for r in keys:
+    by_t.setdefault(r["t"], []).append(r)
+pub = sorted((t, r["sev"], r["pub"]) for t in ("GCP API Key", "Segment Write Key") for r in by_t.get(t, []))
+check("K-08", pub == [("GCP API Key", "info", True), ("Segment Write Key", "info", True)],
+      f"public-by-design keys: {pub} (expect both at info with public_client_key)")
+check("K-09", "LoginForm_password__3xYz9" not in json.dumps(secrets) and "Secret_secret__a1B2c" not in json.dumps(secrets),
+      f"CSS-module class names stored as secrets: {[r['t'] for r in secrets if '__' in (r['mt'] or '')]}")
+sup = {t: sorted((r["sev"], r["pub"]) for r in by_t.get(t, [])) for t in ("Supabase service_role key", "Supabase anon key")}
+check("K-10", sup == {"Supabase service_role key": [("critical", False)], "Supabase anon key": [("info", True)]}
+      and not by_t.get("JWT Token") and not by_t.get("Supabase Key"),
+      f"Supabase keys by role: {sup}; other names on them: {sorted(t for t in by_t if 'JWT' in t or t == 'Supabase Key')}")
+signed = [r["sev"] for r in by_t.get("Signed URL in client code", [])]
+zap = [r["sev"] for r in by_t.get("Zapier Webhook", [])]
+check("K-11", signed == ["medium"] and zap == ["high"],
+      f"presigned S3 URL: {signed} (expect medium); Zapier hook: {zap} (expect high)")
+raws = [r["mt"] for r in keys if r["mt"]]
+two = sorted(r["t"] for r in keys if r["t"] in ("GitHub Token Classic", "Stripe Secret Key"))
+leaks = [(r["t"], raw[:8]) for r in keys for raw in raws if raw in (r["ctx"] or "")]
+check("K-12", two == ["GitHub Token Classic", "Stripe Secret Key"] and all(r["ctx"] for r in keys) and not leaks,
+      f"two keys 100 characters apart: {two}; contexts present: {all(r['ctx'] for r in keys)}; "
+      f"raw values inside a context: {leaks}")
 eps = q(f"""MATCH (e:Endpoint) WHERE e.baseurl = 'http://{NET}.20' AND e.path IN ['/api/read', '/api/list', '/api/save']
             RETURN e.path AS path, e.method AS method ORDER BY path, method""")
 got = sorted((r["path"], r["method"]) for r in eps)
@@ -359,6 +386,10 @@ cat = [t for t in scored if t["kind"] in ("shodan_api", "internetdb") and t["nam
 check("X-01b", cat and all(t["tier"] == "T4" for t in cat), f"catalog-only CVE tier: {cat}")
 refs_t = [t for t in scored if t["kind"] == "dev_reference"]
 check("X-01c", refs_t and all(t["tier"] == "T4" for t in refs_t), f"developer reference tiers: {refs_t}")
+public = q("""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.public_client_key = true
+              RETURN s.secret_type AS t, s.triage_tier AS tier""")
+check("X-01d", public and all(r["tier"] == "T4" for r in public),
+      f"public client keys on the board: {sorted((r['t'], r['tier']) for r in public)} (expect every one in T4)")
 
 
 # --------------------------------------------------------------------------- Priority Board: secret groups
