@@ -18,9 +18,13 @@ from typing import Optional
 
 # Each pattern: name, regex (raw string), severity, confidence, category, validator_ref (optional)
 _RAW_PATTERNS = [
+    # Confidence `high` is for a value with a provider-specific shape (AKIA, ghp_,
+    # xoxb-, sk_live_ ...). A generic run found only by a keyword nearby is
+    # `medium`: the Priority Board reads high as C 0.75, enough for "Act soon"
+    # before anything validated it.
     # ========== CLOUD CREDENTIALS (Critical) ==========
     ("AWS Access Key ID", r"AKIA[0-9A-Z]{16}", "critical", "high", "cloud", "validate_aws"),
-    ("AWS Secret Key", r"(?i)aws(?:_secret|_key|secret_key|_access).{0,10}['\"][0-9a-zA-Z/+]{40}['\"]", "critical", "high", "cloud", "validate_aws"),
+    ("AWS Secret Key", r"(?i)aws(?:_secret|_key|secret_key|_access).{0,10}['\"][0-9a-zA-Z/+]{40}['\"]", "critical", "medium", "cloud", "validate_aws"),
     ("AWS MWS Key", r"amzn\.mws\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "critical", "high", "cloud", None),
     ("GCP API Key", r"AIza[0-9A-Za-z\-_]{35}", "critical", "high", "cloud", "validate_google_maps"),
     ("GCP OAuth Client", r"[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com", "high", "high", "cloud", None),
@@ -31,7 +35,7 @@ _RAW_PATTERNS = [
     ("Firebase API Key", r"(?i)firebase[^\"']{0,50}['\"][A-Za-z0-9_]{30,}['\"]", "high", "medium", "cloud", None),
     ("Firebase Storage", r"https://[a-z0-9-]+\.firebasestorage\.app", "medium", "high", "cloud", None),
     ("Azure Storage Key", r"(?i)DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{88}", "critical", "high", "cloud", None),
-    ("Azure Connection String", r"(?i)(AccountKey|SharedAccessKey)=[A-Za-z0-9+/=]{40,}", "critical", "high", "cloud", None),
+    ("Azure Connection String", r"(?i)(AccountKey|SharedAccessKey)=[A-Za-z0-9+/=]{40,}", "critical", "medium", "cloud", None),
     ("Azure SAS Token", r"(?i)[?&]sig=[A-Za-z0-9%]{40,}", "high", "medium", "cloud", None),
     # The value must be ASSIGNED to the client-secret key, near an Azure keyword:
     # "azure" anywhere plus any long quoted string later used to be enough.
@@ -60,10 +64,10 @@ _RAW_PATTERNS = [
     ("Square OAuth Secret", r"sq0csp-[0-9A-Za-z\-_]{43}", "critical", "high", "payment", None),
     ("Razorpay Key", r"rzp_(live|test)_[a-zA-Z0-9]{14}", "high", "high", "payment", None),
     ("Plaid Client ID", r"(?i)plaid[^\n]{0,120}?client.?id[^\n]{0,120}?['\"][a-f0-9]{24}['\"]", "high", "medium", "payment", None),
-    ("Plaid Secret Key", r"(?i)plaid[^\n]{0,120}?secret[^\n]{0,120}?['\"][a-f0-9]{30}['\"]", "critical", "high", "payment", None),
+    ("Plaid Secret Key", r"(?i)plaid[^\n]{0,120}?secret[^\n]{0,120}?['\"][a-f0-9]{30}['\"]", "critical", "medium", "payment", None),
     ("Flutterwave Secret Key", r"FLWSECK-[a-zA-Z0-9]{32}-X", "critical", "high", "payment", None),
     ("Flutterwave Public Key", r"FLWPUBK-[a-zA-Z0-9]{32}-X", "medium", "high", "payment", None),
-    ("GoCardless API Token", r"(?i)gocardless[^\n]{0,120}?['\"]live_[a-zA-Z0-9\-_]{40,}['\"]", "critical", "high", "payment", None),
+    ("GoCardless API Token", r"(?i)gocardless[^\n]{0,120}?['\"]live_[a-zA-Z0-9\-_]{40,}['\"]", "critical", "medium", "payment", None),
     ("Coinbase Access Token", r"(?i)coinbase[^\n]{0,120}?['\"][a-zA-Z0-9]{64}['\"]", "high", "medium", "payment", None),
 
     # ========== AI / LLM PROVIDERS (Critical) ==========
@@ -176,7 +180,7 @@ _RAW_PATTERNS = [
 
     # ========== DEV TOOLS & PROJECT MANAGEMENT ==========
     ("Atlassian API Token", r"ATATT3[A-Za-z0-9_\-=]{186}", "high", "high", "auth", None),
-    ("Notion API Token", r"(?i)notion[^\n]{0,120}?secret_[a-zA-Z0-9]{43}", "high", "high", "auth", None),
+    ("Notion API Token", r"(?i)notion[^\n]{0,120}?secret_[a-zA-Z0-9]{43}", "high", "medium", "auth", None),
     ("Linear API Key", r"lin_api_[a-zA-Z0-9]{40}", "high", "high", "auth", None),
     ("Linear Client Secret", r"(?i)linear[^\n]{0,120}?client.?secret[^\n]{0,120}?['\"][a-f0-9]{32}['\"]", "high", "medium", "auth", None),
     ("Asana Client ID", r"(?i)asana[^\n]{0,120}?['\"][0-9]{16}['\"]", "medium", "medium", "auth", None),
@@ -206,7 +210,7 @@ _RAW_PATTERNS = [
     ("DroneCI Access Token", r"(?i)drone[^\n]{0,120}?['\"][a-zA-Z0-9]{32,}['\"]", "high", "medium", "secret", None),
     ("Octopus Deploy API Key", r"API-[A-Z0-9]{25}", "high", "high", "secret", None),
     ("OpenShift User Token", r"sha256~[a-zA-Z0-9_-]{43}", "high", "high", "secret", None),
-    ("Harness API Key", r"(?i)harness[^\n]{0,120}?pat\.[a-zA-Z0-9]{22}\.[a-zA-Z0-9]{24}\.[a-zA-Z0-9]{20}", "high", "high", "secret", None),
+    ("Harness API Key", r"(?i)harness[^\n]{0,120}?pat\.[a-zA-Z0-9]{22}\.[a-zA-Z0-9]{24}\.[a-zA-Z0-9]{20}", "high", "medium", "secret", None),
 
     # ========== MISC SAAS ==========
     ("Dropbox Short-lived Token", r"\bsl\.[A-Za-z0-9\-_]{130,}\b", "high", "high", "auth", None),
@@ -267,7 +271,7 @@ _RAW_PATTERNS = [
 
     # ========== GENERAL SECRETS (Medium) ==========
     ("JWT Token", r"eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+", "medium", "high", "secret", None),
-    ("Basic Auth Header", r"(?i)authorization:\s*basic\s+[a-zA-Z0-9+/=]+", "high", "high", "secret", None),
+    ("Basic Auth Header", r"(?i)authorization:\s*basic\s+[a-zA-Z0-9+/=]+", "high", "medium", "secret", None),
     ("Bearer Token", r"(?i)bearer\s+[a-zA-Z0-9\-_\.]{20,}", "high", "medium", "secret", None),
     ("RSA Private Key", r"-----BEGIN RSA PRIVATE KEY-----", "critical", "high", "secret", None),
     ("DSA Private Key", r"-----BEGIN DSA PRIVATE KEY-----", "critical", "high", "secret", None),

@@ -790,3 +790,47 @@ class TestUnaffectedFindingsDidNotMove(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Plan 05.5: a keyword-anchored pattern with a generic value is medium
+# ---------------------------------------------------------------------------
+def js_pattern(name: str) -> tuple:
+    """(severity, confidence, category) of one js_recon pattern, from its source."""
+    m = re.search(r'^\s*\("' + re.escape(name) + r'",\s*r"(?:[^"\\]|\\.)*",\s*"(\w+)",\s*"(\w+)",\s*"(\w+)"',
+                  _read(JS_PATTERNS_SRC), re.M)
+    if m is None:
+        raise AssertionError(f"no js_recon pattern named {name}")
+    return m.group(1), m.group(2), m.group(3)
+
+
+class TestKeywordAnchoredConfidence(unittest.TestCase):
+    #: Values with no provider prefix, found only by a keyword nearby.
+    GENERIC_VALUE = ("AWS Secret Key", "Azure AD Client Secret", "Azure Connection String",
+                     "Plaid Secret Key", "GoCardless API Token", "Notion API Token",
+                     "Harness API Key", "Basic Auth Header")
+
+    def test_they_are_medium_confidence(self):
+        for name in self.GENERIC_VALUE:
+            with self.subTest(name=name):
+                self.assertEqual(js_pattern(name)[1], "medium")
+
+    def test_an_unvalidated_hit_scores_at_most_t3(self):
+        for name in self.GENERIC_VALUE:
+            severity, confidence, category = js_pattern(name)
+            with self.subTest(name=name):
+                row = js_secret(name, category, severity=severity, confidence=confidence,
+                                validation_status="unvalidated")
+                self.assertIn(sm.score(row, LIVE).tier, ("T3", "T4"))
+
+    def test_high_confidence_was_what_reached_t2(self):
+        severity, _, category = js_pattern("AWS Secret Key")
+        row = js_secret("AWS Secret Key", category, severity=severity, confidence="high",
+                        validation_status="unvalidated")
+        self.assertEqual(sm.score(row, LIVE).tier, "T2")
+
+    def test_provider_prefixed_patterns_keep_high(self):
+        for name in ("AWS Access Key ID", "GitHub Token Classic", "Slack Bot Token",
+                     "Stripe Secret Key", "HashiCorp Terraform Token", "Azure Storage Key"):
+            with self.subTest(name=name):
+                self.assertEqual(js_pattern(name)[1], "high")
