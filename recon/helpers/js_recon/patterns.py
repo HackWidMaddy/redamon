@@ -472,12 +472,28 @@ _DEV_COMMENT_RE = re.compile(
     re.IGNORECASE
 )
 
-_DEV_SENSITIVE_COMMENT_RE = re.compile(
-    r'(?://|/\*|\*)\s*.*(?:' +
-    '|'.join(DEV_COMMENT_SENSITIVE_KEYWORDS) +
-    r').*',
-    re.IGNORECASE
-)
+_SENSITIVE_KEYWORD_RE = re.compile('|'.join(DEV_COMMENT_SENSITIVE_KEYWORDS), re.IGNORECASE)
+_COMMENT_MARKER_RE = re.compile(r'//|/\*|\*')
+
+
+def _sensitive_comment(line: str):
+    """The text from the line's first comment marker to its end, when a
+    sensitive keyword follows that marker; else None.
+
+    The same match as ``(?://|/\\*|\\*)\\s*.*(keyword).*``, found in linear
+    time: that regex ran ``.*`` to the end of the line from every ``*`` and
+    backtracked, the square of the length of a one-line minified bundle. The
+    first marker ends earliest, so a keyword starting after it is all it takes.
+    """
+    last = None
+    for last in _SENSITIVE_KEYWORD_RE.finditer(line):
+        pass
+    if last is None:
+        return None
+    marker = _COMMENT_MARKER_RE.search(line)
+    if marker is None or marker.end() > last.start():
+        return None
+    return line[marker.start():]
 
 # Confidence ordering for filtering
 CONFIDENCE_ORDER = {'high': 3, 'medium': 2, 'low': 1}
@@ -1044,9 +1060,9 @@ def scan_dev_comments(content: str, source_url: str) -> list:
             continue
 
         # Check for comments with sensitive keywords
-        sens_match = _DEV_SENSITIVE_COMMENT_RE.search(line)
-        if sens_match:
-            comment_text = sens_match.group(0).strip()
+        sens_text = _sensitive_comment(line)
+        if sens_text is not None:
+            comment_text = sens_text.strip()
             # Avoid duplicating findings from the previous check
             if not _DEV_COMMENT_RE.search(line):
                 finding_id = hashlib.sha256(f"senscmt:{source_url}:{line_num}".encode()).hexdigest()[:16]
