@@ -73,6 +73,24 @@ the host.
    `python3 validate_e2e.py <id> --js-count-equals <n>`: the count must not
    change. Switch Resource Enumeration back on afterwards.
 
+6. **Passive CVEs (plan 04).** `python3 e2e_fp.py --passive-cves` creates an
+   `internal` IP-mode project over `.10`-`.14` with only the port scan (naabu on
+   22,80,443; 22 is closed on every lab host) and Shodan. Four runs, each
+   followed by `python3 validate_e2e.py <id> --passive-cves <stage>`:
+
+   ```bash
+   python3 e2e_fp.py --passive-cves                       # then: baseline
+   python3 e2e_fp.py --rerun <id> --no-triage \
+     --shodan-state 'unavailable=192.88.94.13&hide=CVE-2019-11043'   # then: partial
+   python3 e2e_fp.py --rerun <id> --no-triage \
+     --set '{"naabuCustomPorts": "80,443"}'                # then: unscanned
+   # mute .10's CVE-2021-23017 (MCP mute_findings), then
+   python3 e2e_fp.py --rerun <id> --no-triage --set '{"shodanEnabled": false}'   # then: off
+   ```
+
+   `--shodan-state` sets what the stub answers for that run only
+   (`/_lab/shodan?unavailable=<ips>&hide=<cves>`; e2e_fp.py resets it after).
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -108,6 +126,10 @@ the host.
 | `.26`-`.28` | one gateway deny page, the same bytes, on three hosts | D-01/02 | their root Endpoints carry `shared_body_cluster` 3; no other root page is marked |
 | `.24` | an HTTPS origin that `302`s every path, WAF probe payloads included, to `/login` | W-01 | behind the `waf-bypass` edge: no WAF-bypass finding (the old rule counted the 302 as "served") |
 | all | the Priority Board after the run | X-01a/b/c | no DOM sink, developer reference or Shodan CVE reaches T1/T2; the catalog-only CVE and the developer references sit in T4 |
+| `.10`, `.13`, `.14` | Shodan stub, port scan on 22,80,443: an nginx banner on `.10`'s open 80, a verified banner on `.13`'s closed 443, an OpenSSH 7.4 banner on `.14`'s closed 22 | P-01..P-06 | `.14`'s and `.13`'s CVEs are `port_confirmed: false`, `.10`'s `true`; after the Priority Board `.14`'s is inactive ("the port scan found the port closed") and `.10`'s stays open below Act soon; Port 22 on `.14` is `passive_only`, Port 80 on `.10` is not |
+| `.13`, `.10` | a rerun where the stub fails for `.13` and dropped `.10`'s catalog CVE | P-07..P-09 | `.13`'s CVE is kept untouched, `.10`'s dropped CVE is pruned, and the coverage record names Shodan once, for one IP |
+| `.14` | a rerun with naabu on 80,443 | P-10/P-11 | the scan did not look at 22: `.14`'s CVE has no `port_confirmed`; `.10`'s port 80 stays confirmed |
+| all | a rerun with Shodan switched off, after muting one CVE | P-12 | every Shodan CVE is pruned but the muted one, which is kept with `stale_since` |
 
 ## Not covered here
 

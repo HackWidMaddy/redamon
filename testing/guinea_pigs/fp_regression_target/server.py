@@ -13,7 +13,9 @@ real finding that must survive. Stdlib only. See README.md for the case table.
     ROLE=cache      a tiny shared cache: an A/B page and a real unkeyed-header poisoning
     ROLE=spa        single-page app + JS bundles + source maps (catch-all HTML shell)
     ROLE=vendor     a third-party script host, and a third-party SAML login page
-    ROLE=shodan     canned Shodan host API + InternetDB answers for the lab IPs
+    ROLE=shodan     canned Shodan host API + InternetDB answers for the lab IPs;
+                    /_lab/shodan?unavailable=<ips>&hide=<cves> makes some IPs fail
+                    (503) and drops some CVEs until the next call or a restart
     ROLE=api        a JSON API: 200 on /api/v1, 404 {"code":"NOT_FOUND"} elsewhere
     ROLE=jsonall    a JSON catch-all: 200 {"code":"NOT_FOUND"} on every path
     ROLE=sso        / answers 302 to the vendor host's SAML login (outside the project)
@@ -337,22 +339,54 @@ SHODAN_HOSTS = {
                            {"port": 443, "transport": "tcp", "product": "OpenSSL", "version": "1.0.1f",
                             "data": "", "_shodan": {"module": "https"},
                             "vulns": {"CVE-2014-0160": {"cvss": 7.5, "verified": True}}}]},
+    # Port 22 is closed on every lab host: a banner from an old crawl (plan 04).
+    f"{NET}.14": {"org": "Example Hosting Ltd", "isp": "Example Hosting Ltd", "tags": [], "ports": [22, 80],
+                  "vulns": ["CVE-2018-15473"],
+                  "data": [{"port": 22, "transport": "tcp", "product": "OpenSSH", "version": "7.4",
+                            "data": "SSH-2.0-OpenSSH_7.4", "_shodan": {"module": "ssh"},
+                            "vulns": {"CVE-2018-15473": {"cvss": 5.3, "verified": False}}}]},
 }
+
+# What the next lookups see, set over /_lab/shodan by e2e_fp.py: IPs whose lookup
+# fails (a provider that could not be asked) and CVEs the provider dropped.
+_shodan_state = {"unavailable": set(), "hide": set()}
+
+
+def _shodan_view(ip):
+    """The record for `ip` as this run's provider has it, CVEs hidden."""
+    host = SHODAN_HOSTS.get(ip)
+    if not host or not _shodan_state["hide"]:
+        return host
+    hide = _shodan_state["hide"]
+    data = [{**svc, "vulns": {c: v for c, v in svc.get("vulns", {}).items() if c not in hide}}
+            for svc in host.get("data", [])]
+    return {**host, "vulns": [c for c in host["vulns"] if c not in hide], "data": data}
 
 
 class Shodan(Base):
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        path, _, query = self.path.partition("?")
+        if path == "/_lab/shodan":
+            from urllib.parse import parse_qs
+            params = parse_qs(query)
+            with _lock:
+                for key in ("unavailable", "hide"):
+                    _shodan_state[key] = {v for raw in params.get(key, []) for v in raw.split(",") if v}
+            return self.send(200, json.dumps({k: sorted(v) for k, v in _shodan_state.items()}),
+                             "application/json")
+        if (path.startswith("/shodan/host/") or path.startswith("/internetdb/")) and \
+                path.rsplit("/", 1)[-1] in _shodan_state["unavailable"]:
+            return self.send(503, '{"error":"temporarily unavailable"}', "application/json")
         if path.startswith("/shodan/host/"):
             ip = path.rsplit("/", 1)[-1]
-            host = SHODAN_HOSTS.get(ip)
+            host = _shodan_view(ip)
             if not host:
                 return self.send(404, '{"error":"No information available for that IP."}', "application/json")
             return self.send(200, json.dumps({"ip_str": ip, "os": None, "country_name": "Ireland",
                                               "city": "Dublin", **host}), "application/json")
         if path.startswith("/internetdb/"):
             ip = path.rsplit("/", 1)[-1]
-            host = SHODAN_HOSTS.get(ip)
+            host = _shodan_view(ip)
             if not host:
                 return self.send(404, '{"detail":"No information available"}', "application/json")
             return self.send(200, json.dumps({"ip": ip, "ports": host["ports"], "hostnames": [],

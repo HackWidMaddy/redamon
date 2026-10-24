@@ -2,6 +2,8 @@
 
 Run after e2e_fp.py:   python3 validate_e2e.py <projectId>
 The HTTP-layer project (e2e_fp.py --http-layer): python3 validate_e2e.py <projectId> --http-layer
+The passive-CVE project (e2e_fp.py --passive-cves), after each of its runs:
+    python3 validate_e2e.py <projectId> --passive-cves baseline|partial|unscanned|off
 
 N-01, a run with no JS input keeps the earlier js_recon findings, takes a second
 run: `--js-count` prints the count, then switch resource_enum off, rerun, and
@@ -19,7 +21,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mcp_client as mcp  # noqa: E402
 
-USAGE = "usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer]"
+USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer"
+         " | --passive-cves baseline|partial|unscanned|off]")
 if len(sys.argv) not in (2, 3, 4):
     sys.exit(USAGE)
 P = sys.argv[1]
@@ -94,6 +97,64 @@ def http_layer_checks():
     check("D-02", not others, f"pages no other host serves are not marked: {others}")
 
 
+PASSIVE = "['shodan_api', 'internetdb', 'shodan', 'shodan_host_lookup']"
+
+
+def passive_cves(stage):
+    """Plan 04 cases, on the project e2e_fp.py --passive-cves creates, after each run."""
+    rows = q(f"""MATCH (v:Vulnerability) WHERE v.source IN {PASSIVE}
+                 RETURN v.id AS id, v.target_ip AS ip, v.target_port AS port, v.name AS cve,
+                        v.port_confirmed AS pc, v.triage_state AS state,
+                        v.triage_base_tier_rule AS rule, v.triage_tier AS tier,
+                        toString(v.updated_at) AS seen""")
+    by = {(r["ip"], r["cve"]): r for r in rows}
+    ssh, nginx, catalog = (by.get((f"{NET}.14", "CVE-2018-15473")), by.get((f"{NET}.10", "CVE-2021-23017")),
+                           by.get((f"{NET}.10", "CVE-2019-11043")))
+    heartbleed = by.get((f"{NET}.13", "CVE-2014-0160"))
+    if stage == "baseline":
+        check("P-01", ssh and ssh["port"] == 22 and ssh["pc"] is False,
+              f".14's OpenSSH CVE on 22, closed on the lab and in the port list: {ssh}")
+        check("P-02", nginx and nginx["port"] == 80 and nginx["pc"] is True,
+              f".10's nginx CVE on 80, which naabu found open: {nginx}")
+        check("P-03", heartbleed and heartbleed["port"] == 443 and heartbleed["pc"] is False,
+              f".13's verified CVE on 443, closed on the lab: {heartbleed}")
+        check("P-04", ssh and ssh["state"] == "inactive" and ssh["rule"] == "the port scan found the port closed",
+              f"the board: .14's CVE is resolved as inactive with the closed-port reason: {ssh}")
+        check("P-05", nginx and nginx["state"] == "open" and nginx["tier"] not in ("T1", "T2"),
+              f"the board: .10's confirmed CVE stays open, below Act soon: {nginx}")
+        ports = q(f"""MATCH (i:IP)-[:HAS_PORT]->(p:Port) WHERE i.address IN ['{NET}.14', '{NET}.10']
+                      RETURN i.address AS ip, p.number AS port, p.source AS src, p.passive_only AS passive""")
+        pb = {(r["ip"], r["port"]): r for r in ports}
+        p22, p80 = pb.get((f"{NET}.14", 22)), pb.get((f"{NET}.10", 80))
+        check("P-06", p22 and p22["passive"] is True and p80 and p80["passive"] is False,
+              f"Port 22 only Shodan saw is passive_only, port 80 naabu found is not: {p22} / {p80}")
+        check("H-04", not [r for r in rows if r["ip"] in (f"{NET}.11", f"{NET}.12")],
+              "no CVE on the Vercel / cdn-tagged hosts")
+    elif stage == "partial":
+        check("P-07", heartbleed is not None and nginx is not None and heartbleed["seen"] < nginx["seen"],
+              f".13 could not be looked up: its CVE is kept as it was ({heartbleed}), .10's was refreshed "
+              f"({nginx and nginx['seen']})")
+        check("P-08", catalog is None, f".10's CVE the provider dropped is pruned: {catalog}")
+        gaps = q("""MATCH (d:Domain) WHERE d.recon_coverage_gaps IS NOT NULL
+                     RETURN d.recon_coverage_gaps AS g""")
+        listed = [g for r in gaps for g in json.loads(r["g"] or "[]") if g.get("source") == "shodan"]
+        check("P-09", len(listed) == 1 and listed[0].get("hosts") == 1,
+              f"the coverage record names Shodan once, for one IP: {listed}")
+    elif stage == "unscanned":
+        check("P-10", ssh and ssh["pc"] is None,
+              f"with naabu on 80,443 the scan did not look at 22: no port_confirmed: {ssh}")
+        check("P-11", nginx and nginx["pc"] is True, f".10's port 80 is still confirmed open: {nginx}")
+    elif stage == "off":
+        # query_graph never sees a muted finding; the muted-findings tool does.
+        out, err = mcp.call("search_muted_findings", {"projectId": P, "search": "CVE-2021-23017"})
+        muted = [] if err else (out.get("findings") or out.get("items") or out.get("results") or [])
+        check("P-12", not rows and len(muted) == 1 and "stale" in json.dumps(muted[0]).lower(),
+              f"Shodan switched off: no unmuted Shodan CVE is left ({rows}); the muted one is kept "
+              f"and stale: {json.dumps(muted)[:400]}")
+    else:
+        sys.exit(USAGE)
+
+
 def js_recon_count():
     """JsReconFinding + Secret written by js_recon: what a run with no JS input must keep."""
     findings = q("MATCH (f:JsReconFinding) WHERE f.source = 'js_recon' RETURN count(f) AS n")
@@ -112,6 +173,9 @@ if len(sys.argv) > 2:
         sys.exit(0 if got == expected else 1)
     if sys.argv[2] == "--http-layer" and len(sys.argv) == 3:
         http_layer_checks()
+        sys.exit(report())
+    if sys.argv[2] == "--passive-cves" and len(sys.argv) == 4:
+        passive_cves(sys.argv[3])
         sys.exit(report())
     sys.exit(USAGE)
 

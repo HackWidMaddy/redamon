@@ -10,6 +10,9 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py                       # new project + full run
     python3 e2e_fp.py --rerun <projectId>   # a second run on the same project
     python3 e2e_fp.py --http-layer          # the plan-03 HTTP-layer project (own hosts)
+    python3 e2e_fp.py --passive-cves        # the plan-04 passive-CVE project (port scan + Shodan)
+    python3 e2e_fp.py --rerun <id> --set '{"naabuCustomPorts": "80,443"}' --no-triage
+    python3 e2e_fp.py --rerun <id> --shodan-state 'unavailable=192.88.94.13&hide=CVE-2019-11043'
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
 never prints it.
@@ -20,6 +23,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -85,6 +89,41 @@ HTTP_LAYER_SETTINGS = {
 }
 
 
+# The passive-CVE cases (plan 04) run as their own project with only the port
+# scan and Shodan, so each of their reruns takes minutes. 22 is in the port list
+# and closed on every lab host; .14's Shodan banner is on 22.
+PASSIVE_TARGETS = [f"{NET}.{n}" for n in (10, 11, 12, 13, 14)]
+PASSIVE_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan"],
+    "naabuCustomPorts": "22,80,443",
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False,
+    "webCachePoisonEnabled": False,
+}
+SHODAN_STUB = f"http://{NET}.30/_lab/shodan"
+
+
+def shodan_state(query=""):
+    """Set what the Shodan stub answers for the next lookups ('' resets it)."""
+    with urllib.request.urlopen(f"{SHODAN_STUB}?{query}", timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def start_recon(project_id):
+    """start_recon, waiting out the token's rate limit once: the passive-CVE
+    project starts four runs in a row."""
+    import re
+    out, err = mcp.call("start_recon", {"projectId": project_id, "mode": "new"})
+    wait_s = re.search(r"Try again in (\d+)s", json.dumps(out)) if err else None
+    if wait_s:
+        print(f"[*] start_recon rate-limited: waiting {wait_s.group(1)}s", flush=True)
+        time.sleep(int(wait_s.group(1)) + 5)
+        out, err = mcp.call("start_recon", {"projectId": project_id, "mode": "new"})
+    if err:
+        raise SystemExit(f"[!] start_recon failed: {json.dumps(out)[:800]}")
+    return out
+
+
 def call(tool, args):
     out, err = mcp.call(tool, args)
     if err:
@@ -132,6 +171,11 @@ def main():
     ap.add_argument("--no-triage", action="store_true")
     ap.add_argument("--http-layer", action="store_true",
                     help="create the plan-03 HTTP-layer project instead of the main one")
+    ap.add_argument("--passive-cves", action="store_true",
+                    help="create the plan-04 passive-CVE project instead of the main one")
+    ap.add_argument("--set", metavar="JSON", help="settings to change before the run (update_recon_settings)")
+    ap.add_argument("--shodan-state", metavar="QUERY", default="",
+                    help="Shodan stub state for this run, e.g. 'unavailable=<ip>&hide=<cve>'")
     args = ap.parse_args()
 
     mcp.init()
@@ -139,20 +183,31 @@ def main():
     if args.rerun:
         project_id = args.rerun
     else:
-        kind = " (HTTP layer)" if args.http_layer else ""
+        kind = (" (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else "")
+        targets, settings = ((HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
+                             (PASSIVE_TARGETS, PASSIVE_SETTINGS) if args.passive_cves else
+                             (TARGETS, SETTINGS))
         name = f"FP regression lab{kind} {time.strftime('%Y-%m-%d %H:%M:%S')}"
         out = call("create_project", {"name": name, "engagementKind": "internal",
                                       "description": "Guinea pig: testing/guinea_pigs/fp_regression_target",
-                                      "targetIps": HTTP_LAYER_TARGETS if args.http_layer else TARGETS,
-                                      "settings": HTTP_LAYER_SETTINGS if args.http_layer else SETTINGS})
+                                      "targetIps": targets, "settings": settings})
         project_id = (out.get("project") or {}).get("id") or out.get("id") or out.get("projectId")
         print(f"[+] project {project_id} ({name})", flush=True)
-    print("[*] preflight:", json.dumps(call("preflight_scope_check", {"projectId": project_id}))[:600], flush=True)
-    started = call("start_recon", {"projectId": project_id, "mode": "new"})
-    print("[+] start_recon:", json.dumps(started)[:400], flush=True)
-    time.sleep(20)
-    final = wait("get_recon_status", project_id, _recon_done, args.timeout)
-    print("[+] recon finished:", json.dumps(final)[:600], flush=True)
+    if args.set:
+        changed = call("update_recon_settings", {"projectId": project_id, "settings": json.loads(args.set)})
+        print("[*] settings:", json.dumps(changed)[:300], flush=True)
+    print("[*] Shodan stub:", json.dumps(shodan_state(args.shodan_state)), flush=True)
+    try:
+        print("[*] preflight:", json.dumps(call("preflight_scope_check", {"projectId": project_id}))[:600],
+              flush=True)
+        started = start_recon(project_id)
+        print("[+] start_recon:", json.dumps(started)[:400], flush=True)
+        time.sleep(20)
+        final = wait("get_recon_status", project_id, _recon_done, args.timeout)
+        print("[+] recon finished:", json.dumps(final)[:600], flush=True)
+    finally:
+        if args.shodan_state:
+            shodan_state("")
     if not args.no_triage:
         out, err = mcp.call("start_triage_run", {"projectId": project_id})
         if err and "triage:run" in json.dumps(out):
