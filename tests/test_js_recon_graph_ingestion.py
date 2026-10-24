@@ -155,7 +155,9 @@ class TestJsReconGraphIngestion(unittest.TestCase):
         stats = client.update_graph_from_js_recon(recon_data, "u1", "p1")
 
         self.assertEqual(stats["endpoints_created"], 0)
-        self.assertEqual(stats["relationships_created"], 1)
+        # This fake makes no link at all, the file's own HAS_JS_FILE edge
+        # included, and only made links count (plan 06.9).
+        self.assertEqual(stats["relationships_created"], 0)
         link_calls = [
             (query, kwargs) for query, kwargs in client.driver.session_obj.calls
             if "MERGE (file)-[r:HAS_ENDPOINT]->(n)" in query
@@ -470,9 +472,9 @@ class TestJsReconEndpointScopeAndOwnership(unittest.TestCase):
             _domain_run([_ep("/api/users", base_url="https://app.example.com")]),
             endpoint_linked=False)
         self.assertEqual(len(owners), 1)
-        # Only the file node's own HAS_JS_FILE edge counts: neither the
-        # file->endpoint nor the owner edge reported a link.
-        self.assertEqual(stats["relationships_created"], 1)
+        # No edge reported a link, the file's own HAS_JS_FILE edge included,
+        # so nothing counts (plan 06.9).
+        self.assertEqual(stats["relationships_created"], 0)
 
     def test_no_query_deletes_anything(self):
         client = GraphClient()

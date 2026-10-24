@@ -8,7 +8,7 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
-from graph_db.mixins.recon.scope import build_host_scope, home_domain, host_in_scope
+from graph_db.mixins.recon.scope import build_host_scope, home_domain, host_in_scope, scan_root_for_host
 
 # merge_discovered_hostnames (recon/helpers/target_helpers.py) tags each name it
 # admits into dns.subdomains with one of these, after its apex allow-list, RoE,
@@ -28,8 +28,9 @@ def _displayable_map_url(map_url: str) -> str:
 def _finding_type_props(data_key: str, finding: dict) -> dict:
     """The fields one finding kind carries beyond the shared title/detail/
     evidence, flattened to scalars and string lists (a property cannot hold a
-    map). A source map's own secret hits stay a count: they are pattern
-    matches inside the map's source text, not separate Secret nodes."""
+    map). A source map's first-party sources are analyzed as files of their
+    own (source_url ``<map_url>#<source>``), so a key in them is a Secret node
+    under that file; ``secrets_in_source`` counts those Secrets."""
     if data_key == "source_maps":
         map_url = _displayable_map_url(finding.get("map_url") or "")
         first_party = int(finding.get("first_party_files") or 0)
@@ -172,9 +173,16 @@ class JsReconMixin:
             if _is_uploaded(url):
                 return url.replace('upload://', '')
             try:
-                return urlparse(url).path.split('/')[-1] or url
+                parsed = urlparse(url)
+                name = parsed.path.split('/')[-1] or url
+                # A source recovered from a source map: <map>#<source path>.
+                return f"{name}#{parsed.fragment}" if parsed.fragment else name
             except Exception:
                 return url
+
+        def _linked(result) -> bool:
+            record = result.single() if result is not None else None
+            return bool(record) and int(record.get("linked", 0) or 0) > 0
 
         with self.driver.session() as session:
             # --- 0. Collect all unique source JS files and create file nodes ---
@@ -236,38 +244,57 @@ class JsReconMixin:
                     file_node_ids[source_url] = file_node_id
                     stats["file_nodes_created"] += 1
 
-                    # Link file node to BaseURL (pipeline) or Domain (uploaded)
+                    # Link file node to BaseURL (pipeline) or Domain (uploaded).
+                    # Counted only when the parent existed and the link was made.
                     if base_url:
-                        session.run(
+                        linked = _linked(session.run(
                             """
                             MATCH (bu:BaseURL {url: $base_url, user_id: $uid, project_id: $pid})
                             MATCH (jf:JsReconFinding {id: $fid, user_id: $uid, project_id: $pid})
-                            MERGE (bu)-[:HAS_JS_FILE]->(jf)
+                            MERGE (bu)-[r:HAS_JS_FILE]->(jf)
+                            RETURN count(r) AS linked
                             """,
                             base_url=base_url, uid=user_id, pid=project_id, fid=file_node_id
-                        )
+                        ))
+                        # No BaseURL: a host only the JS named, or a port http_probe
+                        # never probed. Its in-scope Subdomain is the parent; a
+                        # BaseURL is never created for a host nobody probed.
+                        host = (urlparse(base_url).hostname or "").lower()
+                        if not linked and host and scan_root_for_host(host, recon_data):
+                            linked = _linked(session.run(
+                                """
+                                MATCH (s:Subdomain {name: $host, user_id: $uid, project_id: $pid})
+                                MATCH (jf:JsReconFinding {id: $fid, user_id: $uid, project_id: $pid})
+                                MERGE (s)-[r:HAS_JS_FILE]->(jf)
+                                RETURN count(r) AS linked
+                                """,
+                                host=host, uid=user_id, pid=project_id, fid=file_node_id
+                            ))
                     else:
                         # Uploaded file or no base URL -- link to Domain
                         if domain_name:
-                            session.run(
+                            linked = _linked(session.run(
                                 """
                                 MATCH (d:Domain {name: $dname, user_id: $uid, project_id: $pid})
                                 MATCH (jf:JsReconFinding {id: $fid, user_id: $uid, project_id: $pid})
-                                MERGE (d)-[:HAS_JS_FILE]->(jf)
+                                MERGE (d)-[r:HAS_JS_FILE]->(jf)
+                                RETURN count(r) AS linked
                                 """,
                                 dname=domain_name, uid=user_id, pid=project_id, fid=file_node_id
-                            )
+                            ))
                         else:
-                            session.run(
+                            linked = _linked(session.run(
                                 """
                                 MATCH (d:Domain {user_id: $uid, project_id: $pid})
                                 WITH d LIMIT 1
                                 MATCH (jf:JsReconFinding {id: $fid, user_id: $uid, project_id: $pid})
-                                MERGE (d)-[:HAS_JS_FILE]->(jf)
+                                MERGE (d)-[r:HAS_JS_FILE]->(jf)
+                                RETURN count(r) AS linked
                                 """,
                                 uid=user_id, pid=project_id, fid=file_node_id
-                            )
-                    stats["relationships_created"] += 1
+                            ))
+                    if linked:
+                        stats["relationships_created"] += 1
 
                 except Exception as e:
                     stats["errors"].append(f"JS file node creation failed ({source_url}): {e}")
@@ -283,12 +310,12 @@ class JsReconMixin:
                     return False
                 result = session.run(
                     f"""
-                    MATCH (file:JsReconFinding {{id: $fid, finding_type: 'js_file'}})
-                    MATCH (n:{node_label} {{id: $nid}})
+                    MATCH (file:JsReconFinding {{id: $fid, finding_type: 'js_file', user_id: $uid, project_id: $pid}})
+                    MATCH (n:{node_label} {{id: $nid, user_id: $uid, project_id: $pid}})
                     MERGE (file)-[r:{rel_type}]->(n)
                     RETURN count(r) AS linked
                     """,
-                    fid=file_node_id, nid=node_id
+                    fid=file_node_id, nid=node_id, uid=user_id, pid=project_id
                 )
                 record = result.single()
                 linked = record.get("linked", 0) if record else 0
@@ -301,7 +328,7 @@ class JsReconMixin:
                     return False
                 result = session.run(
                     """
-                    MATCH (file:JsReconFinding {id: $fid, finding_type: 'js_file'})
+                    MATCH (file:JsReconFinding {id: $fid, finding_type: 'js_file', user_id: $uid, project_id: $pid})
                     MATCH (n:Endpoint {path: $path, method: $method, baseurl: $baseurl, user_id: $uid, project_id: $pid})
                     MERGE (file)-[r:HAS_ENDPOINT]->(n)
                     RETURN count(r) AS linked

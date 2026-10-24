@@ -909,7 +909,7 @@ Source-map properties (finding_type source_map_exposure or source_map_reference)
 - first_party_files (integer): sources outside node_modules and the bundler runtime
 - has_sources_content (boolean): the map embeds the target's own source text
 - source_files (list[string]): the first-party source paths, capped at 100
-- secrets_in_source (integer): secret-pattern hits in the embedded first-party source text
+- secrets_in_source (integer): Secret nodes found in the map's embedded first-party sources (their source_url is `<map_url>#<source>`)
 - third_party (boolean): the script is served from a vendor's host outside the target (a generic CDN or storage host is not counted, since targets serve their own bundles from those); also set on a dom_sink
 DOM-sink and developer-reference properties (finding_type dom_sink or dev_reference; a dev_reference is a localhost or internal/staging URL or a debug flag in shipped JS, a recon lead rather than a credential):
 - line (integer): line of the JS file where the sink or reference matched
@@ -920,10 +920,10 @@ DOM-sink and developer-reference properties (finding_type dom_sink or dev_refere
 
 1. **JS File nodes** (finding_type='js_file') - Represent each analyzed JavaScript file. All findings from that file are linked to this node.
    - finding_type: 'js_file'
-   - title (string): filename (e.g. "app.js", "test_app.js")
+   - title (string): filename (e.g. "app.js", "test_app.js"); "main.js.map#src/config.ts" for a source recovered from a source map
    - detail (string): full URL or upload:// path
    - is_uploaded (boolean): true if manually uploaded, false if from pipeline crawl
-   - source_url (string): full URL or upload://filename
+   - source_url (string): full URL or upload://filename; `<map_url>#<source path>` for a first-party source recovered from a source map, which is analyzed like a downloaded file
 
 2. **Finding nodes** (finding_type != 'js_file') - Individual findings linked to their parent JS file node.
    - finding_type (string): dependency_confusion, source_map_exposure, dom_sink, framework, dev_comment, source_map_reference, dev_reference
@@ -938,6 +938,7 @@ DOM-sink and developer-reference properties (finding_type dom_sink or dev_refere
 Graph hierarchy: Domain/BaseURL -> JS file node -> findings/secrets/endpoints
 - `(Domain)-[:HAS_JS_FILE]->(JsReconFinding {finding_type: 'js_file'})` for uploaded files
 - `(BaseURL)-[:HAS_JS_FILE]->(JsReconFinding {finding_type: 'js_file'})` for pipeline-crawled files
+- `(Subdomain)-[:HAS_JS_FILE]->(JsReconFinding {finding_type: 'js_file'})` for a file on an in-scope host with no BaseURL (a host only the JS named, an unprobed port)
 - `(JsReconFinding {finding_type: 'js_file'})-[:HAS_JS_FINDING]->(JsReconFinding)` findings from that file
 - `(JsReconFinding {finding_type: 'js_file'})-[:HAS_SECRET]->(Secret)` secrets found in that file
 - `(JsReconFinding {finding_type: 'js_file'})-[:HAS_ENDPOINT]->(Endpoint)` endpoints extracted from that file
@@ -1226,6 +1227,7 @@ hostname directly (nuclei vulns aren't linked to Domain/Subdomain via HAS_VULNER
 
 ### JS Recon Relationships (hierarchical: parent -> file -> findings)
 - `(b:BaseURL)-[:HAS_JS_FILE]->(jf:JsReconFinding {finding_type: 'js_file'})` - BaseURL has analyzed JS file (pipeline crawl)
+- `(s:Subdomain)-[:HAS_JS_FILE]->(jf:JsReconFinding {finding_type: 'js_file'})` - in-scope Subdomain has analyzed JS file when its host has no BaseURL
 - `(d:Domain)-[:HAS_JS_FILE]->(jf:JsReconFinding {finding_type: 'js_file'})` - Domain has analyzed JS file (uploaded files)
 - `(jf:JsReconFinding {finding_type: 'js_file'})-[:HAS_JS_FINDING]->(f:JsReconFinding)` - File has finding (dep confusion, DOM sink, etc.)
 - `(jf:JsReconFinding {finding_type: 'js_file'})-[:HAS_SECRET]->(s:Secret)` - File has secret (source='js_recon')
