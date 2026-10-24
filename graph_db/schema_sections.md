@@ -510,7 +510,7 @@ Subdomain-takeover properties (source="takeover_scan"):
 - Typical query: "list confirmed Heroku takeovers" → `MATCH (s:Subdomain)-[:HAS_VULNERABILITY]->(v:Vulnerability {source: 'takeover_scan'}) WHERE v.takeover_provider = 'heroku' AND v.verdict = 'confirmed' RETURN s.name AS subdomain, v.cname_target, v.confidence, v.sources`
 
 VHost & SNI properties (source="vhost_sni_enum"):
-- type (string): "hidden_vhost" (L7 anomaly only), "hidden_sni_route" (L4/SNI anomaly only), or "host_header_bypass" (L7 vs L4 disagreement — proxy bypass primitive)
+- type (string): "hidden_vhost" (L7 anomaly only, or both layers serving the same page; layer then reads "both"), "hidden_sni_route" (L4/SNI anomaly only), or "host_header_bypass" (L7 and L4 serve different pages for the name — proxy bypass primitive). Findings written before that split typed every layer-"both" anomaly "host_header_bypass"; the next vhost run renames them in place (same id)
 - hostname (string): the hidden virtual host FQDN that was discovered (e.g. "admin.acme.com")
 - ip (string): the IP address that hosts the hidden vhost
 - port (integer): TCP port tested (commonly 443, also 80, 8443, 8080, etc.)

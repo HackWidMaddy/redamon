@@ -374,7 +374,24 @@ class TestFastlySharedEdge:
         f = out["findings"][0]
         assert f["layer"] == "both"
         assert f["severity"] == "medium"  # internal keyword, same page on L7 and L4
+        # Both layers reach the same app: a hidden vhost, not a routing split.
+        assert f["name"] == f"Hidden Virtual Host: admin.{APEX}"
+        assert f["type"] == "hidden_vhost"
         assert out["by_ip"][IP]["suppressed_by_control"] == len(WORDS) - 1
+
+    def test_l7_and_l4_reaching_different_apps_is_a_routing_inconsistency(self):
+        def responder(host, layer, attempt):
+            if host == f"admin.{APEX}" and layer == "L7":
+                return _proc(200, ADMIN_APP, ctype="application/json")
+            if host == f"admin.{APEX}" and layer == "L4":
+                return _proc(200, b'{"service":"billing","version":"1.0"}', ctype="application/json")
+            return self.responder(host, layer, attempt)
+
+        out, _ = _run(responder)
+        f = out["findings"][0]
+        assert f["layer"] == "both" and f["severity"] == "high"
+        assert f["name"] == f"Routing Inconsistency (L7 vs L4): admin.{APEX}"
+        assert f["type"] == "host_header_bypass"
 
 
 class TestCloudflareBlockPage:
@@ -712,6 +729,7 @@ class TestDnsKnownNamesAreNotHidden:
                             VHOST_SNI_USE_GRAPH_CANDIDATES=True)
         assert [f["hostname"] for f in out["findings"]] == [f"intranet.{APEX}"]
         assert out["findings"][0]["dns_known"] is False
+        assert out["findings"][0]["name"] == f"Hidden Virtual Host: intranet.{APEX}"
 
     def test_a_name_whose_dns_points_elsewhere_is_still_reported(self):
         elsewhere = f"legacy.{APEX}"

@@ -655,6 +655,21 @@ class TestBuildFindingRecord:
         assert "Routing Inconsistency" in f["name"]
         assert f["id"].endswith("_both")
 
+    def test_both_layers_serving_the_same_page_is_a_hidden_vhost(self):
+        f = _build_finding_record(self._anomaly(layer="both", severity="medium", layers_differ=False),
+                                  "1.2.3.4", {})
+        assert f["type"] == "hidden_vhost"
+        assert f["name"] == "Hidden Virtual Host: admin.example.com"
+        assert "SNI" in f["description"]
+        # The id keeps its layer, so an existing finding is renamed in place.
+        assert f["id"].endswith("_both")
+
+    def test_both_layers_disagreeing_is_a_routing_inconsistency(self):
+        f = _build_finding_record(self._anomaly(layer="both", severity="medium", layers_differ=True),
+                                  "1.2.3.4", {})
+        assert f["type"] == "host_header_bypass"
+        assert f["name"] == "Routing Inconsistency (L7 vs L4): admin.example.com"
+
     def test_id_is_deterministic(self):
         f1 = _build_finding_record(self._anomaly(), "1.2.3.4", {})
         f2 = _build_finding_record(self._anomaly(), "1.2.3.4", {})

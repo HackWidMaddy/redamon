@@ -1476,8 +1476,14 @@ def _build_finding_record(anomaly: dict, ip: str, ip_result: dict) -> dict:
     layer = anomaly["layer"]
     severity = anomaly["severity"]
     internal_kw = anomaly.get("internal_pattern_match")
+    # Only a split between the layers is a routing inconsistency; when both
+    # reach the same page it is a hidden vhost seen twice. An anomaly built
+    # without the flag is "high" exactly when its layers differ.
+    layers_differ = anomaly.get("layers_differ")
+    if layers_differ is None:
+        layers_differ = layer == "both" and severity == "high"
 
-    if layer == "both":
+    if layer == "both" and layers_differ:
         vuln_type = "host_header_bypass"
         vuln_name = f"Routing Inconsistency (L7 vs L4): {hostname}"
         description = (
@@ -1493,6 +1499,14 @@ def _build_finding_record(anomaly: dict, ip: str, ip_result: dict) -> dict:
             f"The TLS reverse proxy on {ip}:{port} routes the SNI {hostname} to a backend "
             f"that does not respond to a bare IP request. This indicates an ingress controller "
             f"(NGINX, Traefik, k8s, Cloudflare) is fronting a hidden application."
+        )
+    elif layer == "both":
+        vuln_type = "hidden_vhost"
+        vuln_name = f"Hidden Virtual Host: {hostname}"
+        description = (
+            f"Setting Host: {hostname}, or the TLS SNI {hostname}, on {ip}:{port} returns the "
+            f"same page on both layers, and it differs from the baseline IP request. This "
+            f"typically reveals a vhost not exposed via DNS."
         )
     else:  # L7
         vuln_type = "hidden_vhost"
