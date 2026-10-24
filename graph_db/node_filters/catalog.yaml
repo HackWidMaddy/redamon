@@ -454,7 +454,8 @@ kinds:
         Netlas records a severity and a public exploit; Shodan records a severity
         only when its banner gave a CVSS score, plus the evidence grade
         (detection_method): a Shodan-verified banner, a banner's product and
-        version, or the IP's catalog alone. CriminalIP carries the CVE alone.
+        version, or the IP's catalog alone. CriminalIP carries the CVE and its
+        CVSS score.
       - >-
         port_confirmed says what this scan's port scan found on a Shodan CVE's
         port: true open, false looked at and not open. It is missing when the

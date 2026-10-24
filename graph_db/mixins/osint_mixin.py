@@ -2427,13 +2427,16 @@ class OsintMixin:
                                         MERGE (v:Vulnerability {id: $vuln_id,
                                                                 user_id: $user_id,
                                                                 project_id: $project_id})
-                                        ON CREATE SET v.source = 'criminalip', v.name = $cve_id,
-                                                      v.cves = [$cve_id], v.cvss = $cvss,
-                                                      v.user_id = $user_id, v.project_id = $project_id
-                                        // Every run: the prune deletes what a run
-                                        // did not touch, and keeps an IP it could
-                                        // not look up by this host field.
-                                        SET v.updated_at = datetime(), v.target_ip = $ip
+                                        ON CREATE SET v.source = 'criminalip'
+                                        // Every run: the prune deletes what a run did
+                                        // not touch, and keeps an IP it could not look
+                                        // up by target_ip. The board reads the score
+                                        // as cvss_score; rows that hold it as `cvss`
+                                        // converge here.
+                                        SET v.name = $cve_id, v.cves = [$cve_id],
+                                            v.cvss_score = $cvss,
+                                            v.updated_at = datetime(), v.target_ip = $ip
+                                        REMOVE v.cvss
                                         """,
                                         vuln_id=vuln_id, cve_id=cve_id, cvss=cvss, ip=ip,
                                         user_id=user_id, project_id=project_id,

@@ -287,6 +287,28 @@ class TestReconFpWritersGraphLive(unittest.TestCase):
             hosts = {r["id"]: r["triage_host"] for r in s.run(query, userId=self.user, projectId=self.pid)}
         self.assertEqual(hosts[f"netlas-CVE-2018-15473-{IP}-22"], IP)
 
+    def test_criminalip_refreshes_its_score_under_the_boards_name(self):
+        def payload(score):
+            return {"domain": "fp-itest.test", "criminalip": {"ip_reports": [{
+                "ip": IP, "ports": [],
+                "vulnerabilities": [{"cve_id": "CVE-2021-44228", "cvssv3_score": score}]}]}}
+
+        vid = f"criminalip-CVE-2021-44228-{IP}"
+        with self.client.driver.session() as s:
+            # A row as the old writer left it: the score under `cvss`, set once.
+            s.run("CREATE (:Vulnerability {id: $id, user_id: $u, project_id: $pid, "
+                  "source: 'criminalip', name: 'CVE-2021-44228', cvss: 5.0})",
+                  id=vid, u=self.user, pid=self.pid)
+        self.client.update_graph_from_criminalip(payload(9.8), self.user, self.pid)
+        node = self._one("MATCH (v:Vulnerability {id: $id, project_id: $pid}) RETURN properties(v) AS p",
+                         id=vid)["p"]
+        self.assertEqual((node["cvss_score"], node["source"], node["target_ip"]), (9.8, "criminalip", IP))
+        self.assertNotIn("cvss", node)
+        self.client.update_graph_from_criminalip(payload(7.5), self.user, self.pid)
+        node = self._one("MATCH (v:Vulnerability {id: $id, project_id: $pid}) RETURN properties(v) AS p",
+                         id=vid)["p"]
+        self.assertEqual(node["cvss_score"], 7.5)
+
     def test_the_priority_board_reads_the_grade(self):
         from cypherfix_triage import fact_queries, score_model
         self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)

@@ -537,6 +537,7 @@ Shodan passive CVE properties (source="shodan_api" or "internetdb"):
 
 CriminalIP passive CVE properties (source="criminalip"):
 - target_ip (string): the IP Criminal IP reported the CVE on, refreshed every run
+- cvss_score (float): the CVSS v3 score, else v2, refreshed every run (rows written before held it as `cvss`; the next CriminalIP run moves it)
 
 Nuclei-specific properties (source="nuclei"):
 - template_id (string): nuclei template ID
