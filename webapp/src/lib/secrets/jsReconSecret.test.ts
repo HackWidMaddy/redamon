@@ -47,6 +47,16 @@ describe('jsReconSecretFromRecord: validation', () => {
     expect(jsReconSecretFromRecord(get({ id: 's1', name: 'X' })).validation).toEqual({ status: 'unvalidated' })
   })
 
+  test('the stored status wins over the one inside the details', () => {
+    // validation_status is what the Red Zone, the mute rules and the board read;
+    // the details are the validator's answer as written at scan time.
+    const row = jsReconSecretFromRecord(get({
+      id: 's1', name: 'Stripe Secret Key', validation_status: 'rejected',
+      validation_info: JSON.stringify({ status: 'skipped', info: 'status=401' }),
+    }))
+    expect(row.validation).toEqual({ status: 'rejected', info: 'status=401' })
+  })
+
   test('unreadable details fall back to the status', () => {
     const row = jsReconSecretFromRecord(get({ id: 's1', name: 'X', validation_status: 'skipped', validation_info: '{not json' }))
     expect(row.validation).toEqual({ status: 'skipped' })

@@ -20,12 +20,18 @@ export interface JsReconSecretRow {
 }
 
 export function jsReconSecretFromRecord(get: (key: string) => unknown): JsReconSecretRow {
-  let validation: Record<string, unknown> = { status: get('validation_status') || 'unvalidated' }
+  // The node's validation_status is what every other reader (the Red Zone,
+  // mute rules, the Priority Board) goes by, so it wins over the copy inside
+  // the validator's details.
+  const stored = get('validation_status')
+  let validation: Record<string, unknown> = { status: stored || 'unvalidated' }
   const info = get('validation_info')
   if (typeof info === 'string' && info) {
     try {
       const parsed = JSON.parse(info)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) validation = parsed
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        validation = { ...parsed, status: stored || parsed.status || 'unvalidated' }
+      }
     } catch { /* keep the stored status */ }
   }
   // A node written before `public_client_key` keeps its old severity until
