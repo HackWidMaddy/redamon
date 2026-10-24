@@ -215,7 +215,9 @@ class TestLongSecretsAreNotABase64Blob(unittest.TestCase):
 
     def test_a_long_quoted_jwt_is_kept(self):
         findings, filtered = scan(f'var serviceRoleKey = "{LONG_JWT}";')
-        self.assertIn(("JWT Token", LONG_JWT), [(f["name"], f["matched_text"]) for f in findings])
+        # Matched by the JWT pattern and named by its role claim (plan 05.6).
+        self.assertIn(("Supabase service_role key", LONG_JWT),
+                      [(f["name"], f["matched_text"]) for f in findings])
         self.assertEqual(filtered["base64_blob"], 0)
 
     def test_a_bearer_header_with_a_long_jwt_is_kept(self):
