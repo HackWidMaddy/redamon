@@ -692,10 +692,46 @@ three places, all in `recon/main.py`:
 
 What follows from that:
 
-- **Some kinds are never swept by a scan.** Passive CVEs (Shodan, Netlas,
-  CriminalIP) and the supply-chain findings (OSV advisories, malicious packages)
-  come from sources outside `RECON_FINDING_SOURCES`, so only "apply to current
-  graph" reaches them. GVM findings cannot be filtered yet.
+- **Some kinds are never swept by a scan.** The supply-chain findings (OSV
+  advisories, malicious packages) come from sources outside
+  `RECON_FINDING_SOURCES`, so only "apply to current graph" reaches them. GVM
+  findings cannot be filtered yet.
+- **Passive CVEs are recon sources.** `shodan_api`, `internetdb`, `netlas` and
+  `criminalip` (plus `shodan` and `shodan_host_lookup`, the Shodan writer's
+  create-only fallbacks) are in `RECON_FINDING_SOURCES`, grouped per enricher
+  in `PASSIVE_CVE_SOURCES`, which also feeds `_PHASE_FINDING_SOURCES`: an
+  enricher that raises, in its module or at the fan-in, keeps its findings.
+- **Switched off vs degraded.** A source switched off by configuration (the
+  module disabled, no API key) notes nothing, so its old findings are pruned
+  like any other's; muted and judged ones are kept as stale, as the nmap rule in
+  `_note_nmap_without_port_data` does. A source that was meant to run and could
+  not check everything is degraded instead, through
+  `recon/helpers/passive_cve_coverage.note_cve_coverage`: each lookup records
+  which IPs got an answer ("no data" included), the IPs it could not ask about
+  are kept by host (`target_ip`, source-only), and a lookup that reached
+  nothing (a refused key, a crash, no IP at all) keeps its whole source.
+  A Netlas answer cut short by its row cap keeps that IP; one that reached the
+  provider never degrades the whole source, or its stale findings would never
+  be pruned. The provider names one coverage gap: `note_degraded(aliases=...)`
+  cuts its other source values with it.
+- **Older passive CVEs get their host first.** `backfill_passive_cve_hosts`
+  sets `target_ip` from the id (`shodan-<cve>-<ip>`, `criminalip-<cve>-<ip>`)
+  on rows written before the writers stored it, so the by-host keep can match
+  them. If it fails, passive sources are left out of that run's prune.
+- **Passive CVEs are checked against the port scan.** `_reachcheck_shodan_cves`
+  runs after the CDN drop in both pipelines and sets `port_confirmed` from
+  `recon/helpers/port_coverage.py`: open, looked at and not open, or unknown.
+  What a scan looked at comes from its recorded `ports_config`: a custom list
+  or `top-full` is known; naabu's and masscan's top-100/1000 lists are not
+  shipped here, so they can confirm an open port but never call one closed;
+  naabu passive mode confirms nothing; masscan with an exclusion list never
+  says closed. Partial recon reads `active_open_ports` from the graph and only
+  confirms.
+- **Netlas findings are per IP and port.** `netlas-<cve>-<ip>-<port>`, under
+  the IP. Rows from earlier releases were keyed on the bare CVE id;
+  `tooling/scripts/netlas_finding_rekey.py` (dry run by default; `--apply`
+  with the services stopped, before the first scan on the new release) moves
+  their mutes, layers, proof edges and Postgres references.
 - **A stopped scan runs neither step 2 nor step 3.** Stop sends SIGTERM and the
   process exits without its `finally`, so what it wrote stays unfiltered until
   the next scan or an apply.
