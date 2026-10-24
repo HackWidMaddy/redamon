@@ -9,6 +9,7 @@ import re
 import json
 import hashlib
 import threading
+import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
@@ -246,7 +247,6 @@ def analyze_sourcemap(
     map_data: dict,
     map_url: str,
     js_url: str,
-    scan_content_func=None,
 ) -> dict:
     """
     Analyze a parsed source map.
@@ -255,12 +255,14 @@ def analyze_sourcemap(
         map_data: Parsed source map JSON
         map_url: URL of the source map
         js_url: URL of the original JS file
-        scan_content_func: Optional function(content, source_url) -> list to scan source content
 
-    Severity follows what the map discloses about the target's own code:
-    high when it embeds first-party source text, medium for first-party file
-    paths only, low when every source is a library (node_modules, the
-    bundler runtime), which is public code.
+    The map's own sources are not scanned here: they become pseudo-files
+    (sourcemap_pseudo_files) that every js_recon detector reads, so a key or
+    an endpoint in them is a Secret or an Endpoint of its own. The exposure
+    finding itself is therefore modest: low when it embeds first-party source
+    text, info for first-party file paths only, low when every source is a
+    library (node_modules, the bundler runtime). ``secrets_in_source`` is
+    filled by js_recon from the Secrets found in the pseudo-files.
 
     Returns:
         dict with: js_url, map_url, sources, source_count, secrets_in_source, file_paths
@@ -272,9 +274,9 @@ def analyze_sourcemap(
         for i in first_party if i < len(sources_content)
     )
     if first_party_content:
-        severity = 'high'
+        severity = 'low'
     elif first_party:
-        severity = 'medium'
+        severity = 'info'
     else:
         severity = 'low'
 
@@ -290,31 +292,67 @@ def analyze_sourcemap(
         'has_sources_content': first_party_content,
         'source_files': [sources[i] for i in first_party][:100] or [x for x in sources if x][:100],
         'secrets_in_source': 0,
-        'secrets': [],
         'severity': severity,
         'finding_type': 'source_map_exposure',
     }
-
-    # If sourcesContent is available, scan the target's own files for secrets;
-    # a library's bundled source is public and full of example keys.
-    if sources_content and scan_content_func:
-        own = set(first_party)
-        for i, content in enumerate(sources_content):
-            if not content or not isinstance(content, str) or i not in own:
-                continue
-            source_name = sources[i] if i < len(sources) else f"source_{i}"
-            findings = scan_content_func(content, f"{map_url}:{source_name}")
-            if findings:
-                result['secrets_in_source'] += len(findings)
-                result['secrets'].extend(findings[:20])  # Cap per source file
-
     return result
+
+
+# One recovered source is analyzed as one file; a larger one is a bundled
+# blob, not hand-written code.
+PSEUDO_FILE_MAX_CHARS = 2 * 1024 * 1024
+
+
+def _source_label(source: str) -> str:
+    """`webpack:///./src/config.ts` -> `src/config.ts`: the path a person reads."""
+    path = _SOURCE_SCHEME.sub('', source or '')
+    parts = [p for p in path.replace('\\', '/').split('/') if p not in ('', '.')]
+    return '/'.join(parts) or (source or '')
+
+
+def pseudo_file_base(map_url: str, js_url: str) -> str:
+    """What a pseudo-file's URL is built on: the map's URL, or the script's for
+    an inline `data:` map (that URL is the whole map)."""
+    return js_url if (map_url or '').startswith('data:') else map_url
+
+
+def sourcemap_pseudo_files(map_data: dict, map_url: str, js_url: str,
+                           max_chars: int = PSEUDO_FILE_MAX_CHARS) -> list:
+    """The map's first-party sources with text, as files js_recon analyzes:
+    ``{"url": "<map_url>#<source>", "content": ..., "from_source_map": True}``.
+    Library sources are public code full of example keys, so they are left
+    out, and so is a source over ``max_chars``."""
+    sources, contents = _map_sources(map_data)
+    base = pseudo_file_base(map_url, js_url)
+    files, seen = [], set()
+    for i, source in enumerate(sources):
+        if not source or _is_vendor_source(source) or i >= len(contents):
+            continue
+        text = contents[i]
+        if not isinstance(text, str) or not text.strip() or len(text) > max_chars:
+            continue
+        url = f"{base}#{_source_label(source)}"
+        if url in seen:
+            continue
+        seen.add(url)
+        files.append({
+            'url': url,
+            'content': text,
+            'headers': {},
+            'size': len(text),
+            'from_source_map': True,
+            'map_url': map_url,
+            'js_url': js_url,
+        })
+    return files
 
 
 def discover_and_analyze_sourcemaps(
     js_files: list,
     settings: dict,
-    scan_content_func=None,
+    pseudo_files: Optional[list] = None,
+    deadline: Optional[float] = None,
+    skipped: Optional[list] = None,
 ) -> list:
     """
     Discover and analyze source maps for a list of JS files.
@@ -322,7 +360,10 @@ def discover_and_analyze_sourcemaps(
     Args:
         js_files: List of dicts with 'url', 'content', and optionally 'headers'
         settings: Project settings dict
-        scan_content_func: Function to scan source content for secrets
+        pseudo_files: when given, receives each served map's first-party
+            sources (sourcemap_pseudo_files) for the detectors to read
+        deadline: a time.monotonic() value after which no further JS file is
+            checked for a map; each one left out is appended to ``skipped``
 
     Returns:
         List of source map finding dicts
@@ -356,6 +397,18 @@ def discover_and_analyze_sourcemaps(
             checked_map_urls.add(url)
             return True
 
+    def _past_deadline() -> bool:
+        return deadline is not None and time.monotonic() > deadline
+
+    def _served(map_data: dict, map_url: str, js_url: str, method: str) -> list:
+        result = analyze_sourcemap(map_data, map_url, js_url)
+        result['discovery_method'] = method
+        if pseudo_files is not None:
+            recovered = sourcemap_pseudo_files(map_data, map_url, js_url)
+            with checked_lock:
+                pseudo_files.extend(recovered)
+        return [result]
+
     def _process(js_file: dict) -> list:
         try:
             js_url = js_file.get('url', '')
@@ -363,6 +416,11 @@ def discover_and_analyze_sourcemaps(
             headers = js_file.get('headers', {})
 
             if not js_url:
+                return []
+            if _past_deadline():
+                if skipped is not None:
+                    with checked_lock:
+                        skipped.append(js_url)
                 return []
 
             # Skip a host already known unreachable this run: otherwise each JS
@@ -395,13 +453,16 @@ def discover_and_analyze_sourcemaps(
             # Method 3: Probe common paths
             if not map_url:
                 for probe_url in _build_probe_urls(js_url, custom_paths):
+                    if _past_deadline():
+                        if skipped is not None:
+                            with checked_lock:
+                                skipped.append(js_url)
+                        return []
                     if not _claim(probe_url):
                         continue
                     map_data = _fetch_sourcemap(probe_url, timeout=timeout)
                     if map_data:
-                        result = analyze_sourcemap(map_data, probe_url, js_url, scan_content_func)
-                        result['discovery_method'] = 'probe'
-                        return [result]
+                        return _served(map_data, probe_url, js_url, 'probe')
                 return []
 
             # Fetch and analyze the discovered source map
@@ -410,9 +471,7 @@ def discover_and_analyze_sourcemaps(
             outcome: dict = {}
             map_data = _fetch_sourcemap(map_url, timeout=timeout, outcome=outcome)
             if map_data:
-                result = analyze_sourcemap(map_data, map_url, js_url, scan_content_func)
-                result['discovery_method'] = discovery_method
-                return [result]
+                return _served(map_data, map_url, js_url, discovery_method)
             # Referenced but not served. Only an access refusal says the map
             # exists somewhere, or a reference to ANOTHER host we could not or
             # may not reach (an internal build server leaks its name); a 404,
@@ -436,7 +495,6 @@ def discover_and_analyze_sourcemaps(
                 'has_sources_content': False,
                 'source_files': [],
                 'secrets_in_source': 0,
-                'secrets': [],
                 'severity': 'info',
                 'finding_type': 'source_map_reference',
             }]

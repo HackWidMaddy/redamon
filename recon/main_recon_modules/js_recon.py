@@ -31,7 +31,7 @@ from recon.helpers.js_recon.patterns import (
     scan_js_content, scan_dev_comments, load_custom_patterns,
 )
 from recon.helpers.js_recon.validators import validate_secret
-from recon.helpers.js_recon.sourcemap import discover_and_analyze_sourcemaps
+from recon.helpers.js_recon.sourcemap import discover_and_analyze_sourcemaps, pseudo_file_base
 from recon.helpers.js_recon.dependency import detect_dependency_confusion
 from recon.helpers.js_recon.endpoints import extract_endpoints
 from recon.helpers.js_recon.framework import (
@@ -728,9 +728,39 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
     # form calls shutdown(wait=True) which blocks until all worker threads
     # finish naturally, defeating the per-future timeout.
     analysis_budget = settings.get('JS_RECON_TIMEOUT', 900)
-    deadline = time.monotonic() + analysis_budget
+    started = time.monotonic()
+    deadline = started + analysis_budget
     executor = ThreadPoolExecutor(max_workers=4)
     try:
+        # Stage 1: discover and fetch the source maps. A map's first-party
+        # sources come back as pseudo-files, which every analyzer in stage 2
+        # reads like a downloaded file, so a key or an endpoint in the original
+        # code becomes a finding of its own.
+        served_files = js_files
+        pseudo_files = []
+        if settings.get('JS_RECON_SOURCE_MAPS', True):
+            recovered, not_checked = [], []
+            future = executor.submit(
+                discover_and_analyze_sourcemaps, served_files, settings,
+                pseudo_files=recovered, skipped=not_checked,
+                deadline=started + analysis_budget * _SOURCE_MAP_BUDGET_SHARE,
+            )
+            try:
+                results['source_maps'] = future.result(timeout=max(1.0, deadline - time.monotonic()))
+                pseudo_files, cut = _cap_pseudo_files(recovered)
+                unanalyzed.extend(f['url'] for f in cut)
+            except Exception as e:
+                unanalyzed.extend(f.get('url') for f in served_files)
+                print(f"[!][JsRecon] Analyzer 'sourcemaps' failed: {type(e).__name__}: {e}")
+            if not_checked:
+                print(f"[!][JsRecon] Source-map budget spent: {len(not_checked)} JS file(s) not checked for a map")
+                unanalyzed.extend(not_checked)
+            if pseudo_files:
+                print(f"[*][JsRecon] {len(pseudo_files)} first-party source(s) recovered from source maps")
+        js_files = served_files + pseudo_files
+        results['_source_map_files'] = len(pseudo_files)
+
+        # Stage 2: every analyzer on the downloaded files and the pseudo-files.
         futures = {}
 
         # 1. Pattern scanning (secrets, emails, IPs, UUIDs)
@@ -753,13 +783,6 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
                         print(f"[!][JsRecon] Pattern scan failed for {js_file.get('url', '?')}: {e}")
                 return all_findings, total_filtered
             futures['patterns'] = executor.submit(run_patterns)
-
-        # 2. Source map discovery
-        if settings.get('JS_RECON_SOURCE_MAPS', True):
-            scan_func = lambda content, url: scan_js_content(content, url, min_confidence=min_confidence)[0]
-            futures['sourcemaps'] = executor.submit(
-                discover_and_analyze_sourcemaps, js_files, settings, scan_func
-            )
 
         # 3. Dependency confusion
         if settings.get('JS_RECON_DEPENDENCY_CHECK', True):
@@ -883,9 +906,6 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
                         else:
                             results['secrets'].append(finding)
 
-                elif name == 'sourcemaps':
-                    results['source_maps'] = result
-
                 elif name == 'dependencies':
                     results['dependencies'] = result
 
@@ -909,8 +929,64 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
         # shortly after this function returns so the threads die with it.
         executor.shutdown(wait=False, cancel_futures=True)
 
+    if pseudo_files:
+        results['frameworks'] = _one_framework_per_map(results['frameworks'], pseudo_files)
+    _count_source_map_secrets(results)
     results['_unanalyzed_urls'] = unanalyzed
     return results
+
+
+# Stage 1 (source-map discovery) may use this share of JS_RECON_TIMEOUT, so a
+# site with thousands of scripts still leaves the analyzers their time.
+_SOURCE_MAP_BUDGET_SHARE = 0.5
+# All recovered sources together, in characters: the analyzers read each one
+# in full, and a monorepo's map can embed a whole codebase.
+_PSEUDO_FILES_MAX_TOTAL_CHARS = 50 * 1024 * 1024
+
+
+def _cap_pseudo_files(recovered: list) -> tuple:
+    """``(kept, cut)``: the pseudo-files in a fixed order, up to the total size cap."""
+    kept, cut, total = [], [], 0
+    for f in sorted(recovered, key=lambda f: f['url']):
+        if total + f['size'] > _PSEUDO_FILES_MAX_TOTAL_CHARS:
+            cut.append(f)
+            continue
+        kept.append(f)
+        total += f['size']
+    if cut:
+        print(f"[!][JsRecon] Source-map size cap: {len(cut)} recovered source(s) not analyzed")
+    return kept, cut
+
+
+def _one_framework_per_map(frameworks: list, pseudo_files: list) -> list:
+    """Original sources import their framework in nearly every file
+    (`next/router`, `@angular/core`), which a bundle does once. From a map's
+    sources a framework is kept once per map, and not at all when a served
+    file already showed it."""
+    map_of = {f['url']: f.get('map_url') for f in pseudo_files}
+    served = {fw.get('name') for fw in frameworks if fw.get('source_url') not in map_of}
+    kept, seen = [], set()
+    for fw in frameworks:
+        source_map = map_of.get(fw.get('source_url'))
+        if source_map is None:
+            kept.append(fw)
+            continue
+        key = (fw.get('name'), source_map)
+        if fw.get('name') in served or key in seen:
+            continue
+        seen.add(key)
+        kept.append(fw)
+    return kept
+
+
+def _count_source_map_secrets(results: dict) -> None:
+    """A map's secrets_in_source: the Secrets found in its own sources."""
+    secret_urls = [s.get('source_url') or '' for s in results.get('secrets') or []]
+    for source_map in results.get('source_maps') or []:
+        if not source_map.get('accessible'):
+            continue
+        prefix = pseudo_file_base(source_map.get('map_url', ''), source_map.get('js_url', '')) + '#'
+        source_map['secrets_in_source'] = sum(1 for u in secret_urls if u.startswith(prefix))
 
 
 def _validate_secrets(secrets: list, settings: dict) -> list:
@@ -984,10 +1060,23 @@ def _validate_secrets(secrets: list, settings: dict) -> list:
         except Exception as e:
             secret['validation'] = {'status': 'unknown', 'error': f'{type(e).__name__}: {e}'}
 
+    # One provider call per distinct key: the same key in a bundle and in the
+    # source map's original file is one credential.
+    same_key: dict = {}
+    for secret in secrets:
+        key = (secret.get('name'), secret.get('matched_text'), secret.get('validator_ref'),
+               secret.get('confidence'))
+        same_key.setdefault(key, []).append(secret)
+
+    def _validate_group(group: list) -> None:
+        _validate_one(group[0])
+        for other in group[1:]:
+            other['validation'] = dict(group[0].get('validation') or {})
+
     workers = max(1, min(settings.get('JS_RECON_CONCURRENCY', 10), 20))
     if secrets:
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            list(ex.map(_validate_one, secrets))
+            list(ex.map(_validate_group, same_key.values()))
 
     def _count(status):
         return sum(1 for s in secrets if s.get('validation', {}).get('status') == status)
@@ -1441,6 +1530,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
 
         # 3. Run all analysis modules
         results = _run_analysis(js_files, settings)
+        source_map_files = results.pop('_source_map_files', 0)
         unanalyzed = results.pop('_unanalyzed_urls', None)
         if unanalyzed:
             _note_unchecked("analyzer failed or timed out", unanalyzed)
@@ -1551,6 +1641,8 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
                 'scan_timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                 'mode': 'post_recon',
                 'js_files_analyzed': len(js_files),
+                # First-party sources recovered from source maps, analyzed too.
+                'source_map_files_analyzed': source_map_files,
                 'js_files_total_size_bytes': total_size,
                 'duration_seconds': round(duration, 1),
                 'file_budget': file_budget,
