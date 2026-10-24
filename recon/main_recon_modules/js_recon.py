@@ -483,6 +483,17 @@ def _collect_js_urls(combined_result: dict, settings: dict) -> list:
                 js_urls.add(url)
 
     settings = settings or {}
+    # archived_urls holds what only a web archive reported; http_probe's own
+    # answer for a URL means the live site still serves it.
+    if not settings.get('JS_RECON_INCLUDE_ARCHIVED_JS', True):
+        archived = set(resource_enum.get('archived_urls') or [])
+        probed = set((http_probe.get('by_url') or {}) if isinstance(http_probe, dict) else ())
+        dropped = {u for u in js_urls if u in archived and u not in probed}
+        if dropped:
+            print(f"[-][JsRecon] Left out {len(dropped)} JS URL(s) seen only in web archives "
+                  f"(JS_RECON_INCLUDE_ARCHIVED_JS off)")
+            js_urls -= dropped
+
     excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
     excluded = [e for e in (excluded or []) if isinstance(e, str) and e.strip()]
     if excluded:
