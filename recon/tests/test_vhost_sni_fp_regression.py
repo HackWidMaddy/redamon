@@ -580,14 +580,16 @@ class TestDeepReviewRegressions:
 # ===========================================================================
 class TestCandidateScope:
     def _graph_recon(self, **extra):
+        # The PTR name sits in the dns block with its address, as IP mode
+        # records it.
         return _recon(
             dns={"subdomains": {
                 f"login.{APEX}": {
                     "ips": {"ipv4": [IP], "ipv6": []},
                     "records": {"CNAME": ["example-tenant.idp-provider.test."]},
                 },
+                "edge-203-0-113-10.cdn-provider.test": {"ips": {"ipv4": [IP], "ipv6": []}},
             }},
-            ip_recon={IP: {"reverse_dns": "edge-203-0-113-10.cdn-provider.test"}},
             **extra,
         )
 
@@ -866,3 +868,18 @@ class TestNoWordlistOnCdnEdges:
             run_vhost_sni_enrichment(recon, settings=_settings(["admin"]))
         assert _wordlist_gaps() == []
         assert recon["vhost_sni"]["scan_metadata"]["wordlist_skipped_edge_ips"] == []
+
+
+# ===========================================================================
+# 9. IP mode: a PTR name is a DNS name of its IP, never a hidden vhost
+# ===========================================================================
+def test_ip_mode_ptr_name_serving_its_site_is_not_hidden():
+    ptr = "web-7.hosting-provider.test"
+    recon = _recon(dns={"subdomains": {ptr: {"ips": {"ipv4": [IP], "ipv6": []}}}})
+    recon["domain"] = "ip-targets.proj1"
+    recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True}
+    out, fake = _run_https(_shared_ip_responder({ptr: _same_page(ptr)}), [], recon,
+                           VHOST_SNI_USE_GRAPH_CANDIDATES=True)
+    assert ptr in fake.probed_hosts()
+    assert out["findings"] == []
+    assert out["by_ip"][IP]["suppressed_dns_known"] == 1

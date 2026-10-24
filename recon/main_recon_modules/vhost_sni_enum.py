@@ -1258,13 +1258,10 @@ def _collect_graph_candidates(combined_result: dict, ip: str) -> list[str]:
             if isinstance(cn, str) and cn.strip():
                 out.add(cn.strip().lower().rstrip("."))
 
-    # 6. Reverse DNS PTR records on this IP
-    ip_recon = combined_result.get("ip_recon") or {}
-    ptr = (ip_recon.get(ip) or {}).get("reverse_dns")
-    if isinstance(ptr, str) and ptr.strip():
-        out.add(ptr.strip().lower().rstrip("."))
+    # IP mode's PTR names need no source of their own: main records each one in
+    # the dns block with its address, so source 1 reads it (as a DNS-known name).
 
-    # 8. tlsx SAN list, matched on the scanned IP. Covers non-HTTP TLS ports and
+    # 6. tlsx SAN list, matched on the scanned IP. Covers non-HTTP TLS ports and
     # bare IPs httpx never dialled; empty when tlsx is off (harmless).
     tlsx = combined_result.get("tlsx") or {}
     for _key, entry in (tlsx.get("by_target") or {}).items():

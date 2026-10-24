@@ -581,13 +581,20 @@ class TestCollectGraphCandidates:
         assert "app-prod.internal.example.com" in out
 
     def test_pulls_ptr(self):
+        # IP mode records each PTR hostname in the dns block with its address.
         recon = {
-            "ip_recon": {
-                "5.5.5.5": {"reverse_dns": "web-prod-7.internal.example.com"},
-            },
+            "dns": {"subdomains": {
+                "web-prod-7.internal.example.com": {"ips": {"ipv4": ["5.5.5.5"], "ipv6": []}},
+            }},
         }
         out = _collect_graph_candidates(recon, "5.5.5.5")
         assert "web-prod-7.internal.example.com" in out
+
+    def test_an_ip_recon_key_is_not_a_source(self):
+        # Nothing writes combined_result["ip_recon"]; reading it only hid that
+        # the PTR names already arrive through the dns block.
+        recon = {"ip_recon": {"5.5.5.5": {"reverse_dns": "web-prod-7.internal.example.com"}}}
+        assert _collect_graph_candidates(recon, "5.5.5.5") == []
 
     def test_empty_recon_returns_empty(self):
         assert _collect_graph_candidates({}, "5.5.5.5") == []
