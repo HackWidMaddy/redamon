@@ -732,6 +732,35 @@ What follows from that:
   `tooling/scripts/netlas_finding_rekey.py` (dry run by default; `--apply`
   with the services stopped, before the first scan on the new release) moves
   their mutes, layers, proof edges and Postgres references.
+- **A JS Recon Secret's id is a hash of its pattern, match and file**
+  (`_make_finding_id` in `recon/helpers/js_recon/patterns.py`). The keyword
+  gap of about 70 patterns is now `[^\n]{0,120}?` (the nearest value, at most
+  120 characters away) instead of `.*`, so a match that ran to the last
+  candidate on a minified line is shorter and gets a new id.
+  `tooling/scripts/js_secret_rekey.py` finds the pattern that produced each
+  stored id, re-runs its current regex over the stored match, and moves the
+  mute, layers, CONFIRMS edges and Postgres references to the id the scanner
+  now writes (dry run by default; `--apply` with the services stopped, before
+  the first scan on the new release). A match the new pattern rejects (the old
+  Azure AD false positives) is left for the prune. A hit re-read under another
+  name (`_refine`: an Algolia key labelled as the search key, a Supabase JWT by
+  its `role`) keeps the id of the pattern that matched it, so it needs no
+  re-key.
+- **Secret validation states.** `validators.py` returns an explicit `state`
+  (`valid`, `rejected`, `unknown`, `format_invalid`); js_recon stores
+  `validated`, `rejected`, `unknown`, `format_invalid`, `format_validated`,
+  `incomplete`, `unvalidated` (no validator) or `skipped`. Only a `401` or a
+  provider's own "invalid key" answer is `rejected`; a timeout, `429`, `5xx`,
+  breaker skip or `403` is `unknown`. The node-filter catalog keeps the legacy
+  `invalid` as an alias (`aliases: {invalid: [rejected, format_invalid]}` on the
+  field, expanded in `graph_db/node_filters/evaluate.py`), so saved rules keep
+  matching.
+- **Public client keys.** `PUBLIC_CLIENT_KEY_NAMES` in `patterns.py` is written
+  at severity info with `public_client_key`. The same names, lowercased, live in
+  `score_model.PUBLIC_CLIENT_KEY_TYPES`, `triage_mixin._PUBLIC_CLIENT_KEY_TYPES`,
+  `graph_db/node_filters/normalize.py` and `webapp/src/lib/secrets/publicClientKeys.ts`;
+  tests pin all five equal. Readers decide on the flag OR the name, for nodes
+  written before the flag.
 - **A stopped scan runs neither step 2 nor step 3.** Stop sends SIGTERM and the
   process exits without its `finally`, so what it wrote stays unfiltered until
   the next scan or an apply.
