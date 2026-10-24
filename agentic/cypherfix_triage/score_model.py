@@ -52,7 +52,7 @@ from typing import Any, Iterable, Optional
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.6.0"
+SCORE_MODEL_VERSION = "v3.7.0"
 
 
 # ===========================================================================
@@ -593,6 +593,18 @@ CONFIDENCE_BY_SOURCE = {
 #: What an unknown source gets, plus a log line. Never silently right.
 CONFIDENCE_UNKNOWN_SOURCE = 0.75
 
+#: The `source` of a passive CVE: a provider's own crawl of the IP, weeks old at
+#: times. Kept in step with PASSIVE_CVE_SOURCES in
+#: recon/helpers/finding_sources.py (a test compares them).
+PASSIVE_CVE_SOURCES = frozenset({
+    "shodan_api", "internetdb", "shodan", "shodan_host_lookup", "netlas", "criminalip",
+})
+
+#: The highest C a "real" review gives a passive CVE whose port this run's scan
+#: did not find open: the quote it verifies is the provider's own banner, which
+#: shows nothing live. Shodan's own verification earns the same 0.6.
+PASSIVE_REVIEW_MAX_CONFIDENCE = 0.6
+
 #: security_check types that INFER the problem rather than observe it, so they
 #: get a detector's C instead of the 1.0 of a fact. Every other check (a header
 #: that is absent, an AXFR that answered, a PONG with no AUTH, a relay that
@@ -661,6 +673,8 @@ class ProjectFacts:
     live_hosts: set = field(default_factory=set)
     #: host -> "active" | "passive": how the open port was found
     port_hosts: dict = field(default_factory=dict)
+    #: (host, port number) -> "active" | "passive": the same, per port
+    port_status: dict = field(default_factory=dict)
     #: package purl -> "served" | "repo" | "sbom"
     package_exposure: dict = field(default_factory=dict)
     sensitive_hosts: set = field(default_factory=set)
@@ -779,12 +793,29 @@ def finding_state(finding: dict, facts: ProjectFacts) -> tuple[str, str]:
         return STATE_INACTIVE, "the credential was tested and does not work"
     if _validator_rejected_it(finding):
         return STATE_INACTIVE, "a validator tested the credential and the service rejected it"
+    if _port_found_closed(finding):
+        return STATE_INACTIVE, "the port scan found the port closed"
 
     host = finding.get("triage_host") or finding.get("host")
     if host and host in facts.gone_hosts:
         return STATE_GONE, "the host has no live endpoint and no open port"
 
     return STATE_OPEN, ""
+
+
+def _port_found_closed(finding: dict) -> bool:
+    """A passive CVE whose port this run's port scan looked at and did not
+    find open. A missing `port_confirmed` is unknown, never closed."""
+    verdict = finding.get("port_confirmed")
+    return (_lower(finding.get("source")) in PASSIVE_CVE_SOURCES
+            and (verdict is False or _lower(verdict) == "false"))
+
+
+def _passive_unconfirmed(finding: dict) -> bool:
+    """A passive CVE no port scan of this run confirmed open."""
+    verdict = finding.get("port_confirmed")
+    return (_lower(finding.get("source")) in PASSIVE_CVE_SOURCES
+            and not (verdict is True or _lower(verdict) == "true"))
 
 
 def _validator_rejected_it(finding: dict) -> bool:
@@ -1338,6 +1369,18 @@ def reach(finding: dict, facts: ProjectFacts, cvss: Cvss) -> Factor:
             return Factor(0.6, "the URL answered 401/403, so a login is needed")
         return Factor(1.0, "a live endpoint on this host")
 
+    port = as_int(finding.get("target_port"), 0)
+    if host and port > 0:
+        how = facts.port_status.get((host, port))
+        if how == "active":
+            return Factor(1.0, f"port {port} was found open by an active scan")
+        if how == "passive":
+            return Factor(0.7, f"port {port} was only seen passively")
+        if _lower(finding.get("source")) in PASSIVE_CVE_SOURCES:
+            # Another port of the host being open says nothing about this one.
+            return Factor(0.7, f"only a passive source reported port {port}; "
+                               f"no scan found it open")
+
     port_source = facts.port_hosts.get(host) if host else None
     if port_source == "active":
         return Factor(1.0, "an open port found by an active scan")
@@ -1371,20 +1414,29 @@ class TierInputs:
     """
     proven: bool = False
     kev: bool = False
+    #: A passive CVE no port scan confirmed open: a review's "real" raises its
+    #: C to PASSIVE_REVIEW_MAX_CONFIDENCE at most. Stored only when set, so
+    #: every other finding keeps its stored inputs as they were.
+    passive_unconfirmed: bool = False
 
     def as_dict(self) -> dict:
-        return {"proven": bool(self.proven), "kev": bool(self.kev)}
+        out = {"proven": bool(self.proven), "kev": bool(self.kev)}
+        if self.passive_unconfirmed:
+            out["passive_unconfirmed"] = True
+        return out
 
     @classmethod
     def from_dict(cls, value) -> "TierInputs":
         value = value if isinstance(value, dict) else {}
-        return cls(proven=bool(value.get("proven")), kev=bool(value.get("kev")))
+        return cls(proven=bool(value.get("proven")), kev=bool(value.get("kev")),
+                   passive_unconfirmed=bool(value.get("passive_unconfirmed")))
 
 
 def tier_inputs(finding: dict, facts: ProjectFacts, intel: dict) -> TierInputs:
     cves = [str(x).upper() for x in _as_list((finding or {}).get("cve_ids"))]
     kev = _truthy((finding or {}).get("cisa_kev")) or _best_cve_intel(cves, intel or {}).get("kev")
-    return TierInputs(proven=is_proven(finding or {}, facts), kev=bool(kev))
+    return TierInputs(proven=is_proven(finding or {}, facts), kev=bool(kev),
+                      passive_unconfirmed=_passive_unconfirmed(finding or {}))
 
 
 def tier_rule(inputs: TierInputs, c: float, l: float, i: float, r: float) -> tuple[str, str]:
@@ -1679,8 +1731,12 @@ def review_is_valid(review: Optional[ReviewLayer], evidence_hash: str) -> bool:
                 and review.verdict in REVIEW_VERDICTS)
 
 
-def apply_corrections(values: dict, review: ReviewLayer, proven: bool) -> dict:
+def apply_corrections(values: dict, review: ReviewLayer, proven: bool,
+                      real_ceiling: float = 0.95) -> dict:
     """The factor corrections one review makes. Pure.
+
+    A "real" verdict raises C to `real_ceiling`: 0.95, or less for a finding
+    whose own record cannot show it is live (a passive CVE).
 
     On a PROVEN finding a review may only raise: a doubtful verdict, every
     dispute and a multiplier below 1 are ignored, because a sentence in a
@@ -1692,7 +1748,7 @@ def apply_corrections(values: dict, review: ReviewLayer, proven: bool) -> dict:
     c, l, i, r = values["C"], values["L"], values["I"], values["R"]
 
     if review.verdict == "real":
-        c = max(c, 0.95)
+        c = max(c, real_ceiling)
     elif review.verdict == "doubtful" and not proven:
         c = min(c, 0.25)
 
@@ -1741,7 +1797,10 @@ def combine_layers(base: BaseLayer, review: Optional[ReviewLayer],
     still not be talked down.
     """
     proven = bool(base.inputs.proven or proven_now)
-    inputs = TierInputs(proven=proven, kev=base.inputs.kev)
+    inputs = TierInputs(proven=proven, kev=base.inputs.kev,
+                        passive_unconfirmed=base.inputs.passive_unconfirmed)
+    real_ceiling = (PASSIVE_REVIEW_MAX_CONFIDENCE
+                    if base.inputs.passive_unconfirmed and not proven else 0.95)
     evidence = {k: ((base.factors or {}).get(k) or {}).get("evidence", "")
                 if isinstance((base.factors or {}).get(k), dict) else ""
                 for k in ("C", "L", "I", "R")}
@@ -1775,7 +1834,7 @@ def combine_layers(base: BaseLayer, review: Optional[ReviewLayer],
             return Final(score=0.0, tier="T4", tier_rule=_review_fp_rule(review),
                          risk=0.0, factors=factors_of(base_values),
                          state=STATE_FALSE_POSITIVE, decided_by=DECIDED_BY_REVIEW)
-        values = apply_corrections(values, review, proven)
+        values = apply_corrections(values, review, proven, real_ceiling)
         moved_by_review = any(abs(values[k] - base_values[k]) > 1e-9 for k in values)
 
     # 3. A person's Real.

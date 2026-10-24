@@ -239,6 +239,27 @@ class TestReconFpWritersGraphLive(unittest.TestCase):
         self.assertEqual((port["source"], port["passive"], port["n"]), (None, False, 1))
         self.assertEqual(self.client.active_open_ports(self.user, self.pid, {IP}), {IP: {22}})
 
+    def test_the_priority_board_reads_reach_per_port(self):
+        from cypherfix_triage import fact_queries, score_model
+        self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)
+        self.client.update_graph_from_port_scan({"domain": "fp-itest.test", "port_scan": {
+            "by_ip": {IP: {"ports": [22]}},
+            "by_host": {"www.fp-itest.test": {"ip": IP, "port_details": [
+                {"port": 22, "protocol": "tcp", "service": "ssh"}]}}}}, self.user, self.pid)
+        query = next(q["query"] for q in fact_queries.PROJECT_FACT_QUERIES if q["name"] == "port_hosts")
+        with self.client.driver.session() as s:
+            facts = fact_queries.build_project_facts(
+                {"port_hosts": [dict(r) for r in s.run(query, userId=self.user, projectId=self.pid)]})
+        self.assertEqual((facts.port_status[(IP, 22)], facts.port_status[(IP, 443)]),
+                         ("active", "passive"))
+        finding = [q for q in fact_queries.FINDING_QUERIES if q["name"] == "vulnerabilities"][0]["query"]
+        with self.client.driver.session() as s:
+            rows = {r["id"]: fact_queries.normalise_finding_row(dict(r))
+                    for r in s.run(finding, userId=self.user, projectId=self.pid)}
+        banner = rows[f"shodan-{BANNER_CVE}-{IP}"]
+        reach = score_model.reach(banner, facts, score_model.parse_cvss_vector(None))
+        self.assertEqual(reach.value, 0.7, "the host's active port 22 says nothing about 443")
+
     def test_the_priority_board_reads_the_grade(self):
         from cypherfix_triage import fact_queries, score_model
         self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)

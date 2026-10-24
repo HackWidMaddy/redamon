@@ -69,11 +69,14 @@ RETURN collect(DISTINCT b.url) AS hosts
     {
         "name": "port_hosts",
         "description": "open ports, and whether an active scanner found them",
+        # `passive_only = false` is the port scan's or nmap's mark: it beats the
+        # source of a Port a passive provider happened to create first.
         "query": """
 MATCH (ip:IP {user_id: $userId, project_id: $projectId})-[:HAS_PORT]->(p:Port)
 WHERE toLower(coalesce(p.state, 'open')) = 'open'
 RETURN ip.address AS host,
-       CASE WHEN toLower(coalesce(p.source, 'nmap')) IN
+       CASE WHEN p.passive_only = false THEN 'active'
+            WHEN toLower(coalesce(p.source, 'nmap')) IN
             ['shodan', 'censys', 'fofa', 'netlas', 'zoomeye', 'internetdb',
              'criminalip', 'uncover']
             THEN 'passive' ELSE 'active' END AS how,
@@ -306,6 +309,7 @@ RETURN v.id AS id, 'Vulnerability' AS label,
        v.matcher_status AS matcher_status, v.matched_at AS matched_at,
        v.matcher_name AS matcher_name, v.fuzzing_parameter AS fuzzing_parameter,
        v.target_port AS target_port, v.solution_type AS solution_type,
+       v.port_confirmed AS port_confirmed,
        v.extracted_results AS extracted_results, v.is_dast_finding AS is_dast_finding,
        v.template_id AS template_id, v.tags AS tags, v.state AS state,
        coalesce(v.oid, v.nvt_oid) AS oid,
@@ -603,8 +607,13 @@ def build_project_facts(raw: dict) -> ProjectFacts:
             continue
         # "active" wins: one active confirmation beats any number of passive
         # sightings, and the order rows arrive in must not decide this.
-        if row.get("how") == "active" or facts.port_hosts.get(host) != "active":
-            facts.port_hosts[host] = row.get("how") or "active"
+        how = row.get("how") or "active"
+        if how == "active" or facts.port_hosts.get(host) != "active":
+            facts.port_hosts[host] = how
+        for port in row.get("ports") or []:
+            key = (host, _int(port))
+            if key[1] and (how == "active" or facts.port_status.get(key) != "active"):
+                facts.port_status[key] = how
         if set(row.get("ports") or []) & {3306, 5432, 6379, 9200, 27017,
                                           1433, 5984, 11211}:
             facts.sensitive_hosts.add(host)

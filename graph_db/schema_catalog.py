@@ -1637,7 +1637,7 @@ not so you can query for one.
 - triage_base_tier (string): The rules-only tier
 - triage_base_tier_rule (string): The rule behind the rules-only tier
 - triage_base_state (string): `open` | `fixed` | `gone` | `inactive`, from the facts alone; never `false_positive`
-- triage_tier_inputs (string): JSON `{proven, kev}`, what the tier rules read besides the factors
+- triage_tier_inputs (string): JSON `{proven, kev}`, what the tier rules read besides the factors, plus `passive_unconfirmed: true` on a passive CVE no port scan confirmed open (a "real" review then raises its C to 0.6 at most)
 - triage_signals (list[string]): The readable fact chips: `KEV`, `EPSS 0.94`, `live endpoint`
 - triage_state (string): `open` | `fixed` | `gone` | `inactive` | `false_positive`. Only `open` is ranked. `false_positive` comes from a person's decision or a still-valid review
 - triage_decided_by (string): Which layer set the final values: `rules` | `review` | `person`
