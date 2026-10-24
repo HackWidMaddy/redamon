@@ -260,6 +260,33 @@ class TestReconFpWritersGraphLive(unittest.TestCase):
         reach = score_model.reach(banner, facts, score_model.parse_cvss_vector(None))
         self.assertEqual(reach.value, 0.7, "the host's active port 22 says nothing about 443")
 
+    def test_netlas_writes_one_finding_per_ip_and_port_under_the_ip(self):
+        from cypherfix_triage import fact_queries
+        other = "198.51.100.41"
+        rows = [{"ip": ip, "port": 22, "protocol": "ssh",
+                 "cve_list": [{"id": "CVE-2018-15473", "base_score": 5.3, "severity": "medium"}]}
+                for ip in (IP, other)]
+        payload = {"domain": "fp-itest.test", "domains": ["fp-itest.test"], "netlas": {"results": rows}}
+        self.client.update_graph_from_netlas(payload, self.user, self.pid)
+        # A parent edge from the old shape, left by an earlier release.
+        with self.client.driver.session() as s:
+            s.run("MATCH (svc:Service {port_number: 22, ip_address: $ip, project_id: $pid}), "
+                  "(v:Vulnerability {id: $vid, project_id: $pid}) MERGE (svc)-[:HAS_VULNERABILITY]->(v)",
+                  ip=IP, pid=self.pid, vid=f"netlas-CVE-2018-15473-{IP}-22")
+        self.client.update_graph_from_netlas(payload, self.user, self.pid)
+        nodes = self._one(
+            "MATCH (v:Vulnerability {project_id: $pid, source: 'netlas'}) "
+            "RETURN collect(v.id) AS ids, "
+            "       sum(COUNT { (:Service)-[:HAS_VULNERABILITY]->(v) }) AS service_parents, "
+            "       sum(COUNT { (:IP)-[:HAS_VULNERABILITY]->(v) }) AS ip_parents, "
+            "       sum(COUNT { (v)-[:INCLUDES_CVE]->(:CVE {id: 'CVE-2018-15473'}) }) AS cve_edges")
+        self.assertEqual(sorted(nodes["ids"]), sorted(f"netlas-CVE-2018-15473-{ip}-22" for ip in (IP, other)))
+        self.assertEqual((nodes["service_parents"], nodes["ip_parents"], nodes["cve_edges"]), (0, 2, 2))
+        query = [q for q in fact_queries.FINDING_QUERIES if q["name"] == "vulnerabilities"][0]["query"]
+        with self.client.driver.session() as s:
+            hosts = {r["id"]: r["triage_host"] for r in s.run(query, userId=self.user, projectId=self.pid)}
+        self.assertEqual(hosts[f"netlas-CVE-2018-15473-{IP}-22"], IP)
+
     def test_the_priority_board_reads_the_grade(self):
         from cypherfix_triage import fact_queries, score_model
         self.client.update_graph_from_shodan(_shodan_payload(), self.user, self.pid)

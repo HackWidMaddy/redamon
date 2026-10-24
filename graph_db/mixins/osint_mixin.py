@@ -93,6 +93,14 @@ def _ip_from_passive_cve_id(vid) -> str | None:
     return candidate if _is_ip_address(candidate) else None
 
 
+_CVE_ID = re.compile(r"^CVE-\d{4}-\d{4,}$")
+
+
+def netlas_vuln_id(cve_id: str, ip: str, port) -> str:
+    """A Netlas finding's id: one per CVE, IP and port."""
+    return f"netlas-{cve_id}-{ip}-{port}"
+
+
 def _split_url(url: str) -> tuple[str, str]:
     """(base_url, path), where base_url is scheme://netloc and path defaults to
     '/'. Query and fragment are dropped.
@@ -1783,7 +1791,8 @@ class OsintMixin:
     def update_graph_from_netlas(self, recon_data: dict, user_id: str, project_id: str) -> dict:
         stats = {
             "ips_enriched": 0, "ports_merged": 0, "services_merged": 0,
-            "vulnerabilities_merged": 0, "relationships_created": 0, "errors": [],
+            "vulnerabilities_merged": 0, "relationships_created": 0,
+            "historical_skipped": 0, "errors": [],
         }
         try:
             rows = (recon_data.get("netlas") or {}).get("results") or []
@@ -1796,6 +1805,10 @@ class OsintMixin:
                             continue
                         ip = row.get("ip")
                         if not ip:
+                            continue
+                        attribution = row.get("attribution")
+                        if attribution == "historical":
+                            stats["historical_skipped"] += 1
                             continue
                         try:
                             # --- IP node enrichment ---
@@ -1886,49 +1899,24 @@ class OsintMixin:
                                 stats["services_merged"] += 1
                                 stats["relationships_created"] += 1
 
-                                # --- CVE Vulnerability nodes ---
-                                for cve in (row.get("cve_list") or []):
-                                    if not isinstance(cve, dict):
-                                        continue
-                                    cve_id = cve.get("id") or ""
-                                    if not cve_id:
-                                        continue
-                                    try:
-                                        vuln_props: dict = {
-                                            "source": "netlas",
-                                            "name": cve_id,
-                                        }
-                                        severity = cve.get("severity") or ""
-                                        if severity:
-                                            vuln_props["severity"] = severity
-                                        base_score = cve.get("base_score")
-                                        if base_score is not None:
-                                            try:
-                                                vuln_props["cvss_score"] = float(base_score)
-                                            except (TypeError, ValueError):
-                                                pass
-                                        vuln_props["has_exploit"] = bool(cve.get("has_exploit", False))
-                                        session.run(
-                                            """
-                                            MERGE (v:Vulnerability {id: $cve_id,
-                                                                     user_id: $user_id,
-                                                                     project_id: $project_id})
-                                            ON CREATE SET v.created_at = datetime()
-                                            SET v += $props, v.updated_at = datetime()
-                                            WITH v
-                                            MATCH (svc:Service {name: $svc_name, port_number: $port,
-                                                                ip_address: $ip,
-                                                                user_id: $user_id,
-                                                                project_id: $project_id})
-                                            MERGE (svc)-[:HAS_VULNERABILITY]->(v)
-                                            """,
-                                            cve_id=cve_id, user_id=user_id, project_id=project_id,
-                                            props=vuln_props, svc_name=prot_name, port=pnum, ip=ip,
-                                        )
-                                        stats["vulnerabilities_merged"] += 1
-                                        stats["relationships_created"] += 1
-                                    except Exception as e:
-                                        stats["errors"].append(f"Netlas CVE {cve_id} on {ip}:{pnum}: {e}")
+                            # --- CVE Vulnerability nodes ---
+                            # A shared edge's CVEs describe the provider and its
+                            # other tenants, not the target.
+                            if attribution == "shared_edge":
+                                continue
+                            for cve in (row.get("cve_list") or []):
+                                if not isinstance(cve, dict):
+                                    continue
+                                cve_id = str(cve.get("id") or "").strip().upper()
+                                if not _CVE_ID.match(cve_id):
+                                    continue
+                                try:
+                                    self._write_netlas_cve(session, cve, cve_id, ip, pnum,
+                                                           user_id, project_id)
+                                    stats["vulnerabilities_merged"] += 1
+                                    stats["relationships_created"] += 2
+                                except Exception as e:
+                                    stats["errors"].append(f"Netlas CVE {cve_id} on {ip}:{pnum}: {e}")
 
                         except Exception as e:
                             stats["errors"].append(f"Netlas row {ip}: {e}")
@@ -1936,6 +1924,58 @@ class OsintMixin:
             stats["errors"].append(f"update_graph_from_netlas: {e}")
         print(f"[graph-db] update_graph_from_netlas complete: {stats}")
         return stats
+
+    @staticmethod
+    def _write_netlas_cve(session, cve: dict, cve_id: str, ip: str, port: int,
+                          user_id: str, project_id: str) -> None:
+        """One Netlas CVE on one IP and port, the IP its only parent.
+
+        Shodan's shape: the board reads a finding's host from its parent, and a
+        Service parent read the protocol ("ssh") as the host. `cve_ids` and the
+        CVE reference edge carry the KEV and EPSS intel to it. The id was the
+        bare CVE once, one node per CVE per project however many IPs carried
+        it; tooling/scripts/netlas_finding_rekey.py moves those.
+        """
+        props: dict = {
+            "name": cve_id, "cves": [cve_id], "cve_ids": [cve_id],
+            "target_ip": ip, "target_port": port,
+            "has_exploit": bool(cve.get("has_exploit", False)),
+        }
+        severity = str(cve.get("severity") or "").lower()
+        if severity:
+            props["severity"] = severity
+        try:
+            if cve.get("base_score") is not None:
+                props["cvss_score"] = float(cve["base_score"])
+        except (TypeError, ValueError):
+            pass
+        session.run(
+            """
+            MERGE (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
+            ON CREATE SET v.source = 'netlas', v.created_at = datetime()
+            SET v += $props, v.updated_at = datetime()
+            WITH v
+            OPTIONAL MATCH (:Service)-[stale:HAS_VULNERABILITY]->(v)
+            DELETE stale
+            WITH DISTINCT v
+            MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+            MERGE (i)-[:HAS_VULNERABILITY]->(v)
+            """,
+            vuln_id=netlas_vuln_id(cve_id, ip, port), props=props, ip=ip,
+            user_id=user_id, project_id=project_id,
+        )
+        session.run(
+            """
+            // Global reference node: no tenant stamp.
+            MERGE (c:CVE {id: $cve_id})
+            ON CREATE SET c.source = 'netlas'
+            WITH c
+            MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
+            MERGE (v)-[:INCLUDES_CVE]->(c)
+            """,
+            cve_id=cve_id, vuln_id=netlas_vuln_id(cve_id, ip, port),
+            user_id=user_id, project_id=project_id,
+        )
 
     def update_graph_from_virustotal(self, recon_data: dict, user_id: str, project_id: str) -> dict:
         stats = {"domains_updated": 0, "ips_enriched": 0, "errors": []}

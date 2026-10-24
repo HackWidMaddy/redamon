@@ -16,9 +16,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 try:
-    from recon.main_recon_modules.ip_filter import filter_ips_for_enrichment
+    from recon.main_recon_modules.ip_filter import (
+        collect_cdn_ips, filter_ips_for_enrichment, in_published_cdn_range, is_shared_edge_org)
 except ImportError:
-    from ip_filter import filter_ips_for_enrichment
+    from ip_filter import (
+        collect_cdn_ips, filter_ips_for_enrichment, in_published_cdn_range, is_shared_edge_org)
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +208,28 @@ def _parse_netlas_body(body: dict | None) -> tuple[list[dict], int]:
     return results, int(total)
 
 
+def _attribute_rows(rows: list[dict], dns_ips, combined_result: dict) -> None:
+    """Tag the rows that must not become a finding.
+
+    Netlas answers from its index, history included: domain mode asks for
+    every response it ever stored for the name. A row for an IP this run's
+    DNS does not give is `historical` and stays out of the graph entirely: the
+    IP may be another tenant's machine now, and an IP node would put it in
+    later scans' targets. A row for a CDN or shared edge IP is `shared_edge`:
+    its ports are the provider's, and its CVEs describe the provider and its
+    other tenants, so it gets no CVE finding.
+    """
+    current = set(dns_ips)
+    cdn = collect_cdn_ips(combined_result)
+    for row in rows:
+        ip = row.get("ip")
+        if ip not in current:
+            row["attribution"] = "historical"
+        elif (ip in cdn or in_published_cdn_range(ip)
+              or is_shared_edge_org(f"{row.get('isp') or ''} {row.get('asn_name') or ''}")):
+            row["attribution"] = "shared_edge"
+
+
 def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> dict:
     """
     Run Netlas Responses enrichment for domain or per-IP host queries.
@@ -332,6 +356,11 @@ def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
         netlas_data["total"] = total_hint if total_hint else len(netlas_data["results"])
         failed = True
 
+    _attribute_rows(netlas_data["results"], all_ips, combined_result)
+    historical = sum(1 for r in netlas_data["results"] if r.get("attribution") == "historical")
+    if historical:
+        print(f"[*][Netlas] {historical} row(s) for IPs this run's DNS does not give are "
+              f"kept as history, not written to the graph")
     netlas_scope.finish("netlas_enrich", payload=netlas_data)
     from recon.helpers.passive_cve_coverage import note_cve_coverage
     note_cve_coverage("netlas", "netlas_enrich", ips, checked, reached=reached,

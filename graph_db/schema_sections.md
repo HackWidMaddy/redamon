@@ -401,9 +401,11 @@ Common properties (all sources):
 - cvss_score (float): 0.0 to 10.0
 
 Netlas-specific properties (source="netlas"):
-- id (string): CVE identifier e.g. "CVE-2021-44228"
+- id pattern: `netlas-{cve}-{ip}-{port}`, one finding per CVE, IP and port (rows written before were keyed on the bare CVE id, one per project; `tooling/scripts/netlas_finding_rekey.py` moves them)
 - has_exploit (boolean): whether a known public exploit exists (from NVD data)
-- Relationship: `(svc:Service)-[:HAS_VULNERABILITY]->(v:Vulnerability)` — linked to the Service where the vulnerable software was detected
+- target_ip (string), target_port (integer): where Netlas saw the vulnerable service
+- cves, cve_ids (list[string]): the CVE id; the finding also links `(v)-[:INCLUDES_CVE]->(:CVE)`
+- Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`, the finding's only parent. A domain-mode row for an IP this run's DNS does not give is history and is not written; a CDN or shared-edge IP gets its ports but no CVE
 
 Shodan passive CVE properties (source="shodan_api" or "internetdb"):
 - detection_method (string): "passive_verified" (Shodan verified the CVE on the banner), "passive_version_match" (a banner's product and version matched), or "passive_catalog" (no banner version: the IP's CVE list alone, or a banner naming no version); absent on rows written before the grading. It only rises across runs

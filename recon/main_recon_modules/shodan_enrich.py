@@ -13,7 +13,6 @@ Features:
   - Passive CVEs: Extract known CVEs from Shodan host data
 """
 import os
-import re
 import threading
 import time
 import logging
@@ -45,9 +44,10 @@ class _RateLimiter:
 
 try:
     from recon.main_recon_modules.ip_filter import (
-        collect_cdn_ips, filter_ips_for_enrichment, in_published_cdn_range)
+        collect_cdn_ips, filter_ips_for_enrichment, in_published_cdn_range, is_shared_edge_org)
 except ImportError:
-    from ip_filter import collect_cdn_ips, filter_ips_for_enrichment, in_published_cdn_range
+    from ip_filter import (
+        collect_cdn_ips, filter_ips_for_enrichment, in_published_cdn_range, is_shared_edge_org)
 
 logger = logging.getLogger(__name__)
 
@@ -509,27 +509,16 @@ def _service_vulns(raw) -> list[dict]:
     return out
 
 
-# Providers whose IPs front many unrelated tenants. A CVE Shodan correlates to
-# such an IP describes whatever answered there for whichever customer, not the
-# target; our own CDN ranges know only Cloudflare, so Shodan's attribution is
-# used as well. Only providers that sell no servers are named: Akamai (which
-# now runs Linode), G-Core and StackPath also rent VMs, so their edges are
-# recognised by Shodan's `cdn` tag instead of the org name.
-_SHARED_EDGE_ORG = re.compile(
-    r"\b(?:cloudflare|fastly|vercel|netlify|incapsula|imperva|sucuri"
-    r"|edgecast|edgio|limelight|bunnyway|bunny\.net|cdn77|cloudfront)\b",
-    re.IGNORECASE,
-)
-
-
 def _is_shared_edge_host(host: dict) -> bool:
     """True when Shodan itself tags the IP as a CDN, or attributes it to a
-    shared edge provider."""
+    shared edge provider. A CVE Shodan correlates to such an IP describes
+    whatever answered there for whichever customer, not the target; Akamai,
+    G-Core and StackPath also rent VMs, so their edges are recognised by the
+    `cdn` tag rather than the org name (see is_shared_edge_org)."""
     tags = {str(t).lower() for t in (host.get("tags") or [])}
     if "cdn" in tags:
         return True
-    org = " ".join(str(host.get(k) or "") for k in ("org", "isp"))
-    return bool(_SHARED_EDGE_ORG.search(org))
+    return is_shared_edge_org(" ".join(str(host.get(k) or "") for k in ("org", "isp")))
 
 
 _GRADE_RANK = {"passive_catalog": 0, "passive_version_match": 1, "passive_verified": 2}

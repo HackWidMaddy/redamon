@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 import socket
 from typing import Set
 from urllib.parse import urlparse
@@ -202,6 +203,24 @@ def in_published_cdn_range(ip_str: str) -> bool:
                    for net in _published_cdn_networks())
     except Exception:  # noqa: BLE001
         return False
+
+
+# Providers whose IPs front many unrelated tenants, as a passive source names
+# the IP's owner (Shodan's org/isp, Netlas's isp/ASN). Our own CDN ranges know
+# only Cloudflare, so the provider's attribution is used as well. Only
+# providers that sell no servers are named: Akamai (which now runs Linode),
+# G-Core and StackPath also rent VMs, so an org name alone cannot say an IP of
+# theirs is an edge.
+SHARED_EDGE_ORG = re.compile(
+    r"\b(?:cloudflare|fastly|vercel|netlify|incapsula|imperva|sucuri"
+    r"|edgecast|edgio|limelight|bunnyway|bunny\.net|cdn77|cloudfront)\b",
+    re.IGNORECASE,
+)
+
+
+def is_shared_edge_org(owner: str) -> bool:
+    """True when a passive source attributes an IP to a shared edge provider."""
+    return bool(SHARED_EDGE_ORG.search(str(owner or "")))
 
 
 def collect_cdn_ips(combined_result: dict) -> Set[str]:
