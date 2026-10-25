@@ -144,8 +144,10 @@ That's it. No Node.js, Python, or security tools needed on your host.
 | Resource | Without OpenVAS | With OpenVAS (full stack) |
 |----------|----------------|--------------------------|
 | **CPU** | 2 cores | 4 cores |
-| **RAM** | 4 GB | 8 GB (16 GB recommended) |
+| **RAM** | 7 GB | 10 GB (16 GB recommended) |
 | **Disk** | 80 GB free | 110 GB free |
+
+> **RAM is checked at start.** `./redamon.sh` refuses to start when the memory Docker can use does not cover the minimum of every service the profile runs (the memory allocator's per-service floors, see [README.MEMORY_GOVERNOR.md](docs/readmes/README.MEMORY_GOVERNOR.md)). With the default reserves that is about 6.5 GB for the core stack and about 9.6 GB with OpenVAS. `REDAMON_SKIP_RAM_GATE=1` skips the check.
 
 > **Without OpenVAS** runs 7 containers: webapp, postgres, neo4j, agent, kali-sandbox, recon-orchestrator, and docker-broker (a filtering Docker-socket proxy that the recon orchestrator's spawned scan containers go through, so they can only launch the known tool images).
 > **With OpenVAS** adds 4 more runtime containers (gvmd, ospd-openvas, gvm-postgres, gvm-redis) plus ~8 one-shot data-init containers for vulnerability feeds (~170K+ NVTs). First launch takes ~30 minutes for GVM feed synchronization.
