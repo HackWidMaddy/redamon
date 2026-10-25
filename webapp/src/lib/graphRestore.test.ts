@@ -289,6 +289,63 @@ describe('restoreGraph — strategy', () => {
   })
 })
 
+describe('restoreGraph — the global reference catalogue (plan 09.5)', () => {
+  const cveLink = {
+    startExportId: 'n1', endExportId: null, type: 'INCLUDES_CVE',
+    refLabel: 'CVE', refKey: 'CVE-2021-44228', properties: {},
+  }
+
+  test('a bundle that carries a reference node never creates or overwrites one', async () => {
+    // One CVE node is shared by every tenant and keyed on its id alone, so a
+    // MERGE of a bundle's CVE would rewrite the shared node's properties.
+    const { session, calls } = fakeSession([{ label: 'CVE', properties: ['id'] }])
+    const res = await restoreGraph(session, [
+      node('Vulnerability', { id: 'v1' }, 'n1'),
+      node('CVE', { id: 'CVE-2021-44228', cvss: 0, description: 'forged' }, 'n2'),
+      { labels: ['MitreData'], properties: { id: 'CVE-2021-44228-CWE-502' }, _exportId: 'n3' },
+    ], [], { projectId: 'p1' })
+    const written = calls.filter(c => c.cypher.includes('apoc.merge.node') || c.cypher.includes('apoc.create.node'))
+    for (const c of written) {
+      for (const n of c.params.nodes as { labels: string[] }[]) {
+        expect(n.labels).not.toContain('CVE')
+        expect(n.labels).not.toContain('MitreData')
+      }
+    }
+    expect(res.nodes).toBe(1)
+  })
+
+  test('links to the catalogue are restored before the export ids are stripped', async () => {
+    const { session, calls } = fakeSession()
+    const res = await restoreGraph(session, [node('Vulnerability', { id: 'v1' }, 'n1')], [],
+      { projectId: 'p1', referenceLinks: [cveLink, { ...cveLink, refKey: 'bad' }] })
+    const linkAt = calls.findIndex(c => c.cypher.includes('MATCH (ref:CVE {id: link.refKey})'))
+    const stripAt = calls.findIndex(c => c.cypher.includes('REMOVE n._exportId'))
+    expect(linkAt).toBeGreaterThan(-1)
+    expect(linkAt).toBeLessThan(stripAt)
+    // The fake session reports no edge made: the CVE node "does not exist".
+    expect(res.referenceLinks).toEqual({ restored: 0, skipped: 2 })
+  })
+
+  test('a payload with no link records restores exactly as before', async () => {
+    const { session, calls } = fakeSession()
+    const res = await restoreGraph(session, [node('IP', { address: '1.1.1.1' }, 'n1')], [], { projectId: 'p1' })
+    expect(res).toEqual({ nodes: 1, relationships: 0 })
+    expect(calls.some(c => c.cypher.includes('(ref:'))).toBe(false)
+  })
+})
+
+describe('clearProjectGraph — sweeping after a restore (plan 09.5)', () => {
+  test('a caller that restores next can defer the orphan sweep', async () => {
+    // Activation clears, then restores the version's links to the catalogue:
+    // sweeping in between would delete a CVE only this project linked, and the
+    // restore would find nothing to link back to.
+    const { session, calls } = fakeSession()
+    await clearProjectGraph(session, 'p1', [], { sweep: false })
+    expect(calls.some(c => c.cypher.includes('NOT EXISTS'))).toBe(false)
+    expect(calls).toHaveLength(1)
+  })
+})
+
 describe('restoreGraph — a suppressed finding is dual-labelled', () => {
   // This was a real bug. Nodes are bucketed by label to look up the uniqueness
   // key for apoc.merge.node. A muted finding carries TWO labels and Neo4j does
