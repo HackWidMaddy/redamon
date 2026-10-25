@@ -25,9 +25,9 @@ def _validate_plan_mutex_groups(steps: list) -> str | None:
     """Return None if OK, or a diagnostic string if two plan steps invoke the
     same singleton tool group (e.g. two steps both calling metasploit_console).
 
-    Mirrors fireteam_deploy_node._validate_mutex_groups but scans tool_name
-    directly rather than declared skills — plan_tools steps carry the concrete
-    tool call, not a skill declaration.
+    Mirrors fireteam_deploy_node._validate_mutex_groups but scans each step's
+    tool_name rather than a member's declared `tools` list — plan_tools steps
+    carry the concrete tool call.
     """
     from project_settings import TOOL_MUTEX_GROUPS
 
