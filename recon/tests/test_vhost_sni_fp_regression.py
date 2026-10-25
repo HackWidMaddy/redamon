@@ -776,6 +776,26 @@ class TestDnsKnownNamesAreNotHidden:
         assert out["findings"] == []
         assert out["by_ip"][IP]["suppressed_dns_known"] == 1
 
+    def test_a_name_merged_without_addresses_counts_once_httpx_resolved_it_here(self):
+        # A certificate-SAN or JS name is merged into the dns block with no
+        # addresses; httpx resolves it later in the same run.
+        san = f"shop.{APEX}"
+        recon = _recon(
+            dns={"subdomains": {san: {"has_records": True, "source": "certificate_san"}}},
+            http_probe={"by_url": {f"https://{san}": {"url": f"https://{san}", "host": san, "ip": IP}}},
+        )
+        out, fake = _run_https(_shared_ip_responder({san: _same_page(san)}), [san], recon)
+        assert san in fake.probed_hosts()
+        assert out["findings"] == []
+        assert out["by_ip"][IP]["suppressed_dns_known"] == 1
+
+    def test_httpx_resolving_a_name_elsewhere_does_not_make_it_known_here(self):
+        name = f"legacy.{APEX}"
+        recon = _recon(http_probe={"by_url": {f"https://{name}": {"url": f"https://{name}", "host": name,
+                                                                  "ip": "198.51.100.7"}}})
+        out, _ = _run_https(_shared_ip_responder({name: _same_page(name)}), [name], recon)
+        assert [f["hostname"] for f in out["findings"]] == [name]
+
     def test_dns_known_set_reads_the_current_resolution_only(self):
         recon = {"domain": APEX, "dns": {
             "domain": {"ips": {"ipv4": ["198.51.100.1"], "ipv6": []}},

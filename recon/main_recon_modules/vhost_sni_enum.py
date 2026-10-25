@@ -1196,17 +1196,29 @@ def _dns_subdomains_on(combined_result: dict, ip: str) -> set[str]:
 
 
 def _dns_known_names(combined_result: dict, ip: str) -> set[str]:
-    """Names public DNS points at ``ip`` this run: its subdomains and the apex.
+    """Names public DNS points at ``ip`` this run: its subdomains, the apex, and
+    the names httpx resolved to it.
 
     Anyone can resolve them, so a site served for one of them is not hidden,
     however much it differs from the raw-IP answer. On a shared CDN or proxy IP
     every customer's site does differ, so without this each DNS-known name was
     reported as a hidden vhost.
+
+    The httpx part matters for names found after the DNS phase (certificate
+    SANs, JS): they join the dns block with no addresses, and http_probe's
+    ``ip`` for a hostname URL is the address its own lookup returned.
     """
     names = _dns_subdomains_on(combined_result, ip)
     apex = _detect_apex_domain(combined_result)
     if apex and _resolves_here((combined_result.get("dns") or {}).get("domain"), ip):
         names.add(apex)
+    by_url = ((combined_result.get("http_probe") or {}).get("by_url")) or {}
+    for info in by_url.values():
+        if not isinstance(info, dict) or info.get("ip") != ip:
+            continue
+        host = str(info.get("host") or "").strip().lower().rstrip(".")
+        if host and not _looks_like_ip(host):
+            names.add(host)
     return names
 
 
