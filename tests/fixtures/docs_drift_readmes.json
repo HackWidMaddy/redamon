@@ -48,12 +48,6 @@
    "file": "docs/readmes/README.SUPPLY_CHAIN.md",
    "target": "#layer-l3--agent-tools",
    "item": "drift-map #53"
-  },
-  {
-   "kind": "count",
-   "file": "docs/readmes/TECH_STACK.md",
-   "target": "node types:17",
-   "item": "drift-map #48"
   }
  ]
 }

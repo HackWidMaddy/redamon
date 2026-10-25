@@ -57,7 +57,7 @@ See [README.PLUGINS.md](README.PLUGINS.md) for the design and [README.PLUGIN_SDK
 
 | Technology | Role |
 |-----------|------|
-| **Neo4j** (Community Edition) | Graph database — stores the entire attack surface as an interconnected knowledge graph with 17 node types and 20+ relationship types |
+| **Neo4j** (Community Edition) | Graph database — stores the entire attack surface as an interconnected knowledge graph; every node type and relationship is declared in `graph_db/schema_sections.md` |
 | **APOC** | Neo4j plugin providing advanced procedures and functions for graph operations |
 | **PostgreSQL** (v16) | Relational database — stores project settings, user accounts, and configuration data |
 | **Prisma** | TypeScript ORM for PostgreSQL — schema management, migrations, and type-safe queries |

@@ -168,8 +168,8 @@ Browser ──→ Webapp (Next.js :3000) ──WebSocket──→ Agent (FastAPI
                            │                   │
             Used by: Webapp (Prisma)    Used by: Recon, Agent, Webapp
             Stores: users, projects,    Stores: attack surface graph
-            settings, conversations,    (17 node types, 20+ relationships)
-            remediations, reports
+            settings, conversations,    (labels and relationships:
+            remediations, reports        graph_db/schema_sections.md)
 ```
 
 The plugin platform ([README.PLUGINS.md](README.PLUGINS.md)) adds two more services, which reach
