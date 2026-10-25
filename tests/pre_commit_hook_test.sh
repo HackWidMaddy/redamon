@@ -34,7 +34,8 @@ trap 'rm -rf "$FX"' EXIT
 git -C "$REPO_ROOT" archive HEAD -- \
     recon_settings graph_db tooling/scripts skills/skill-sync/assets \
     webapp/prisma/schema.prisma webapp/src/lib/reconSettings webapp/src/lib/nodeFilters \
-    webapp/src/components/projects/ProjectForm/ProjectForm.tsx recon/helpers/finding_sources.py \
+    webapp/src/components/projects/ProjectForm/ProjectForm.tsx \
+    webapp/src/components/projects/ProjectForm/nodeMapping.ts recon/helpers/finding_sources.py \
   | tar -x -C "$FX"
 mkdir -p "$FX/tooling/hooks"
 cp "$HOOK" "$FX/tooling/hooks/pre-commit"

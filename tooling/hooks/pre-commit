@@ -42,6 +42,7 @@ GENERATOR_AREAS=(
   "webapp/src/lib/reconSettings/"
   "webapp/src/lib/nodeFilters/"
   "webapp/src/components/projects/ProjectForm/ProjectForm.tsx"
+  "webapp/src/components/projects/ProjectForm/nodeMapping.ts"
   "recon/helpers/finding_sources.py"
 )
 # script|1 when it needs PyYAML
