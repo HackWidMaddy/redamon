@@ -1,0 +1,200 @@
+{
+ "_comment": "Repo paths cited by a doc under docs/readmes/ that do not exist at the path shown, found by skills/skill-sync/assets/drift-audit.sh --docs; read by tests/docs_cited_paths_test.sh. Remove an entry in the same commit as its fix. An item starting 'not a path:' is a token the audit cannot tell from a path; it stays until the prose changes.",
+ "entries": [
+  {
+   "file": "docs/readmes/README.AGENTIC_SYSTEM.md",
+   "path": "agentic/hard_guardrail.py",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.AGENTIC_SYSTEM.md",
+   "path": "agentic/kb_config.yaml",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.CYPHERFIX_AGENTS.md",
+   "path": "prompts/review.py",
+   "item": "drift-map: found in wave 2"
+  },
+  {
+   "file": "docs/readmes/README.HTTP_PROBE.md",
+   "path": "recon/httpx_scan.py",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.KBASE.md",
+   "path": "data/cache/.manifest.json",
+   "item": "drift-map: found in wave 2"
+  },
+  {
+   "file": "docs/readmes/README.KBASE.md",
+   "path": "webapp/src/app/api/chat/",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.MCP.md",
+   "path": "_local/internal/stride/README.TM.STRIDE.md",
+   "item": "drift-map 4.14: links into _local/"
+  },
+  {
+   "file": "docs/readmes/README.MEMORY_GOVERNOR.md",
+   "path": "mcp/servers/terminal_server",
+   "item": "drift-map: found in wave 2"
+  },
+  {
+   "file": "docs/readmes/README.MITRE.md",
+   "path": "recon/add_mitre.py",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.MITRE.md",
+   "path": "recon/data/mitre_db",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.PLUGIN_SDK.md",
+   "path": "tests/conftest.py",
+   "item": "not a path: a file inside each plugin's own folder"
+  },
+  {
+   "file": "docs/readmes/README.PLUGIN_SDK.md",
+   "path": "tests/test_main.py",
+   "item": "not a path: a file inside each plugin's own folder"
+  },
+  {
+   "file": "docs/readmes/README.PORT_SCAN.md",
+   "path": "recon/masscan_scan.py",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.PORT_SCAN.md",
+   "path": "recon/port_scan.py",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.RECON.md",
+   "path": "recon/helpers/passive_cve_coverage.note_cve_coverage",
+   "item": "drift-map: found in wave 2"
+  },
+  {
+   "file": "docs/readmes/README.RESOURCE_ENUM.md",
+   "path": "recon/resource_enum.py",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.TRAFFIC.md",
+   "path": "../../_local/internal/mitmproxy_integration_plan.md",
+   "item": "drift-map 4.14: links into _local/"
+  },
+  {
+   "file": "docs/readmes/README.TRAFFIC.md",
+   "path": "../../_local/internal/stride/README.TM.STRIDE.md",
+   "item": "drift-map 4.14: links into _local/"
+  },
+  {
+   "file": "docs/readmes/README.TRAFFIC.md",
+   "path": "../webapp/src/components/projects/ProjectForm/sections/TrafficCaptureSection.tsx",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/README.VULN_SCAN.md",
+   "path": "recon/nuclei_scan.py",
+   "item": "drift-map #39"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_AGENTIC_TOOL.md",
+   "path": "webapp/src/components/projects/ProjectForm/sections/index.ts",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_BUILTIN_AGENT_SKILL.md",
+   "path": "../../../_local/internal/SKILL_TO_ADD.md",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_PARTIAL_RECON.md",
+   "path": "recon/domain_recon.py",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
+   "path": "recon/censys_enrich.py",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
+   "path": "recon/domain_recon.py",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
+   "path": "recon/port_scan.py",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
+   "path": "recon/resource_enum.py",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
+   "path": "recon/shodan_enrich.py",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
+   "path": "recon/urlscan_enrich.py",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
+   "path": "recon/whois_recon.py",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
+   "path": "webapp/src/app/graph/components/DataTable/DataTableToolbar.tsx",
+   "item": "drift-map #37"
+  },
+  {
+   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
+   "path": "../../.pre-commit-config.yaml",
+   "item": "drift-map #41"
+  },
+  {
+   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
+   "path": "../../AGENTS.md",
+   "item": "drift-map #41"
+  },
+  {
+   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
+   "path": "../../my_readmes/",
+   "item": "drift-map #41"
+  },
+  {
+   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
+   "path": "../../skills/skill-creator/SKILL.md",
+   "item": "drift-map #41"
+  },
+  {
+   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
+   "path": "../../skills/skill-sync/SKILL.md",
+   "item": "drift-map #41"
+  },
+  {
+   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
+   "path": "../../skills/skill-sync/assets/citation-check.sh",
+   "item": "drift-map #41"
+  },
+  {
+   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
+   "path": "../../skills/skill-sync/assets/drift-audit.sh",
+   "item": "drift-map #41"
+  },
+  {
+   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
+   "path": "../../skills/skill-sync/assets/sync.sh",
+   "item": "drift-map #41"
+  }
+ ]
+}

@@ -71,7 +71,49 @@ OUT="$(bash "$FX/skills/skill-sync/assets/drift-audit.sh" 2>&1)"; RC=$?
 [[ $RC -eq 1 && "$OUT" == *"[AGENTS] dead citations"* && "$OUT" == *"agentic/AGENTS.md -> tooling/missing.sh"* ]] \
     && pass "agentic/AGENTS.md -> tooling/missing.sh under [AGENTS]" || fail "exit $RC: $OUT"
 
+echo "== --docs: prose docs and the wiki, with the docs rules =="
+mkdir -p "$FX/docs/readmes" "$FX/_local" "$FX/recon/output" "$FX/webapp/app/[id]" "$FX/redamon.wiki"
+: > "$FX/_local/plan.md"
+: > "$FX/webapp/app/[id]/route.ts"
+printf '%s\n' '/_local/' 'recon/output/*.json' > "$FX/.gitignore"
+cat > "$FX/docs/readmes/README.X.md" <<'EOF'
+Live: `recon/scan_utils.py`, `recon/scan_utils.py:12`, `helpers/scan_utils.py` and the
+route `webapp/app/[id]/route.ts`.
+Dead: `recon/gone.py:5` and `recon/gone_test.py::TestX::test_y`.
+Not paths: `notes/report.md`, `bedrock/`, `tools/list`, `recon/[tool].py`, `../../etc/passwd`.
+Runtime output: `recon/output/recon_example.json`.
+Private: [plan](../../_local/plan.md).
+```
+recon/in_a_fence.py and `recon/fenced_gone.py`
+```
+EOF
+git -C "$FX/redamon.wiki" init -q 2>/dev/null
+cat > "$FX/redamon.wiki/Home.md" <<'EOF'
+See [Getting Started](Getting-Started#install), ![shot](images/none.png),
+[the guide](../docs/readmes/README.X.md), [a gone guide](../docs/readmes/README.GONE.md)
+and [the file](https://github.com/samugit83/redamon/blob/master/recon/gone_on_github.py).
+EOF
+printf '%s\n' 'Generated: `recon/generated_gone.py`.' > "$FX/redamon.wiki/MCP-API-Reference.md"
+OUT="$(bash "$FX/skills/skill-sync/assets/drift-audit.sh" --docs 2>&1)"; RC=$?
+[[ $RC -eq 1 ]] && pass "exit 1 when a doc cites a dead path" || fail "exit $RC: $OUT"
+for dead in "docs/readmes/README.X.md -> recon/gone.py" \
+            "docs/readmes/README.X.md -> recon/gone_test.py" \
+            "docs/readmes/README.X.md -> ../../_local/plan.md" \
+            "redamon.wiki/Home.md -> ../docs/readmes/README.GONE.md" \
+            "redamon.wiki/Home.md -> recon/gone_on_github.py"; do
+  [[ "$OUT" == *"  $dead"* ]] && pass "reports $dead" || fail "missing '$dead': $OUT"
+done
+TARGETS="$(printf '%s\n' "$OUT" | sed -n 's/^  .* -> //p')"
+for quiet in scan_utils.py "[id]" notes/ bedrock/ tools/list "[tool]" etc/passwd recon_example.json \
+             in_a_fence fenced_gone Getting-Started images/ README.X.md generated_gone; do
+  [[ "$TARGETS" != *"$quiet"* ]] && pass "does not report $quiet" || fail "reported $quiet: $OUT"
+done
+
+echo "== --docs leaves the default audit as it was =="
+OUT="$(bash "$FX/skills/skill-sync/assets/drift-audit.sh" --skill live 2>&1)"; RC=$?
+[[ $RC -eq 0 ]] && pass "the skill audit still ignores docs/" || fail "exit $RC: $OUT"
+
 echo
 echo "-----------------------------------------"
-printf 'drift-audit suite: \033[0;32m%d passed\033[0m, ' "$PASS"
+printf 'drift-audit suite:\033[0;32m%d passed\033[0m, ' "$PASS"
 if [[ $FAIL -gt 0 ]]; then printf '\033[0;31m%d failed\033[0m\n' "$FAIL"; exit 1; else printf '%d failed\n' "$FAIL"; fi
