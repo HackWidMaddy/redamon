@@ -8,7 +8,9 @@ Intentionally vulnerable servers for security testing and exploitation practice.
 
 ## Available Guinea Pigs
 
-Every folder in `testing/guinea_pigs/`:
+Every folder in `testing/guinea_pigs/`. Its own index, [testing/guinea_pigs/README.md](../../testing/guinea_pigs/README.md),
+adds each lab's run command and address; `tests/test_guinea_pigs_index.py` fails when a lab
+has no row there.
 
 | Folder | What it is | What it validates |
 |--------|------------|-------------------|
