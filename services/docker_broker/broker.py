@@ -61,17 +61,16 @@ _DEFAULT_ALLOWED_IMAGES = [
     "caffix/amass:latest",
     "frost19k/puredns:latest",
     "sxcurity/gau:latest",
-    "sxcurity/gau:arm64",
     "jauderho/hakrawler:latest",
     "ghcr.io/zaproxy/zaproxy:stable",
     "dolevf/graphql-cop:1.14",
     "redamon-baddns:latest",
     "redamon-wcvs:latest",
-    # Supply-chain feature (plan Phase 0.5/2): the DIRTY analyzer and the CLEAN
-    # standalone scanner. The analyzer may be spawned by a broker-socket caller
-    # (recon in L2), so it must be allowlisted or the spawn fails closed.
+    # Supply-chain feature (plan Phase 0.5/2): the DIRTY analyzer, spawned by a
+    # broker-socket caller (recon in L2), so it must be allowlisted or the spawn
+    # fails closed. The CLEAN scanner is started by the orchestrator on the real
+    # socket, so it is not on this list.
     "redamon-supply-chain-analyzer:latest",
-    "redamon-supply-chain:latest",
     "alpine",          # temp-file cleanup helper
     "alpine:latest",
 ]

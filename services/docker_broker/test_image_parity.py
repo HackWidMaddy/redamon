@@ -69,18 +69,6 @@ BROKER_IMAGES_BEYOND_RECON: dict[str, tuple[str | None, str]] = {
         "(supply_chain_recon.py) and the supply-chain scan container, both on "
         "DOCKER_HOST=broker",
     ),
-    "redamon-supply-chain:latest": (
-        None,
-        "drift-map: found in wave 2. The orchestrator starts the clean scanner "
-        "with the Docker SDK on the real socket (ContainerManager.start_supply_chain), "
-        "not through the broker, and no broker-socket caller runs it",
-    ),
-    "sxcurity/gau:arm64": (
-        None,
-        "drift-map: found in wave 2. No file names this tag: gau_helpers.py runs "
-        "GAU_DOCKER_IMAGE (sxcurity/gau:latest) with --platform linux/amd64 on an "
-        "ARM64 host",
-    ),
 }
 
 
