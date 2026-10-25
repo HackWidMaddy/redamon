@@ -145,16 +145,39 @@ CODEFIX_WORK_CONTAINER_BASE = os.environ.get("CODEFIX_WORK_CONTAINER_BASE", "/ap
 # runaway-spawn backstop, not a typical-use limit.
 MAX_PARALLEL_AI_ATTACK = 6
 
-# Sub-container images spawned by recon (Docker-in-Docker sibling containers)
+# Tool images recon spawns as sibling containers, without the tag; stop_recon
+# removes every container whose image contains one. One per `*_DOCKER_IMAGE`
+# default in recon/project_settings.py, kept by hand because this image does not
+# import recon; tests/test_sub_container_images.py fails on a missing one. The
+# supply-chain and alpine helper images are left out on purpose: a substring
+# match on them would also remove standalone supply-chain scans and unrelated
+# containers.
 SUB_CONTAINER_IMAGES = [
     "projectdiscovery/naabu",
     "projectdiscovery/httpx",
     "projectdiscovery/katana",
     "projectdiscovery/nuclei",
     "projectdiscovery/uncover",
-    "sxcurity/gau",
+    "projectdiscovery/subfinder",
+    "projectdiscovery/tlsx",
+    "caffix/amass",
     "frost19k/puredns",
+    "sxcurity/gau",
+    "jauderho/hakrawler",
+    "dolevf/graphql-cop",
+    "ghcr.io/zaproxy/zaproxy",
+    "redamon-wcvs",
+    "redamon-baddns",
 ]
+
+
+def sub_container_image_of(image_refs) -> Optional[str]:
+    """The SUB_CONTAINER_IMAGES entry one of `image_refs` (a container's
+    Config.Image and its image tags) contains, or None."""
+    for sub_image in SUB_CONTAINER_IMAGES:
+        if any(sub_image in ref for ref in image_refs if ref):
+            return sub_image
+    return None
 
 # Phase patterns to detect from logs
 # Order matters - more specific patterns should come first within each phase
@@ -1290,30 +1313,24 @@ class ContainerManager:
             containers = self.client.containers.list(all=True)
             for container in containers:
                 try:
-                    # Check if container image matches any sub-container image
                     image_tags = container.image.tags if container.image.tags else []
                     image_name = container.attrs.get("Config", {}).get("Image", "")
+                    sub_image = sub_container_image_of([image_name, *image_tags])
+                    if sub_image is None:
+                        continue
+                    container_name = container.name
+                    container_status = container.status
 
-                    for sub_image in SUB_CONTAINER_IMAGES:
-                        # Match by image name or tags
-                        if (sub_image in image_name or
-                            any(sub_image in tag for tag in image_tags)):
-                            container_name = container.name
-                            container_status = container.status
+                    if container_status in ("running", "paused"):
+                        if container_status == "paused":
+                            logger.info(f"Unpausing sub-container before stop: {container_name} ({sub_image})")
+                            container.unpause()
+                        logger.info(f"Stopping sub-container: {container_name} ({sub_image})")
+                        container.stop(timeout=5)
 
-                            # Stop if running or paused
-                            if container_status in ("running", "paused"):
-                                if container_status == "paused":
-                                    logger.info(f"Unpausing sub-container before stop: {container_name} ({sub_image})")
-                                    container.unpause()
-                                logger.info(f"Stopping sub-container: {container_name} ({sub_image})")
-                                container.stop(timeout=5)
-
-                            # Remove container
-                            logger.info(f"Removing sub-container: {container_name} ({sub_image})")
-                            container.remove(force=True)
-                            cleaned += 1
-                            break
+                    logger.info(f"Removing sub-container: {container_name} ({sub_image})")
+                    container.remove(force=True)
+                    cleaned += 1
 
                 except Exception as e:
                     logger.warning(f"Error cleaning up container {container.name}: {e}")
