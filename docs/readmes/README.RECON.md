@@ -1027,8 +1027,9 @@ flowchart LR
 
     MergeDedupe --> PD[Puredns<br/>Wildcard Filter]
     PD --> DNS
+    DNS --> WC[Wildcard control<br/>random-label probe per zone]
 
-    DNS --> Subs
+    WC --> Subs
     DNS --> IPs
     DNS --> Records
 ```
@@ -1039,7 +1040,56 @@ flowchart LR
 | **Subdomain discovery** | Finds subdomains via 5 parallel sources (crt.sh, HackerTarget, Subfinder, Amass, Knockpy) |
 | **Wildcard filtering** | Puredns validates subdomains against public DNS resolvers, removes wildcards and DNS-poisoned entries |
 | **DNS enumeration** | A, AAAA, MX, NS, TXT, CNAME records (20 parallel workers) |
+| **Wildcard control** | RedAmon's own check after DNS: drops names that answer only through their zone's wildcard DNS, and stamps the zone |
 | **IP resolution** | Maps all discovered hostnames to IPs |
+
+**Puredns can be skipped.** `run_puredns_resolve` returns `(names, status)`:
+`"filtered"`, or `"skipped:<reason>"` with the list unchanged. Discovery stores the
+status as `metadata.wildcard_filter`. `disabled` (the setting, or Stealth Mode) and
+`no_input` are not cuts; `breaker_open`, `no_resolvers`, `no_output`, `timeout`,
+`docker_missing` and `error` record a coverage gap (source `puredns`, no prune
+effect, shown in the report's Coverage Limitations).
+
+**The wildcard control** (`recon/helpers/wildcard_control.py`) runs whatever
+puredns did, so it stands in when puredns was skipped:
+
+- **Zones.** The scan root, plus each deeper parent with at least 5 direct
+  candidates; a candidate is checked against its nearest probed zone. Each zone is
+  probed with up to 3 random labels (`rdm-<uuid12>.<zone>`) through dnspython and the
+  shared `resolver_breaker`; answers mean a wildcard zone, and their union is its
+  `wildcard_ips`. Cached per run (`circuit_breaker.run_cache`).
+- **The rule.** A candidate is dropped when its own A/AAAA set is non-empty and a
+  subset of `wildcard_ips`, unless a non-guessing source listed it AND it has a
+  CNAME that is not the wildcard's own. Guessing sources: knockpy with brute force,
+  amass with `-brute` (`_guessing_sources`). A name with no address is unresolved,
+  not a wildcard match, and is kept. The scan root is never checked.
+- **Two entry points.** `filter_discovered` reads discovery's own `resolve_all_dns`
+  answers (no extra lookups); `filter_late_names` serves the names added after
+  puredns and looks up A/AAAA/CNAME only for names under a wildcard zone:
+  `merge_discovered_hostnames` (certificate SANs, tlsx, JS recon, Uncover) and
+  `run_tlsx_enrichment`, which lists the dropped SANs as `tlsx.wildcard_dropped` so
+  the tlsx writer links no `COVERS_HOST` Subdomain to them (full and partial tlsx).
+- **Limits.** At most 3 labels per zone and 50 zones per run; probes one at a time,
+  paced to `ROE_GLOBAL_MAX_RPS` when RoE is on (the capper's own rule); an
+  RoE-excluded zone is never queried. With `DNS_ENABLED` off the control does not
+  run. Stealth Mode keeps DNS on and turns puredns off, so the control is what
+  filters there.
+- **Never evidence on failure.** A failed probe leaves the zone unknown: nothing
+  under it is dropped, and a `wildcard_control` coverage gap is recorded, as for
+  the zone cap and for DNS off when puredns did not filter either.
+- **The graph.** Probed zones travel as `wildcard_zones` (`{zone: {is_wildcard,
+  ips}}`, definite answers only). `update_graph_wildcard_zones` (Domain mixin)
+  stamps `is_wildcard_zone` / `wildcard_ips` with MATCH and SET only: the org
+  Domain for an org zone, the Subdomain of that name for a deeper one. The domain
+  and partial discovery writers call it, and `main._stamp_wildcard_zones` once
+  more at the end of each domain group for zones the late names added.
+
+**DNS skipped.** With `resolve=False`, discovery writes every candidate's status as
+`"unverified"`, the value uncover and the passive-DNS writers use for names nobody
+resolved. `Subdomain.status` is shared with http_probe, which later writes
+`"no_http"` or the HTTP code; the readers count "resolved" by a `RESOLVES_TO` edge
+(report, Insights) or by `status = 'resolved'` (http_probe's `no_http` demotion),
+so an unverified name never counts as resolved.
 
 📖 **Key Parameters:**
 ```python
