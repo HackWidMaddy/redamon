@@ -80,8 +80,12 @@ scan-container spawn and every agent graph call. Every statement is guarded by
 | | Count | Source |
 |---|---|---|
 | `CREATE CONSTRAINT` | 45 | rendered by `schema.build_constraints()` from `schema_keys.py` |
-| `CREATE INDEX` | 79 | `TENANT_INDEXES` + `ADDITIONAL_INDEXES` in `schema.py` |
-| `DROP` (legacy) | 43 | `DROP_LEGACY_CONSTRAINTS` in `schema.py` |
+| `CREATE INDEX` | 77, each with its own name | `TENANT_INDEXES` + `ADDITIONAL_INDEXES` in `schema.py` |
+| `DROP` (legacy, unconditional) | 41 | `DROP_LEGACY_CONSTRAINTS` in `schema.py` |
+| `DROP` (legacy-shaped, conditional) | 3 | `LEGACY_SHAPED_CONSTRAINTS`: `drop_legacy_shaped_constraints()` drops one only while the live constraint's key differs from `schema_keys.py`, so a live tenant-scoped constraint is never rebuilt |
+
+`tests/test_schema_legacy_drops.py` fails if an unconditional drop names a
+constraint or index the code still creates, or if two indexes share a name.
 
 ```bash
 # exactly what the database gets, in order
@@ -91,8 +95,7 @@ for s in DROP_LEGACY_CONSTRAINTS + CONSTRAINTS + TENANT_INDEXES + ADDITIONAL_IND
 ```
 
 This file used to carry that listing verbatim. It was accurate - checked name
-by name at removal, 78 index names and 43 drops matching the code exactly - but
-being accurate was never the point: it was a copy that had to be maintained by
+by name at removal - but being accurate was never the point: it was a copy that had to be maintained by
 hand, and the next label added would have been the one nobody remembered to add
 here.
 
