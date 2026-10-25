@@ -28,18 +28,6 @@
   {
    "kind": "count",
    "file": "README.md",
-   "target": "node types:17",
-   "item": "drift-map #48"
-  },
-  {
-   "kind": "count",
-   "file": "README.md",
-   "target": "node types:19",
-   "item": "drift-map #48"
-  },
-  {
-   "kind": "count",
-   "file": "README.md",
    "target": "settings:500+",
    "item": "drift-map #49"
   },

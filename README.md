@@ -441,7 +441,7 @@ The platform is built around six pillars:
 |--------|-------------|
 | **Reconnaissance Pipeline** | A **parallelized fan-out / fan-in** scanning pipeline that maps your target's entire attack surface (starting from a single domain, **IP addresses / CIDR ranges**, or a **Domain batch** of many domains scanned in turn) from subdomain discovery (5 concurrent tools) through port scanning, Nmap service detection and NSE vulnerability scripts, HTTP probing, resource enumeration, and vulnerability detection. Independent modules run concurrently via `ThreadPoolExecutor`, graph DB updates happen in a background thread, and results are stored as a rich, queryable graph. Complemented by standalone GVM network scanning, GitHub secret hunting, and Secret Multiscanner deep secret scanning modules. |
 | **AI Agent Orchestrator** | A LangGraph-based autonomous agent that reasons about the graph, selects security tools via MCP, transitions through informational / exploitation / post-exploitation phases, and can be steered in real-time via chat. |
-| **Attack Surface Graph** | A Neo4j knowledge graph with 17 node types and 20+ relationship types that serves as the single source of truth for every finding, and the primary data source the AI agent queries before every decision. |
+| **Attack Surface Graph** | A Neo4j knowledge graph (every node type and relationship is declared once, in [graph_db/schema_sections.md](graph_db/schema_sections.md)) that serves as the single source of truth for every finding, and the primary data source the AI agent queries before every decision. |
 | **EvoGraph** | A persistent, evolutionary attack chain graph in Neo4j that tracks every step, finding, decision, and failure across the attack lifecycle, bridging the recon graph and enabling cross-session intelligence accumulation. |
 | **CypherFix** | Automated vulnerability remediation pipeline: one triage run scores every finding from the graph with a fixed risk model, groups the ones that share a fix, has an LLM check the evidence behind each, and writes one fix item per group. A CodeFix agent then clones the target repository, implements a fix using a ReAct loop with 11 code tools, and opens a GitHub pull request. |
 | **Project Settings Engine** | 500+ per-project parameters (exposed through the webapp UI) that control every tool's behavior, from Naabu thread counts to Nuclei severity filters to agent approval gates. |
@@ -716,7 +716,7 @@ OpenAI-compatible provider settings include a **reasoning effort** control. Enab
 
 ### Attack Surface Graph
 
-A **Neo4j knowledge graph** with 19 node types and 20+ relationship types, the single source of truth for the target's attack surface. The agent queries it before every decision via natural language → Cypher translation.
+A **Neo4j knowledge graph**, the single source of truth for the target's attack surface. Its node types and relationships are declared once, in [graph_db/schema_sections.md](graph_db/schema_sections.md), and the schema the agent is served is generated from that file. The agent queries it before every decision via natural language → Cypher translation.
 
 > **[Wiki: Attack Surface Graph](https://github.com/samugit83/redamon/wiki/Attack-Surface-Graph)** | **[Technical: GRAPH.SCHEMA.md](docs/readmes/GRAPH.SCHEMA.md)**
 
