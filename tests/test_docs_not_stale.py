@@ -465,6 +465,8 @@ def _docs_findings() -> dict[tuple[str, str, str], str]:
                             f"{rel}:{lineno}: {repo_url.group(1)} is not in the repository"
                 elif re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I):
                     continue
+                elif target == "#":
+                    findings[("anchor", rel, target)] = f"{rel}:{lineno}: an empty link"
                 elif not page_part:
                     if anchor and unquote(anchor).lower() not in _anchors(doc):
                         findings[("anchor", rel, target)] = f"{rel}:{lineno}: no anchor #{anchor} in this file"
