@@ -752,7 +752,7 @@ Unified view of active sessions: meterpreter, reverse/bind shells, and listeners
 
 Full interactive **PTY shell access** to the Kali sandbox container directly from the graph page via **xterm.js**. Access all pre-installed pentesting tools (Metasploit, Nmap, Nuclei, Hydra, sqlmap) without leaving the browser. Features dark terminal theme, connection status indicator, auto-reconnect with exponential backoff, fullscreen mode, and browser-side keepalive.
 
-> **[Wiki: The Graph Dashboard](https://github.com/samugit83/redamon/wiki/The-Graph-Dashboard#redamon-terminal)**
+> **[Wiki: Red Zone (RedAmon Terminal)](https://github.com/samugit83/redamon/wiki/Red-Zone#redamon-terminal)**
 
 ### CypherFix: Automated Vulnerability Remediation
 
@@ -834,7 +834,7 @@ LLM-based guardrail preventing targeting of unauthorized domains: blocks governm
 
 Per-tool human-in-the-loop gate for dangerous operations. When enabled, the agent pauses before executing high-impact tools (Nmap, Nuclei, Metasploit, Hydra, Kali shell, code execution) and presents an inline **Allow / Deny** prompt in the chat timeline. Supports both single-tool and parallel-wave (plan) confirmation modes. Users can approve, reject, or modify tool arguments before execution proceeds. Disabled via the `Require Tool Confirmation` toggle in Project Settings.
 
-> **[Wiki: Pentest Agent (Tool Confirmation)](https://github.com/samugit83/redamon/wiki/Pentest-Agent#tool-confirmation-gate)**
+> **[Technical: README.AGENTIC_SYSTEM.md (Tool Confirmation Gate)](docs/readmes/README.AGENTIC_SYSTEM.md#tool-confirmation-gate)**
 
 ### Pentest Reports
 

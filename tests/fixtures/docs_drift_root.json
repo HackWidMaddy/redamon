@@ -24,18 +24,6 @@
    "file": "README.md",
    "target": "docs/readmes/README.AGENTIC_SYSTEM.md#fireteam--parallel-specialist-sub-agents",
    "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "README.md",
-   "target": "https://github.com/samugit83/redamon/wiki/Pentest-Agent#tool-confirmation-gate",
-   "item": "drift-map #52"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "README.md",
-   "target": "https://github.com/samugit83/redamon/wiki/The-Graph-Dashboard#redamon-terminal",
-   "item": "drift-map #52"
   }
  ]
 }
