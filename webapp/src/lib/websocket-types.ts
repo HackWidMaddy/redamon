@@ -69,6 +69,27 @@ export enum MessageType {
   LATS_START = 'lats_start',
   LATS_TREE_UPDATE = 'lats_tree_update',
   LATS_COMPLETE = 'lats_complete',
+
+  // Background-job lifecycle (job_spawn / job_cancel), fanned out by
+  // agentic/ws_job_emitter.py to every connection of the job's project.
+  JOB_UPDATE = 'job_update',
+}
+
+/**
+ * Server messages the webapp receives and deliberately does nothing with, each
+ * with the reason. Every other server message must have a handler:
+ * websocket-types.parity.test.ts fails a value that has neither, so a message
+ * the agent adds is a decision instead of a silent drop.
+ */
+export const IGNORED_SERVER_MESSAGES: Readonly<Partial<Record<MessageType, string>>> = {
+  [MessageType.JOB_UPDATE]:
+    'No webapp view lists agent background jobs; the agent reads a job through job_status / job_wait, whose output the drawer shows as a tool result.',
+  [MessageType.THINKING_CHUNK]:
+    'The drawer renders the complete thought from THINKING, not the streamed partials.',
+  [MessageType.EXECUTION_STEP]:
+    'The drawer builds its timeline from the tool and thinking events; the step record is not displayed.',
+  [MessageType.SKILL_INJECT_ACK]:
+    'The drawer shows an injected chat skill when it sends it; the queue position in the ack is not displayed.',
 }
 
 // ---------------------------------------------------------------------------

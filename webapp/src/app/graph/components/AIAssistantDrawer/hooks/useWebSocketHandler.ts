@@ -108,6 +108,8 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
   }, [])
 
   const handleWebSocketMessage = useCallback((message: ServerMessage) => {
+    // A server message with no case here must be listed, with its reason, in
+    // IGNORED_SERVER_MESSAGES (websocket-types.ts).
     switch (message.type) {
       case MessageType.CONNECTED:
         break
