@@ -18,6 +18,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_neo4j import Neo4jGraph
 
 from project_settings import get_setting, is_tool_allowed_in_phase
+from graph_db.coverage_stamps import COVERAGE_SUMMARY_CYPHER, coverage_summary, coverage_summary_lines
 from graph_db.tenant_filter import (
     find_disallowed_write_operation as _shared_find_disallowed_write_operation,
     inject_tenant_filter as _shared_inject_tenant_filter,
@@ -942,12 +943,14 @@ Cypher Query:"""
         return graph_schema
 
     def get_summary_tool(self) -> Optional[callable]:
-        """What this project ACTUALLY contains: a count per label.
+        """What this project ACTUALLY contains: a count per label, and which web
+        hosts each stamping module actually analyzed.
 
-        Exists because "no results" has two very different causes - the scan ran
-        and the project is clean, or that surface was never scanned - and an
-        agent that cannot tell them apart reports the second as the first, which
-        is a false negative in a security tool.
+        Exists because "no results" has three very different causes - the scan
+        ran and the project is clean, that surface was never scanned, or every
+        such finding is muted - and an agent that cannot tell them apart reports
+        the second or third as the first, which is a false negative in a
+        security tool.
 
         COUNTS ONLY, never sample values: sample values are live target data
         (hostnames, secrets, endpoints) and belong in a deliberate query, not in
@@ -959,11 +962,15 @@ Cypher Query:"""
         async def graph_summary() -> str:
             """
             Summarise what this project's attack-surface graph actually contains:
-            a count per node type and the relationships present.
+            a count per node type, the relationships present, and per module
+            (JS Recon, Nuclei) how many web hosts it analyzed completely,
+            partly, found nothing to analyze on, failed on, or never looked at.
 
-            Read this before concluding that something is ABSENT. If a node type
-            is missing entirely, that surface was never scanned - which is a very
-            different answer from "it was scanned and is clean".
+            Read this before concluding that something is ABSENT. A node type
+            missing from the counts means one of three things: never scanned,
+            scanned and clean, or every such finding muted by the operator
+            (muted findings are hidden from these counts). Check the coverage
+            lines before calling a host clean.
 
             Takes no arguments. Returns counts only, never sample values.
 
@@ -1016,6 +1023,15 @@ Cypher Query:"""
                 # A plain failure, NEVER an empty summary: an empty summary reads
                 # as "nothing has ever been scanned".
                 return "Error: could not read the graph summary."
+            # The coverage lines explain the counts; an unreadable one is said
+            # so, never shown as zero or as "not recorded".
+            try:
+                coverage = coverage_summary_lines(coverage_summary(next(iter(
+                    await run_neo4j_read(manager.graph.query, COVERAGE_SUMMARY_CYPHER, params=params)
+                ), None)))
+            except Exception as e:
+                logger.warning(f"[{user_id}/{project_id}] graph_summary coverage unreadable: {e}")
+                coverage = ["  Coverage could not be read this time; the counts above are still exact."]
 
             if not nodes:
                 return (
@@ -1031,6 +1047,12 @@ Cypher Query:"""
                 lines += [f"  {r['type']}: {r['count']}" for r in rels]
             else:
                 lines.append("No relationships between nodes yet.")
+            lines.append("Web hosts (BaseURL) per module, from its last run:")
+            lines += coverage
+            lines.append(
+                "A node type or finding missing here means never scanned, scanned and clean, "
+                "or all of it muted by the operator (muted findings are not counted). Only a "
+                "host a module completed is clean for that module.")
             return "\n".join(lines)
 
         return graph_summary

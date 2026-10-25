@@ -108,6 +108,22 @@ class TestCoverageStampsLive(unittest.TestCase):
                           uid=self.uid).single()["c"]
         self.assertEqual(ghost, 0)
 
+    def test_the_summary_counts_this_tenant_only(self):
+        from graph_db.coverage_stamps import COVERAGE_SUMMARY_CYPHER, coverage_summary
+        with self.driver.session() as s:
+            s.run("MATCH (b:BaseURL {user_id: $uid}) SET b.source = 'http_probe'", uid=self.uid)
+        self._run({"https://app.example.com:443": {"status": "complete", "inputs": 2, "outputs": 0,
+                                                   "reason": None}})
+        with self.driver.session() as s:
+            row = s.run(COVERAGE_SUMMARY_CYPHER, tenant_user_id=self.uid, tenant_project_id=self.pid).single()
+            other = s.run(COVERAGE_SUMMARY_CYPHER, tenant_user_id=self.uid,
+                          tenant_project_id=self.other).single()
+        summary = coverage_summary(dict(row))
+        self.assertEqual(summary["js_recon"], {"recorded": True, "complete": 1, "partial": 0, "no_input": 0,
+                                               "failed": 0, "not_scanned": 2})
+        self.assertEqual(summary["nuclei"], {"recorded": False})
+        self.assertEqual(coverage_summary(dict(other))["js_recon"], {"recorded": False})
+
     def test_a_later_complete_run_clears_the_reason(self):
         self._run({"https://app.example.com:443": {"status": "failed", "inputs": 0, "outputs": 0,
                                                    "reason": "host unreachable"}}, module="nuclei")

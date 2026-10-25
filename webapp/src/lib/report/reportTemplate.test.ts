@@ -900,6 +900,48 @@ describe('Coverage Limitations (circuit breakers)', () => {
   })
 })
 
+describe('JavaScript section coverage (plan 09.2)', () => {
+  const cov = (over: Partial<NonNullable<ReportData['jsRecon']['coverage']>> = {}) => ({
+    recorded: true, complete: 3, partial: 0, noInput: 1, failed: 2, notScanned: 1,
+    failedReasons: [{ reason: 'host unreachable', hosts: 2 }], partialReasons: [], ...over,
+  })
+  const withJs = (totalFindings: number, coverage?: ReturnType<typeof cov>) => {
+    const base = makeReportData()
+    return generateReportHtml(makeReportData({ jsRecon: { ...base.jsRecon, totalFindings, coverage } }), null)
+  }
+
+  test('zero findings on analyzed hosts renders the section, saying so', () => {
+    const html = withJs(0, cov())
+    expect(html).toContain('id="js-recon"')
+    expect(html).toContain('href="#js-recon"')
+    expect(html).toContain('JavaScript analysis: 3 hosts analyzed, no findings; 1 host served no JavaScript; '
+      + '3 hosts not analyzed (2 host unreachable, 1 never looked at).')
+    expect(html).not.toContain('<h3>Findings Detail</h3>')
+  })
+
+  test('a host only partly analyzed counts as analyzed and is named', () => {
+    const html = withJs(0, cov({ partial: 1, failed: 0, notScanned: 0, noInput: 0,
+      failedReasons: [], partialReasons: [{ reason: 'file cap', hosts: 1 }] }))
+    expect(html).toContain('JavaScript analysis: 4 hosts analyzed, no findings; 1 only partly (file cap).')
+  })
+
+  test('with findings, the coverage line sits under the counts', () => {
+    const html = withJs(2, cov({ failed: 0, notScanned: 0, noInput: 0, failedReasons: [] }))
+    expect(html).toContain('JavaScript analysis: 3 hosts analyzed.')
+  })
+
+  test('no coverage recorded and no findings: no section, as before', () => {
+    expect(withJs(0, cov({ recorded: false }))).not.toContain('id="js-recon"')
+    expect(withJs(0)).not.toContain('id="js-recon"')
+  })
+
+  test('a reason is target-adjacent text and is escaped', () => {
+    const html = withJs(0, cov({ failedReasons: [{ reason: '<script>x</script>', hosts: 2 }] }))
+    expect(html).not.toContain('<script>x</script>')
+    expect(html).toContain('&lt;script&gt;')
+  })
+})
+
 describe('RoE provenance', () => {
   test('the report names the document and when it applied', () => {
     const data = makeReportData()

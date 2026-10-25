@@ -7,7 +7,7 @@
  * Network Topology, Recommendations, Appendix.
  */
 
-import type { ReportData, VulnFinding, CveChain, ExploitRecord } from './reportData'
+import type { ReportData, VulnFinding, CveChain, ExploitRecord, JsReconCoverage } from './reportData'
 import { type ScopeGroup, groupLabel, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
 import { projectTargetLabel } from '@/lib/projectSummary'
 import { validationLabel } from '@/lib/secrets/validationStatus'
@@ -583,7 +583,7 @@ function renderTOC(data: ReportData): string {
   if (hasSecretsSection(data)) {
     dynamicSections.push({ id: 'secrets', label: 'Secret Detection' })
   }
-  if (data.jsRecon.totalFindings > 0) {
+  if (data.jsRecon.totalFindings > 0 || data.jsRecon.coverage?.recorded) {
     dynamicSections.push({ id: 'js-recon', label: 'JavaScript Reconnaissance' })
   }
   if (data.supplyChain && (data.supplyChain.totalPackages > 0 || data.supplyChain.findings.length > 0)) {
@@ -1377,9 +1377,45 @@ function renderSecrets(data: ReportData): string {
 </div>`
 }
 
+/**
+ * "JavaScript analysis: 3 hosts analyzed, no findings; 1 host served no
+ * JavaScript; 2 hosts not analyzed (host unreachable)." Zero findings means
+ * something only next to the hosts that were actually read.
+ */
+function jsCoverageSentence(cov: JsReconCoverage, totalFindings: number): string {
+  const hosts = (n: number) => `${n} host${n === 1 ? '' : 's'}`
+  const reasonList = (rs: { reason: string; hosts: number }[], counted: boolean) =>
+    rs.map(r => counted ? `${r.hosts} ${esc(r.reason)}` : esc(r.reason)).join(', ')
+  const parts = [`JavaScript analysis: ${hosts(cov.complete + cov.partial)} analyzed${totalFindings === 0 ? ', no findings' : ''}`]
+  if (cov.partial) {
+    const why = reasonList(cov.partialReasons, false)
+    parts.push(`${cov.partial} only partly${why ? ` (${why})` : ''}`)
+  }
+  if (cov.noInput) parts.push(`${hosts(cov.noInput)} served no JavaScript`)
+  if (cov.failed + cov.notScanned) {
+    const why = [
+      reasonList(cov.failedReasons, true),
+      cov.notScanned ? `${cov.notScanned} never looked at` : '',
+    ].filter(Boolean).join(', ')
+    parts.push(`${hosts(cov.failed + cov.notScanned)} not analyzed${why ? ` (${why})` : ''}`)
+  }
+  return `${parts.join('; ')}.`
+}
+
 function renderJsRecon(data: ReportData): string {
   const js = data.jsRecon
-  if (js.totalFindings === 0) return ''
+  const coverage = js.coverage?.recorded
+    ? `<p style="margin-bottom:12px">${jsCoverageSentence(js.coverage, js.totalFindings)}</p>`
+    : ''
+  if (js.totalFindings === 0) {
+    if (!coverage) return ''
+    return `
+<div class="page-break"></div>
+<div class="section" id="js-recon">
+  <h2 class="section-title">JavaScript Reconnaissance</h2>
+  ${coverage}
+</div>`
+  }
 
   const sevRows = js.bySeverity.map(s => `
     <tr><td>${sevBadge(s.severity)}</td><td>${s.count}</td></tr>`).join('')
@@ -1401,6 +1437,7 @@ function renderJsRecon(data: ReportData): string {
 <div class="section" id="js-recon">
   <h2 class="section-title">JavaScript Reconnaissance</h2>
   <p style="margin-bottom:12px">Deep analysis of JavaScript files revealed ${js.totalFindings} finding(s) across dependency confusion risks, source map exposure, DOM sinks, developer comments, framework detection, and AI/LLM SDK exposure (vendor SDK imports, hard-coded provider API keys, the dangerouslyAllowBrowser opt-in, AI-frontend product markers, and provider base URLs visible in shipped JS chunks).</p>
+  ${coverage}
   <div class="two-col">
     <div>
       <h3>By Severity</h3>

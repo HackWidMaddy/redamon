@@ -399,10 +399,14 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
       title: 'Summarise the attack-surface graph',
       description:
         'What this project ACTUALLY contains: a count per node type, the relationships present, ' +
-        'the current scan version, and whether the live graph is settled.\n\n' +
-        'Read this before concluding that something is absent. If a node type is missing ' +
-        'entirely, that surface was never scanned - which is a very different answer from "it ' +
-        'was scanned and is clean". Counts only, never sample values.\n\n' +
+        'the current scan version, whether the live graph is settled, and a `coverage` block: per ' +
+        'module (js_recon, nuclei), how many web hosts (BaseURL) it analyzed `complete`, `partial`, ' +
+        'found `no_input` on or `failed` on, and how many live hosts it never looked at ' +
+        '(`not_scanned`). `recorded: false` means the project predates coverage records.\n\n' +
+        'Read this before concluding that something is absent. A node type missing from the counts ' +
+        'means one of three things: never scanned, scanned and clean, or every such finding ' +
+        'suppressed (suppressed findings are not counted). Check `coverage` and the suppressed ' +
+        'findings before calling anything clean. Counts only, never sample values.\n\n' +
         `${GRAPH_TOOL_USAGE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),

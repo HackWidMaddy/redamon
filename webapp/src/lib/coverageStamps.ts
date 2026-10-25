@@ -37,6 +37,34 @@ export interface CoverageLine {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
+const COUNT_BUCKETS = [...COVERAGE_STATUSES, 'not_scanned'] as const
+export type CoverageCounts =
+  | { recorded: false }
+  | ({ recorded: true } & Record<(typeof COUNT_BUCKETS)[number], number>)
+
+/**
+ * The agent summary op's per-module host counts (coverage_summary in
+ * graph_db/coverage_stamps.py), reduced to the known modules and buckets.
+ * `null` when the block is absent: an older agent, or a count it could not read.
+ */
+export function coverageCountsBlock(raw: unknown): Record<CoverageModule, CoverageCounts> | null {
+  if (!raw || typeof raw !== 'object') return null
+  const out = {} as Record<CoverageModule, CoverageCounts>
+  for (const m of COVERAGE_MODULES) {
+    const entry = (raw as Record<string, unknown>)[m.key] as Record<string, unknown> | undefined
+    if (!entry || entry.recorded !== true) {
+      out[m.key] = { recorded: false }
+      continue
+    }
+    const counts = Object.fromEntries(COUNT_BUCKETS.map(b => {
+      const n = Number(entry[b])
+      return [b, Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0]
+    })) as Record<(typeof COUNT_BUCKETS)[number], number>
+    out[m.key] = { recorded: true, ...counts }
+  }
+  return out
+}
+
 /** The modules any BaseURL of the project carries a stamp for. */
 export function recordedCoverageModules(
   nodes: readonly { type: string; properties?: Record<string, unknown> }[] | null | undefined,

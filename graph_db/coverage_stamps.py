@@ -29,6 +29,57 @@ COVERAGE_PROPERTIES = tuple(f"{m}_{f}" for m in COVERAGE_MODULES for f in COVERA
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
+_LABELS = {"js_recon": "JS Recon", "nuclei": "Nuclei"}
+_BUCKETS = (*COVERAGE_STATUSES, "not_scanned")
+
+
+def _count(module: str, bucket: str) -> str:
+    # A live host is one http_probe answered (it rewrites `source` on every
+    # write); a module that left it unstamped never looked at it.
+    test = (f"bu.{module}_status IS NULL AND bu.source = 'http_probe'" if bucket == "not_scanned"
+            else f"bu.{module}_status = '{bucket}'")
+    return f"sum(CASE WHEN {test} THEN 1 ELSE 0 END) AS {module}_{bucket}"
+
+
+#: Per module, how many of the project's BaseURLs sit in each status, and how
+#: many live ones carry no stamp. Fixed and server-side, with the tenant filter
+#: written by hand like the label census; counts only, never a URL.
+COVERAGE_SUMMARY_CYPHER = (
+    "MATCH (bu:BaseURL {user_id: $tenant_user_id, project_id: $tenant_project_id}) "
+    "RETURN " + ", ".join(_count(m, b) for m in COVERAGE_MODULES for b in _BUCKETS)
+)
+
+
+def coverage_summary(row) -> dict:
+    """``{module: {"recorded": True, <status>: n, "not_scanned": n}}`` from one
+    COVERAGE_SUMMARY_CYPHER row. A module no BaseURL carries a stamp for is
+    ``{"recorded": False}`` and claims no count: its hosts are not "not
+    scanned", the project predates the stamps or never ran the module."""
+    row = row or {}
+    out = {}
+    for module in COVERAGE_MODULES:
+        counts = {b: int(row.get(f"{module}_{b}") or 0) for b in _BUCKETS}
+        if any(counts[s] for s in COVERAGE_STATUSES):
+            out[module] = {"recorded": True, **counts}
+        else:
+            out[module] = {"recorded": False}
+    return out
+
+
+def coverage_summary_lines(summary: dict) -> list:
+    """The coverage_summary as text, one line per module."""
+    lines = []
+    for module in COVERAGE_MODULES:
+        c = summary.get(module) or {"recorded": False}
+        if not c.get("recorded"):
+            lines.append(f"  {_LABELS[module]}: coverage not recorded (scanned before coverage stamps "
+                         f"existed, or never run)")
+            continue
+        lines.append(f"  {_LABELS[module]}: {c['complete']} complete, {c['partial']} partial, "
+                     f"{c['no_input']} no input, {c['failed']} failed; "
+                     f"{c['not_scanned']} live hosts not scanned")
+    return lines
+
 
 def base_url_variants(url: str) -> list:
     """The spellings one web service's ``BaseURL.url`` can have: as given, and

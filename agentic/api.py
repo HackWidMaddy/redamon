@@ -4590,13 +4590,23 @@ def _graph_exec_summary(params: dict) -> JSONResponse:
     (hostnames, secrets, endpoints) and would leak recon output into an external
     agent's context ahead of any deliberate query.
     """
+    from graph_db.coverage_stamps import COVERAGE_SUMMARY_CYPHER, coverage_summary
+
     try:
         nodes, _ = _graph_exec_run(_GRAPH_SUMMARY_NODES_CYPHER, params)
         rels, _ = _graph_exec_run(_GRAPH_SUMMARY_RELS_CYPHER, params)
     except Exception as e:
         logger.error(f"graph/exec summary failed: {e}")
         return JSONResponse(status_code=500, content={"error": "graph query failed"})
-    return JSONResponse(content={"nodes": nodes, "relationships": rels})
+    body = {"nodes": nodes, "relationships": rels}
+    # The per-host coverage counts explain the census, they are not part of it:
+    # an unreadable count drops the block, never the answer, and never reads as 0.
+    try:
+        coverage, _ = _graph_exec_run(COVERAGE_SUMMARY_CYPHER, params)
+        body["coverage"] = coverage_summary(coverage[0] if coverage else None)
+    except Exception as e:
+        logger.warning(f"graph/exec summary: coverage counts unreadable: {e}")
+    return JSONResponse(content=body)
 
 
 def _graph_exec_respond(final: str, params: dict) -> JSONResponse:

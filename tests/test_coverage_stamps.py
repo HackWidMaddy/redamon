@@ -24,7 +24,11 @@ sys.modules.setdefault("dotenv", MagicMock())
 from graph_db.coverage_stamps import (  # noqa: E402
     COVERAGE_MODULES,
     COVERAGE_PROPERTIES,
+    COVERAGE_STATUSES,
+    COVERAGE_SUMMARY_CYPHER,
     base_url_variants,
+    coverage_summary,
+    coverage_summary_lines,
     stamp_base_url_coverage,
 )
 from graph_db.mixins.recon.js_recon_mixin import JsReconMixin  # noqa: E402
@@ -151,6 +155,44 @@ class TestStampWriter(unittest.TestCase):
     def test_every_written_property_is_declared(self):
         self.assertEqual(COVERAGE_PROPERTIES, tuple(
             f"{m}_{f}" for m in COVERAGE_MODULES for f in ("at", "status", "inputs", "outputs", "reason")))
+
+
+class TestCoverageSummary(unittest.TestCase):
+    """The per-module host counts graph_summary reports (plan 09.2)."""
+
+    def _row(self, **counts):
+        row = {f"{m}_{s}": 0 for m in COVERAGE_MODULES for s in (*COVERAGE_STATUSES, "not_scanned")}
+        row.update(counts)
+        return row
+
+    def test_a_stamped_module_reports_every_bucket(self):
+        summary = coverage_summary(self._row(js_recon_complete=3, js_recon_partial=1, js_recon_no_input=2,
+                                             js_recon_not_scanned=4))
+        self.assertEqual(summary["js_recon"], {"recorded": True, "complete": 3, "partial": 1, "no_input": 2,
+                                               "failed": 0, "not_scanned": 4})
+
+    def test_a_module_with_no_stamp_anywhere_is_not_recorded_and_claims_no_count(self):
+        # Its hosts are not "not scanned": the project predates the stamps, or
+        # never ran the module.
+        summary = coverage_summary(self._row(nuclei_not_scanned=9))
+        self.assertEqual(summary["nuclei"], {"recorded": False})
+
+    def test_no_row_means_nothing_is_recorded(self):
+        self.assertEqual(coverage_summary(None), {m: {"recorded": False} for m in COVERAGE_MODULES})
+
+    def test_the_text_tells_the_three_answers_apart(self):
+        lines = "\n".join(coverage_summary_lines(coverage_summary(self._row(
+            js_recon_complete=3, js_recon_failed=1, js_recon_not_scanned=2))))
+        self.assertIn("JS Recon: 3 complete, 0 partial, 0 no input, 1 failed; 2 live hosts not scanned", lines)
+        self.assertIn("Nuclei: coverage not recorded", lines)
+
+    def test_the_cypher_is_tenant_scoped_and_projects_counts_only(self):
+        self.assertIn("user_id: $tenant_user_id", COVERAGE_SUMMARY_CYPHER)
+        self.assertIn("project_id: $tenant_project_id", COVERAGE_SUMMARY_CYPHER)
+        self.assertNotIn("bu.url", COVERAGE_SUMMARY_CYPHER)
+        for module in COVERAGE_MODULES:
+            for bucket in (*COVERAGE_STATUSES, "not_scanned"):
+                self.assertIn(f"AS {module}_{bucket}", COVERAGE_SUMMARY_CYPHER)
 
 
 class Client(JsReconMixin, VulnMixin):

@@ -37,6 +37,7 @@ import { agentBaseUrl } from '@/lib/agentFetch'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { execCypher, graphSchemaDoc, nlQuery, type GraphRecords } from '@/lib/mcp/graphClient'
 import { staleFindingsCypher } from '@/lib/mcp/findingLabels'
+import { coverageCountsBlock } from '@/lib/coverageStamps'
 import { kaliToolboxDoc } from '@/lib/mcp/kaliClient'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
@@ -415,6 +416,9 @@ export async function graphSummary(ctx: McpContext, projectId: string) {
   const summary = await summaryCounts(ctx, projectId)
   const stale = await staleFindingCount(ctx, projectId)
   const liveGraphState = await resolveLiveGraphState(projectId)
+  // Computed by the agent inside the same summary op, so the block costs this
+  // most-called tool no round trip of its own.
+  const coverage = coverageCountsBlock(summary.coverage)
 
   return {
     projectId,
@@ -429,6 +433,9 @@ export async function graphSummary(ctx: McpContext, projectId: string) {
     // count" would be the same false negative the rest of this tool exists to
     // prevent, one field down.
     ...(stale === null ? {} : { hiddenFromCounts: { stale } }),
+    // Per module, the web hosts (BaseURL) it analyzed in each state and the
+    // live ones it never looked at. Same rule as above: absent, never zeros.
+    ...(coverage === null ? {} : { coverage }),
   }
 }
 
@@ -496,6 +503,7 @@ async function summaryCounts(ctx: McpContext, projectId: string) {
   return (await resp.json()) as {
     nodes: { label: string; count: number }[]
     relationships: { type: string; count: number }[]
+    coverage?: unknown
   }
 }
 

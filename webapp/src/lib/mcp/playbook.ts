@@ -213,10 +213,12 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
   graph_summary: {
     whenToUse:
       'Your first read on any project, and your last check before concluding anything is absent. It ' +
-      'gives a count per node type, the relationships present, the current scan version, and ' +
-      'whether the live graph is settled.',
+      'gives a count per node type, the relationships present, the current scan version, whether ' +
+      'the live graph is settled, and per module (JS Recon, Nuclei) how many web hosts it analyzed ' +
+      'completely, partly or not at all.',
     gotchas: [
-      'A node type MISSING from the census entirely means that surface was never scanned. That is a completely different answer from "it was scanned and found nothing", and confusing the two produces a false all-clear.',
+      'A node type MISSING from the census is not an answer on its own. It means one of three things: the surface was never scanned, it was scanned and nothing was found, or every such finding was suppressed. The `coverage` block says which web hosts a module actually looked at, and the suppressed findings are read separately. Confusing the three produces a false all-clear.',
+      'In `coverage`, only `complete` means a module read everything it had for a host. `not_scanned` counts live hosts it never looked at, and `recorded: false` means the project was scanned before coverage was recorded, which says nothing either way.',
       'Only counts read from a settled graph are trustworthy. Any other state means wait and re-check.',
       'The counts already exclude suppressed and superseded findings. A raw Cypher count will be higher, and neither number is wrong.',
       'Counts only, never sample values. Use the hunt tools to see the things themselves.',

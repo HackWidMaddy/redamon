@@ -461,6 +461,57 @@ describe('graph_summary', () => {
     okSummary(3)
     expect(JSON.stringify(await graphSummary(ctx(), 'p1'))).not.toMatch(/muted/i)
   })
+
+  describe('the coverage block (plan 09.2)', () => {
+    const withCoverage = (coverage: unknown) =>
+      h.fetch.mockImplementation(async (_url: unknown, init: { body: string }) => {
+        const body = JSON.parse(init.body) as { op?: string }
+        if (body.op === 'summary') {
+          return {
+            ok: true,
+            json: async () => ({ nodes: [{ label: 'BaseURL', count: 6 }], relationships: [], coverage }),
+          }
+        }
+        return { ok: true, json: async () => ({ records: [{ stale: 0 }] }) }
+      })
+
+    test('per module, the hosts in each state and the live ones never looked at', async () => {
+      withCoverage({
+        js_recon: { recorded: true, complete: 3, partial: 1, no_input: 1, failed: 0, not_scanned: 1 },
+        nuclei: { recorded: false },
+      })
+      const r = await graphSummary(ctx(), 'p1')
+      expect(r.coverage).toEqual({
+        js_recon: { recorded: true, complete: 3, partial: 1, no_input: 1, failed: 0, not_scanned: 1 },
+        nuclei: { recorded: false },
+      })
+    })
+
+    test('it costs no round trip of its own: it rides the summary op', async () => {
+      withCoverage({ js_recon: { recorded: false }, nuclei: { recorded: false } })
+      await graphSummary(ctx(), 'p1')
+      const ops = h.fetch.mock.calls.map(c => JSON.parse(c[1].body).op)
+      expect(ops).toEqual(['summary', 'cypher'])
+    })
+
+    test('an agent that sent no block (older image, or the count failed) omits the key, never zeros', async () => {
+      okSummary(0)
+      expect(await graphSummary(ctx(), 'p1')).not.toHaveProperty('coverage')
+    })
+
+    test('only the known modules and counts pass through', async () => {
+      withCoverage({
+        js_recon: { recorded: true, complete: '2', partial: 0, no_input: 0, failed: 0, not_scanned: 0, url: 'x' },
+        nuclei: { recorded: false },
+        evil: { recorded: true, complete: 1 },
+      })
+      const r = await graphSummary(ctx(), 'p1')
+      expect(r.coverage).toEqual({
+        js_recon: { recorded: true, complete: 2, partial: 0, no_input: 0, failed: 0, not_scanned: 0 },
+        nuclei: { recorded: false },
+      })
+    })
+  })
 })
 
 // =============================================================================

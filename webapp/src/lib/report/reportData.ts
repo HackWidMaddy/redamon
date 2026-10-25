@@ -160,6 +160,22 @@ export interface JsReconFindingRecord {
   sourceUrl: string | null
 }
 
+/**
+ * Web hosts by what JS Recon did on them in its last run, from the BaseURL
+ * coverage stamps. `notScanned` counts live hosts it never looked at; it means
+ * something only when `recorded` (some host carries a stamp).
+ */
+export interface JsReconCoverage {
+  recorded: boolean
+  complete: number
+  partial: number
+  noInput: number
+  failed: number
+  notScanned: number
+  failedReasons: { reason: string; hosts: number }[]
+  partialReasons: { reason: string; hosts: number }[]
+}
+
 export interface SupplyChainFindingRecord {
   purl: string
   name: string | null
@@ -391,6 +407,8 @@ export interface ReportData {
     bySeverity: { severity: string; count: number }[]
     byType: { findingType: string; count: number }[]
     findings: JsReconFindingRecord[]
+    // Absent on payloads built before the BaseURL coverage stamps (plan 09.1).
+    coverage?: JsReconCoverage
   }
 
   // Supply Chain (malicious / vulnerable dependencies)
@@ -1718,7 +1736,7 @@ async function querySupplyChain(session: any, pid: string) {
   }
 }
 
-async function queryJsRecon(session: any, pid: string) {
+export async function queryJsRecon(session: any, pid: string) {
   const bySevRes = await session.run(
     `MATCH (jf:JsReconFinding {project_id: $pid})
     WHERE ${notMuted('jf')} AND ${reportCountable('jf')}
@@ -1743,10 +1761,19 @@ async function queryJsRecon(session: any, pid: string) {
     { pid }
   )
 
+  // A live host is one http_probe answered (it rewrites `source` on every write).
+  const coverageRes = await session.run(
+    `MATCH (bu:BaseURL {project_id: $pid})
+     RETURN bu.js_recon_status AS status, bu.js_recon_reason AS reason,
+            (bu.js_recon_status IS NULL AND bu.source = 'http_probe') AS live, count(bu) AS hosts`,
+    { pid }
+  )
+
   const totalFindings = bySevRes.records.reduce((s: number, r: any) => s + toNum(r.get('count')), 0)
 
   return {
     totalFindings,
+    coverage: jsReconCoverage(coverageRes.records),
     bySeverity: bySevRes.records.map((r: any) => ({
       severity: (r.get('severity') as string) || 'unknown',
       count: toNum(r.get('count')),
@@ -1765,6 +1792,42 @@ async function queryJsRecon(session: any, pid: string) {
       sourceUrl: r.get('sourceUrl') as string | null,
     })),
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function jsReconCoverage(records: any[]): JsReconCoverage {
+  const cov: JsReconCoverage = {
+    recorded: false, complete: 0, partial: 0, noInput: 0, failed: 0, notScanned: 0,
+    failedReasons: [], partialReasons: [],
+  }
+  const reasons = { failed: new Map<string, number>(), partial: new Map<string, number>() }
+  let notScanned = 0
+  for (const r of records) {
+    const status = r.get('status') as string | null
+    const hosts = toNum(r.get('hosts'))
+    if (status === 'complete') cov.complete += hosts
+    else if (status === 'partial') cov.partial += hosts
+    else if (status === 'no_input') cov.noInput += hosts
+    else if (status === 'failed') cov.failed += hosts
+    else if (r.get('live') === true) notScanned += hosts
+    const reason = r.get('reason')
+    if ((status === 'failed' || status === 'partial') && typeof reason === 'string') {
+      // A host cut for several reasons carries them comma-separated.
+      for (const part of reason.split(', ').filter(Boolean)) {
+        reasons[status].set(part, (reasons[status].get(part) ?? 0) + hosts)
+      }
+    }
+  }
+  cov.recorded = cov.complete + cov.partial + cov.noInput + cov.failed > 0
+  // Live hosts without a stamp mean "not looked at" only next to stamped ones.
+  if (!cov.recorded) return cov
+  cov.notScanned = notScanned
+  const sorted = (m: Map<string, number>) => [...m]
+    .map(([reason, hosts]) => ({ reason, hosts }))
+    .sort((a, b) => b.hosts - a.hosts || a.reason.localeCompare(b.reason))
+  cov.failedReasons = sorted(reasons.failed)
+  cov.partialReasons = sorted(reasons.partial)
+  return cov
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
