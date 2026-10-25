@@ -3196,8 +3196,8 @@
   },
   "fireteamPropensity": {
    "bounds": {
-    "min": 0,
-    "max": 10
+    "min": 1,
+    "max": 5
    },
    "default": 3,
    "form_section": "AgentBehaviourSection",

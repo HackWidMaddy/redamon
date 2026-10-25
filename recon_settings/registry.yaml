@@ -2919,7 +2919,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
-    bounds: { min: 0, max: 10 }
+    bounds: { min: 1, max: 5 }
     group: agent
     meaning: >-
       How strongly the agent leans toward deploying a fireteam over single-agent
