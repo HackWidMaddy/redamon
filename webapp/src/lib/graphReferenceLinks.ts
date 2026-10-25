@@ -125,6 +125,42 @@ export function splitCapturedRelationships(
 }
 
 /**
+ * A payload that carries catalogue NODES (a snapshot or bundle from before they
+ * lost their tenant stamp) stored the edges to them as ordinary relationships.
+ * Those nodes are never restored, so each such edge becomes a link record to
+ * the node's natural key; an edge between two catalogue nodes is dropped, the
+ * database already holds the catalogue's own links.
+ */
+export function carriedReferenceEdgesToLinks<R extends CapturedRelationship>(
+  nodes: readonly { labels: string[]; properties: Record<string, unknown>; _exportId: string }[],
+  relationships: readonly R[],
+): { relationships: R[]; referenceLinks: ReferenceLink[] } {
+  const refs = new Map<string, { refLabel: ReferenceLabel; refKey: unknown }>()
+  for (const node of nodes) {
+    const label = REFERENCE_LABELS.find(l => node.labels.includes(l))
+    if (label) refs.set(node._exportId, { refLabel: label, refKey: node.properties[REFERENCE_KEY_PROPERTY[label]] })
+  }
+  if (refs.size === 0) return { relationships: [...relationships], referenceLinks: [] }
+  const kept: R[] = []
+  const referenceLinks: ReferenceLink[] = []
+  for (const rel of relationships) {
+    const start = refs.get(rel.startExportId)
+    const end = refs.get(rel.endExportId)
+    if (!start && !end) {
+      kept.push(rel)
+      continue
+    }
+    if (start && end) continue
+    const link = referenceLinkOf({
+      startExportId: start ? null : rel.startExportId, endExportId: end ? null : rel.endExportId,
+      type: rel.type, properties: rel.properties, ...(start ?? end),
+    })
+    if (link) referenceLinks.push(link)
+  }
+  return { relationships: kept, referenceLinks }
+}
+
+/**
  * Recreate the links of restored project nodes (still carrying `_exportId`) to
  * EXISTING catalogue nodes. The label and key property in each query come from
  * REFERENCE_KEY_PROPERTY, never from the input; the key, the type and the

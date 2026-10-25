@@ -314,6 +314,25 @@ describe('restoreGraph — the global reference catalogue (plan 09.5)', () => {
     expect(res.nodes).toBe(1)
   })
 
+  test("a carried reference node's edges become links to the existing node, not lost", async () => {
+    // A snapshot stored before the reference catalogue lost its tenant stamp
+    // holds the CVE as a node and its edge as an ordinary relationship.
+    const { session, calls } = fakeSession()
+    await restoreGraph(session, [
+      node('Vulnerability', { id: 'v1' }, 'n1'),
+      node('CVE', { id: 'CVE-2021-44228', project_id: 'old' }, 'n2'),
+      node('Capec', { capec_id: 'not-a-capec' }, 'n3'),
+    ], [
+      { startExportId: 'n1', endExportId: 'n2', type: 'INCLUDES_CVE', properties: { w: 1 } },
+      { startExportId: 'n1', endExportId: 'n3', type: 'HAS_CAPEC', properties: {} },
+    ], { projectId: 'p1' })
+    const rels = calls.filter(c => c.cypher.includes('MATCH (a {_exportId: rel.startExportId'))
+    expect(rels.flatMap(c => c.params.rels as unknown[])).toEqual([])
+    const link = calls.find(c => c.cypher.includes('MATCH (ref:CVE {id: link.refKey})'))!
+    expect(link.params.links).toEqual([
+      { localExportId: 'n1', refKey: 'CVE-2021-44228', type: 'INCLUDES_CVE', properties: { w: 1 } }])
+  })
+
   test('links to the catalogue are restored before the export ids are stripped', async () => {
     const { session, calls } = fakeSession()
     const res = await restoreGraph(session, [node('Vulnerability', { id: 'v1' }, 'n1')], [],

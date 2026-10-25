@@ -19,7 +19,7 @@
 import { createHash } from 'crypto'
 import type { Session } from 'neo4j-driver'
 import { functionalLabel } from '@/lib/scanSnapshot'
-import { isReferenceNode, restoreReferenceLinks } from '@/lib/graphReferenceLinks'
+import { carriedReferenceEdgesToLinks, isReferenceNode, restoreReferenceLinks } from '@/lib/graphReferenceLinks'
 
 /**
  * Derive a Certificate `cert_key` for a snapshot node that predates the re-key
@@ -191,7 +191,10 @@ export async function restoreGraph(
 
   // A catalogue node is keyed on its natural id alone and shared by every
   // tenant: MERGEd from a payload it would take the payload's properties. Only
-  // links to it are restored, below.
+  // links to it are restored, below, its carried edges included.
+  const carried = carriedReferenceEdgesToLinks(nodes, relationships)
+  const projectRelationships = carried.relationships
+  const links = [...(opts.referenceLinks ?? []), ...carried.referenceLinks]
   const prepared = nodes.filter(node => !isReferenceNode(node.labels)).map(node => {
     const properties: Record<string, unknown> = {
       ...node.properties,
@@ -246,9 +249,9 @@ export async function restoreGraph(
     }
   }
 
-  if (relationships.length > 0) {
-    for (let i = 0; i < relationships.length; i += relBatchSize) {
-      const batch = relationships.slice(i, i + relBatchSize)
+  if (projectRelationships.length > 0) {
+    for (let i = 0; i < projectRelationships.length; i += relBatchSize) {
+      const batch = projectRelationships.slice(i, i + relBatchSize)
       await session.run(
         `UNWIND $rels AS rel
          MATCH (a {_exportId: rel.startExportId, project_id: $pid})
@@ -261,8 +264,8 @@ export async function restoreGraph(
   }
 
   // Before the strip: links find their project end by its _exportId.
-  const referenceLinks = opts.referenceLinks?.length
-    ? await restoreReferenceLinks(session, opts.referenceLinks, opts.projectId, relBatchSize)
+  const referenceLinks = links.length
+    ? await restoreReferenceLinks(session, links, opts.projectId, relBatchSize)
     : undefined
 
   // Strip the temporary correlation id so it never leaks into the graph.
@@ -273,7 +276,7 @@ export async function restoreGraph(
 
   return {
     nodes: prepared.length,
-    relationships: relationships.length,
+    relationships: projectRelationships.length,
     ...(referenceLinks ? { referenceLinks } : {}),
   }
 }

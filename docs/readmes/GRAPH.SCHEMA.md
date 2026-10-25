@@ -449,7 +449,9 @@ export id, the other end (the `null` id) by its natural key. A restore validates
 the label against the catalogue and the key against its shape, MATCHes the node
 (never MERGE, never SET; label and key property from a fixed map), and skips and
 counts a link whose node is missing. A payload that carries a reference node
-anyway has it dropped. Activation sweeps orphaned reference nodes only after the
+anyway (one stored before the catalogue lost its tenant stamp) has the node
+dropped and its edges turned into link records. Activation sweeps orphaned
+reference nodes only after the
 restore, so a CVE only this project linked survives the swap
 (`webapp/src/lib/graphReferenceLinks.ts`).
 
