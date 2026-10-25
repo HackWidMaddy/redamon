@@ -264,7 +264,7 @@ tools:
     traffic: active
     enabled_key: "JSLUICE_ENABLED"
     module: "recon.main_recon_modules.js_recon"
-    partial_recon_module: "js_analysis"
+    partial_recon_module: "web_crawling"
     form_section: "JsluiceSection"
     produces: ["JsReconFinding", "Endpoint", "Secret"]
   katana:
@@ -283,7 +283,7 @@ tools:
     traffic: active
     enabled_key: "KITERUNNER_ENABLED"
     module: "recon.main_recon_modules.resource_enum"
-    partial_recon_module: "web_crawling"
+    partial_recon_module: "parameter_discovery"
     form_section: "KiterunnerSection"
     produces: ["Endpoint"]
   knockpy:
@@ -462,7 +462,7 @@ tools:
     phase: http_probe
     traffic: active
     enabled_key: "SECURITY_CHECK_ENABLED"
-    partial_recon_module: "http_probing"
+    partial_recon_module: "vulnerability_scanning"
     form_section: "SecurityChecksSection"
     produces: ["Vulnerability"]
   serialized_scan:
@@ -595,7 +595,7 @@ tools:
     enabled_key: "VHOST_SNI_ENABLED"
     module: "recon.main_recon_modules.vhost_sni_enum"
     isolated_fn: "run_vhost_sni_enrichment_isolated"
-    partial_recon_module: "http_probing"
+    partial_recon_module: "vulnerability_scanning"
     form_section: "VhostSniSection"
     produces: ["Subdomain", "Certificate"]
   virustotal:

@@ -15813,7 +15813,7 @@
    "enabled_key": "JSLUICE_ENABLED",
    "form_section": "JsluiceSection",
    "module": "recon.main_recon_modules.js_recon",
-   "partial_recon_module": "js_analysis",
+   "partial_recon_module": "web_crawling",
    "phase": "js_recon",
    "produces": [
     "JsReconFinding",
@@ -15841,7 +15841,7 @@
    "enabled_key": "KITERUNNER_ENABLED",
    "form_section": "KiterunnerSection",
    "module": "recon.main_recon_modules.resource_enum",
-   "partial_recon_module": "web_crawling",
+   "partial_recon_module": "parameter_discovery",
    "phase": "resource_enum",
    "produces": [
     "Endpoint"
@@ -16077,7 +16077,7 @@
   "security_check": {
    "enabled_key": "SECURITY_CHECK_ENABLED",
    "form_section": "SecurityChecksSection",
-   "partial_recon_module": "http_probing",
+   "partial_recon_module": "vulnerability_scanning",
    "phase": "http_probe",
    "produces": [
     "Vulnerability"
@@ -16260,7 +16260,7 @@
    "form_section": "VhostSniSection",
    "isolated_fn": "run_vhost_sni_enrichment_isolated",
    "module": "recon.main_recon_modules.vhost_sni_enum",
-   "partial_recon_module": "http_probing",
+   "partial_recon_module": "vulnerability_scanning",
    "phase": "http_probe",
    "produces": [
     "Subdomain",
