@@ -155,7 +155,7 @@ Additional properties present on this node type, not yet described:
 - name (string): "api.example.com", "www.example.com"
 - is_scan_root (boolean): true on a scan root below its org Domain that is itself a target (the operator listed `api.example.com`, or `*.api.example.com` with Include Root); absent otherwise
 - has_dns_records (boolean): a CACHED FLAG from the resolver, which can be true while no DNSRecord node was ever written. Prefer the relationship - `(s)-[:HAS_DNS_RECORD]->(:DNSRecord)` - whenever the question is about the records themselves; the flag answers "did resolution succeed", the traversal answers "what do we hold", and they do not always agree
-- status (string): "resolved" (DNS only, not yet probed), "no_http" (no HTTP response), or HTTP status code as string ("200", "301", "403", "404", "500", etc.)
+- status (string): "resolved" (DNS only, not yet probed), "unverified" (nobody resolved it: written with the DNS step off, or by a passive source such as uncover or passive DNS; never count it as resolved), "no_http" (no HTTP response), or HTTP status code as string ("200", "301", "403", "404", "500", etc.)
 - status_codes (list[int]): all unique HTTP status codes seen e.g. [200, 301, 404]
 - http_live_url_count (int): count of URLs with status < 500
 - http_probed_at (datetime): when last HTTP-probed

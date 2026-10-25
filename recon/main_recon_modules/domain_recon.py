@@ -1463,9 +1463,10 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
             if info.get("has_records", False):
                 subdomain_status_map[s] = "resolved"
     else:
-        # DNS step was skipped (resolve=False) — assume all are resolved
+        # Nothing was resolved, brute-forced guesses included: "unverified" is
+        # the value every writer uses for a name nobody resolved.
         for s in all_subs:
-            subdomain_status_map[s] = "resolved"
+            subdomain_status_map[s] = "unverified"
     result["subdomain_status_map"] = subdomain_status_map
 
     # Save JSON output (use project_id for filename if provided, fallback to domain)
