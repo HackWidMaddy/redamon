@@ -7527,9 +7527,9 @@ fields:
     meaning: >-
       Technique categories the agent may not run on this engagement. Each token
       is expanded to the tools that perform it and refused before the tool
-      executes (CATEGORY_TOOL_MAP in
-      agentic/orchestrator_helpers/nodes/execute_plan_node.py), and the list is
-      also withheld from the classifier's options. What each token covers:
+      executes, on every executor path (CATEGORY_TOOL_MAP in
+      agentic/orchestrator_helpers/roe_gate.py), and the list is also withheld
+      from the classifier's options. What each token covers:
       brute_force is any credential guessing, including brute forcing, password
       spraying and credential stuffing; dos is anything aimed at availability,
       including denial of service, resource exhaustion and volumetric or
@@ -7556,8 +7556,8 @@ fields:
     group: engagement_limits
     meaning: >-
       Tools the agent may not run on this engagement, by name, whatever their own
-      enable flag says. Refused before the tool executes, in
-      agentic/orchestrator_helpers/nodes/execute_plan_node.py. The vocabulary is
+      enable flag says. Refused before the tool executes, on every executor path,
+      by agentic/orchestrator_helpers/roe_gate.py. The vocabulary is
       closed to the agent's real tool names because that gate is an exact string
       match: a near-miss like "hydra" for execute_hydra never matches, and the tool
       runs with the ban recorded and unenforced.
