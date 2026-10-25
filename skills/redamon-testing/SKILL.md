@@ -50,7 +50,7 @@ in the root [AGENTS.md](../../AGENTS.md) CRITICAL RULES; this skill is everythin
   that needs a service prints SKIP and exits 0, and the gate containers have no
   Neo4j, so the live-graph schema checks in
   [recon/tests/test_schema_catalog.py](../../recon/tests/test_schema_catalog.py)
-  SKIP in every CI run. Their hermetic counterparts in
+  SKIP in every gate run. Their hermetic counterparts in
   [recon/tests/test_graph_writes_documented.py](../../recon/tests/test_graph_writes_documented.py)
   do run. Neither sees everything: the code scan cannot see the ~22 labels
   written with `SET n += $props` (the names are built in Python and appear in no

@@ -24,7 +24,7 @@ metadata:
   ([recon_orchestrator/container_manager.py](../../recon_orchestrator/container_manager.py)).
 
 For the no-`env_file` knob rule, see the recon_orchestrator
-[AGENTS.md](../AGENTS.md) CRITICAL RULES (not repeated here).
+[AGENTS.md](../../recon_orchestrator/AGENTS.md) CRITICAL RULES (not repeated here).
 
 ---
 
@@ -115,4 +115,4 @@ docker compose restart recon-orchestrator     # container_manager.py is volume-m
 ## Resources
 
 - [recon_orchestrator/container_manager.py](../../recon_orchestrator/container_manager.py) - the three spawn sites and `_scanner_hardening`
-- Related: recon_orchestrator [AGENTS.md](../AGENTS.md) CRITICAL RULES (the no-`env_file` knob rule)
+- Related: recon_orchestrator [AGENTS.md](../../recon_orchestrator/AGENTS.md) CRITICAL RULES (the no-`env_file` knob rule)

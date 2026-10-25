@@ -8,11 +8,6 @@
   },
   {
    "file": "skills/orchestrator-container-spawn/SKILL.md",
-   "path": "../AGENTS.md",
-   "item": "drift-map #38"
-  },
-  {
-   "file": "skills/orchestrator-container-spawn/SKILL.md",
    "path": "scanners/graph_db",
    "item": "not a path: named as the nonexistent bind source on purpose"
   }
