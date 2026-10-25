@@ -14,6 +14,7 @@ from uuid import uuid4
 import httpx
 
 from state import AgentState
+from orchestrator_helpers import roe_gate
 from orchestrator_helpers.config import get_identifiers
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
 
@@ -34,39 +35,6 @@ def _validate_plan_mutex_groups(steps: list) -> str | None:
         claimers = [s.get("tool_name") for s in steps if s.get("tool_name") in tools]
         if len(claimers) > 1:
             return f"Multiple plan steps claim mutex group '{group}': {claimers}"
-    return None
-
-
-def _check_roe_blocked(tool_name: str, phase: str) -> str | None:
-    """Check if a tool is blocked by Rules of Engagement. Returns error message or None."""
-    from project_settings import get_setting
-
-    if not get_setting('ROE_ENABLED', False):
-        return None
-
-    CATEGORY_TOOL_MAP = {
-        'brute_force': ['execute_hydra', 'execute_wpscan', 'execute_ffuf', 'proxy_fuzz'],
-        'dos': [],
-        'social_engineering': [],
-        'exploitation': ['metasploit_console', 'execute_hydra', 'proxy_replay', 'proxy_fuzz'],
-    }
-    forbidden = set(get_setting('ROE_FORBIDDEN_TOOLS', []))
-    for cat in get_setting('ROE_FORBIDDEN_CATEGORIES', []):
-        forbidden.update(CATEGORY_TOOL_MAP.get(cat, []))
-
-    if not get_setting('ROE_ALLOW_ACCOUNT_LOCKOUT', False):
-        forbidden.add('execute_hydra')
-    if not get_setting('ROE_ALLOW_DOS', False):
-        forbidden.update(CATEGORY_TOOL_MAP.get('dos', []))
-
-    if tool_name in forbidden:
-        return f"RoE BLOCKED: Tool '{tool_name}' is forbidden by the Rules of Engagement."
-
-    PHASE_ORDER = {'informational': 0, 'exploitation': 1, 'post_exploitation': 2}
-    max_phase = get_setting('ROE_MAX_SEVERITY_PHASE', 'post_exploitation')
-    if PHASE_ORDER.get(phase, 0) > PHASE_ORDER.get(max_phase, 2):
-        return f"RoE BLOCKED: Current phase '{phase}' exceeds maximum allowed phase '{max_phase}'."
-
     return None
 
 
@@ -96,8 +64,7 @@ async def _execute_single_step(
         step["error_message"] = "No tool name provided"
         return False
 
-    # RoE gate
-    roe_msg = _check_roe_blocked(tool_name, phase)
+    roe_msg = roe_gate.check_tool_call(tool_name, tool_args, phase)
     if roe_msg:
         logger.warning(f"[{user_id}/{project_id}/{session_id}] {roe_msg}")
         step["tool_output"] = roe_msg
