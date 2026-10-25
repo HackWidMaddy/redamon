@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { AlertTriangle, ArrowLeft, Bot, Check, Copy, Trash2 } from 'lucide-react'
 import { Drawer, ExternalLink, useToast } from '@/components/ui'
 import { trufflehogDisplayFields } from '@/lib/trufflehogDisplay'
+import { COVERAGE_STAMP_PROPERTIES, coverageLines, recordedCoverageModules } from '@/lib/coverageStamps'
 import { copyText } from '@/lib/copyText'
 import { GraphData, GraphNode } from '../../types'
 import { badgeColors, buildNodeContext, getNodeColor, getNodeUrl, nodeLabel } from '../../utils'
@@ -106,7 +107,14 @@ export function NodeDrawer({
     setShowDeleteConfirm(false)
   }
 
-  const hiddenKeys = ['project_id', 'user_id']
+  // Whether a missing stamp reads "not scanned" or "coverage not recorded" is a
+  // project-wide question: did the module stamp ANY host.
+  const recordedModules = useMemo(() => recordedCoverageModules(graphData?.nodes), [graphData])
+  const coverage = displayNode?.type === 'BaseURL'
+    ? coverageLines(displayNode.properties ?? {}, recordedModules)
+    : []
+
+  const hiddenKeys = ['project_id', 'user_id', ...(coverage.length ? COVERAGE_STAMP_PROPERTIES : [])]
   const sortedProperties = displayNode
     ? Object.entries(displayNode.properties || {})
         .filter(([key]) => !hiddenKeys.includes(key))
@@ -289,6 +297,21 @@ export function NodeDrawer({
                 <div key={label} className={styles.propertyRow}>
                   <span className={styles.propertyKey}>{label}</span>
                   <span className={styles.propertyValue}>{value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {coverage.length > 0 && (
+            <div className={styles.section} data-testid="coverage-section">
+              <h3 className={styles.sectionTitleProperties}>Coverage</h3>
+              {coverage.map(line => (
+                <div key={line.module} className={styles.propertyRow} data-state={line.state}>
+                  <span className={styles.propertyKey}>{line.label}</span>
+                  <span className={`${styles.coverageValue} ${styles[`coverage_${line.state}`] ?? ''}`}>
+                    {line.text}
+                    {line.at && <span className={styles.coverageAt}> · run started {line.at}</span>}
+                  </span>
                 </div>
               ))}
             </div>

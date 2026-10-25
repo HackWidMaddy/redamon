@@ -16,6 +16,7 @@ import {
   IDENTITY_KEYS,
   VOLATILE_PROPERTIES,
 } from './reconDelta'
+import { COVERAGE_STAMP_PROPERTIES } from './coverageStamps'
 import type { FormattedGraphData, FormattedNode } from '@/app/api/graph/format'
 
 const node = (
@@ -171,6 +172,17 @@ describe('computeReconDelta', () => {
     const d = computeReconDelta(a, b)
     expect(d.totals).toMatchObject({ added: 0, removed: 0, changed: 0, stable: 1 })
     expect(VOLATILE_PROPERTIES.has('last_seen')).toBe(true)
+  })
+
+  test('a BaseURL coverage stamp never registers as a change (plan 09.1)', () => {
+    // Every run restamps every host it looked at; the target did not change.
+    for (const p of COVERAGE_STAMP_PROPERTIES) expect(VOLATILE_PROPERTIES.has(p)).toBe(true)
+    const a = graph([node('1', 'BaseURL', { url: 'https://app.example.com', js_recon_status: 'complete',
+      js_recon_inputs: 4, js_recon_outputs: 0, js_recon_at: 'monday' })])
+    const b = graph([node('2', 'BaseURL', { url: 'https://app.example.com', js_recon_status: 'partial',
+      js_recon_inputs: 2, js_recon_outputs: 1, js_recon_reason: 'file cap', js_recon_at: 'tuesday',
+      nuclei_status: 'complete' })])
+    expect(computeReconDelta(a, b).totals).toMatchObject({ changed: 0, stable: 1 })
   })
 
   test("Jev's assessment of a serialized candidate never registers as a change", () => {

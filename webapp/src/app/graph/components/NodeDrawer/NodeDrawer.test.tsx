@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import { AlertProvider, ToastProvider } from '@/components/ui'
 import { NodeDrawer } from './NodeDrawer'
 import type { GraphData, GraphNode } from '../../types'
@@ -144,6 +144,54 @@ describe('NodeDrawer header actions', () => {
     renderDrawer()
     fireEvent.click(screen.getByLabelText('Copy node context'))
     expect(await screen.findByText('Could not access the clipboard')).toBeInTheDocument()
+  })
+})
+
+describe('NodeDrawer coverage section (BaseURL)', () => {
+  const baseUrl = (properties: Record<string, unknown>, id = 'b1'): GraphNode => ({
+    id, type: 'BaseURL', name: 'https://app.example.com', properties: { url: 'https://app.example.com', ...properties },
+  })
+  const project = (...nodes: GraphNode[]): GraphData => ({ projectId: 'p', nodes, links: [] })
+  const coverage = () => screen.getByTestId('coverage-section')
+
+  it('renders one line per module, and the raw stamp keys only there', () => {
+    const node = baseUrl({ js_recon_status: 'complete', js_recon_inputs: 12, js_recon_outputs: 0 })
+    const other = baseUrl({ nuclei_status: 'complete', nuclei_inputs: 2, nuclei_outputs: 0 }, 'b2')
+    renderDrawer({ node, graphData: project(node, other) })
+    expect(coverage()).toHaveTextContent('JS analysis')
+    expect(coverage()).toHaveTextContent('complete, 12 files, 0 findings')
+    expect(coverage()).toHaveTextContent('not scanned by this module')
+    expect(screen.queryByText('js_recon_status')).toBeNull()
+    expect(screen.queryByText('js_recon_inputs')).toBeNull()
+    expect(screen.getByText('url')).toBeInTheDocument()
+  })
+
+  it('says "coverage not recorded" where the project carries no stamp at all', () => {
+    const node = baseUrl({})
+    renderDrawer({ node, graphData: project(node) })
+    const lines = within(coverage()).getAllByText('coverage not recorded')
+    expect(lines).toHaveLength(2)
+    expect(screen.queryByText('not scanned by this module')).toBeNull()
+  })
+
+  it('shows a partial stamp with its reason and a failed one with its cause', () => {
+    const node = baseUrl({
+      js_recon_status: 'partial', js_recon_inputs: 2, js_recon_outputs: 1, js_recon_reason: 'file cap',
+      nuclei_status: 'failed', nuclei_inputs: 0, nuclei_outputs: 0, nuclei_reason: 'runtime cap',
+    })
+    renderDrawer({ node, graphData: project(node) })
+    expect(coverage()).toHaveTextContent('partial (file cap), 2 files, 1 finding')
+    expect(coverage()).toHaveTextContent('failed (runtime cap)')
+  })
+
+  it('reads "coverage not recorded" when there is no graph to compare against (a past version)', () => {
+    renderDrawer({ node: baseUrl({}), graphData: null })
+    expect(within(coverage()).getAllByText('coverage not recorded')).toHaveLength(2)
+  })
+
+  it('is absent on any other node type', () => {
+    renderDrawer({ node: { ...tech, properties: { js_recon_status: 'complete' } } })
+    expect(screen.queryByTestId('coverage-section')).toBeNull()
   })
 })
 
