@@ -134,7 +134,7 @@ OpenAI-compatible (Ollama) providers expose an optional reasoning control in **G
 | Technology | Role | Official Docs |
 |-----------|------|---------------|
 | **Docker** | Container runtime — every component is containerized | [docs.docker.com](https://docs.docker.com) |
-| **Docker Compose** (v2) | Multi-container orchestration (15+ containers) | [docs.docker.com/compose](https://docs.docker.com/compose/) |
+| **Docker Compose** (v2) | Multi-container orchestration | [docs.docker.com/compose](https://docs.docker.com/compose/) |
 | **Node.js** (v22) | JavaScript runtime for the Next.js webapp | [nodejs.org/docs](https://nodejs.org/docs/latest-v22.x/api/) |
 | **Go** (1.22) | Build environment for ProjectDiscovery tools (compiled from source) | [go.dev/doc](https://go.dev/doc/) |
 
@@ -142,7 +142,7 @@ OpenAI-compatible (Ollama) providers expose an optional reasoning control in **G
 
 ## 2. Architecture at a Glance
 
-RedAmon is a fully Dockerized system with 15+ containers communicating over three internal networks.
+RedAmon is a fully Dockerized system: the compose services listed below talk over the networks in the table after the diagrams.
 
 ### Service Topology
 
@@ -191,6 +191,7 @@ settings fetch.
 | **`redamon`** (`redamon-network`) | bridge (default) | Inter-service communication for webapp, agent, worker, databases |
 | **`orchestrator-net`** (`redamon-orchestrator-net`) | bridge | **Isolation network** for the privileged recon-orchestrator. Shared only with the webapp (multi-homed) and the on-demand Ollama judge, so a compromised worker cannot reach the orchestration API. |
 | **`pentest-net`** | 172.28.0.0/16 | Isolated scanning network — Kali sandbox, MCP tools, and target containers (guinea pigs) |
+| **`codefix-net`** (`redamon-codefix-net`) | bridge, auto subnet | CodeFix build sandboxes only: NAT egress so builds can fetch dependencies, and no RedAmon service on it. The orchestrator creates it on demand |
 | **`plugins-net`** (`redamon-plugins-net`) | bridge, `internal` | Plugin platform only: the plugin runner and the plugin-gateway proxy. No route out |
 | **`plugins-edge`** (`redamon-plugins-edge`) | bridge, `internal` | Plugin platform only: the plugin-gateway proxy and the webapp, which joins it through `docker-compose.plugins.yml` |
 
@@ -215,17 +216,24 @@ settings fetch.
 
 ### Docker Compose Services
 
+Every service in `docker-compose.yml`; host ports are the defaults of their `${..._PORT:-...}` variables.
+
 | Service | Container Name | Port | Role |
 |---------|---------------|------|------|
 | `webapp` | redamon-webapp | 3000 | Next.js frontend + backend API |
 | `agent` | redamon-agent | 8090 (→8080 internal) | AI agent (LangGraph + FastAPI WebSocket) |
-| `recon-orchestrator` | redamon-recon-orchestrator | 8010 | Spawns recon/GVM/GitHub containers via Docker SDK |
-| `kali-sandbox` | redamon-kali | 8000, 8002–8005 | The five MCP tool servers (network-recon, nuclei, metasploit, nmap, playwright; `SERVERS` in `mcp/servers/run_servers.py`) |
-| `postgres` | redamon-postgres | 5432 | PostgreSQL database |
-| `neo4j` | redamon-neo4j | 7474, 7687 | Neo4j graph database |
+| `kb-refresh` | redamon-kb-refresh | — | Opt-in knowledge-base refresher on the agent image (profile: kb-refresh) |
+| `recon-orchestrator` | redamon-recon-orchestrator | 8010 (127.0.0.1) | Spawns the recon, GVM, GitHub-hunt, TruffleHog, supply-chain and AI-surface containers via Docker SDK |
+| `docker-broker` | redamon-docker-broker | internal | Filtering Docker socket proxy the spawned recon containers get instead of the raw socket |
+| `kali-sandbox` | redamon-kali | 8000, 8002–8005 (127.0.0.1) | The five MCP tool servers (network-recon, nuclei, metasploit, nmap, playwright; `SERVERS` in `mcp/servers/run_servers.py`); also the progress streams (8013, 8014), ngrok API (4040), tunnel manager (8015) and terminal (8016) on 127.0.0.1, and 4444 open for direct reverse shells |
+| `postgres` | redamon-postgres | 5432 (127.0.0.1) | PostgreSQL database |
+| `neo4j` | redamon-neo4j | 7474, 7687 (127.0.0.1) | Neo4j graph database |
 | `gvmd` | redamon-gvm-gvmd | internal | GVM daemon (vulnerability scanner) |
 | `gvm-ospd` | redamon-gvm-ospd | internal | OpenVAS scanner engine |
-| `recon` | (profile: tools) | — | Recon pipeline image (spawned dynamically, not always running) |
+| `gvm-redis`, `gvm-postgres` | redamon-gvm-redis, redamon-gvm-postgres | internal | GVM's own Redis and PostgreSQL |
+| `gvm-vt`, `gvm-notus-data`, `gvm-scap-data`, `gvm-cert-bund-data`, `gvm-dfn-cert-data`, `gvm-data-objects`, `gvm-report-formats`, `gvm-gpg-data` | redamon-gvm-* | — | GVM feed data containers |
+| `capture-proxy`, `traffic-ingest` | redamon-capture-proxy, redamon-traffic-ingest | 8888 (127.0.0.1, proxy) | HTTP Traffic Capture, one image (profile: capture; started on demand by the orchestrator) |
+| `recon`, `vuln-scanner`, `github-secret-hunter`, `trufflehog-scanner`, `wcvs`, `codefix-sandbox`, `supply-chain-analyzer`, `supply-chain`, `baddns-scanner`, `ai-attack-surface` | (profile: tools) | — | Tool images: built, never started by compose; a container is spawned per scan |
 | `plugin-runner` | redamon-plugin-runner | internal (7080) | Runs plugin code, one worker process per plugin version (profile: plugins; started only by `redamon.sh`) |
 | `plugin-gateway` | redamon-plugin-gateway | internal (7071, 7072) | The only door between `plugins-net` and the webapp (same image as `plugin-runner`, profile: plugins) |
 
@@ -1126,7 +1134,7 @@ MATCH ()-[r]-() RETURN count(r) AS relationships;
 
 ### Testing with Guinea Pigs
 
-The `testing/guinea_pigs/` folder contains intentionally vulnerable applications you can use to test the full pipeline locally:
+The `testing/guinea_pigs/` folder contains intentionally vulnerable applications you can use to test the full pipeline locally. Three of them, for example ([README.GPIGS.md](README.GPIGS.md) lists every one):
 
 | Guinea Pig | Vulnerability | How to use |
 |-----------|---------------|------------|
@@ -1134,9 +1142,7 @@ The `testing/guinea_pigs/` folder contains intentionally vulnerable applications
 | `apache_2.4.25` | CVE-2017-3167 (auth bypass) | `docker compose -f testing/guinea_pigs/apache_2.4.25/docker-compose.yml up -d` |
 | `node_serialize_1.0.0` | Node.js deserialization RCE | `docker compose -f testing/guinea_pigs/node_serialize_1.0.0/docker-compose.yml up -d` |
 
-These containers join the `pentest-net` network, so the agent and MCP tools can reach them. Point your project target at the guinea pig's IP to test reconnaissance, exploitation, and post-exploitation flows end-to-end.
-
-> For details on available guinea pigs, see [README.GPIGS.md](README.GPIGS.md).
+These three publish ports on the host (all three on 8080, so run one at a time). Some of the others (`skiller_*`, `proxy_brain_target`, `php2shell_upload_progress`) join `pentest-net` instead, so the agent and MCP tools reach them by address; each folder's README says how to reach it. Point your project target at the guinea pig to test reconnaissance, exploitation, and post-exploitation flows end-to-end.
 
 ### Running Recon Tests
 
@@ -1157,13 +1163,13 @@ docker compose run --rm recon python -m pytest tests/ -v
 
 ## 8. Environment Variables
 
-No `.env` file is required. All user-configurable settings (API keys, tunnel credentials) are managed from the **Global Settings** page (`/settings`) and stored in PostgreSQL.
+You do not write a `.env` by hand: `./redamon.sh install` creates it with the generated secrets (below). All user-configurable settings (API keys, tunnel credentials) are managed from the **Global Settings** page (`/settings`) and stored in PostgreSQL.
 
 > **Note**: LLM API keys, tool API keys (Tavily, Shodan, NVD, SerpAPI), and tunnel credentials (ngrok, chisel) are all configured **per-user** in the webapp UI at `/settings`. They are NOT set via environment variables.
 
 ### Variables in `docker-compose.yml` (with defaults)
 
-These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if needed.
+These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if needed. The table is a selection, the variables a developer meets first. Every variable the stack reads is in [`.env.example`](../../.env.example), with its comment, and `tests/test_env_example_keys.py` checks that each one is forwarded by a compose file or read by `redamon.sh`.
 
 > **Secrets are auto-generated on install (since 5.3.1).** `redamon.sh` writes
 > strong random values for `POSTGRES_PASSWORD`, `NEO4J_PASSWORD` and
@@ -1208,9 +1214,15 @@ All deep-dive documentation lives in the `docs/readmes/` folder alongside this f
 
 | Document | What it covers |
 |----------|----------------|
+| [README.DEV.md](README.DEV.md) | This page: the developer guide |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Mermaid diagrams: system topology, data flow pipeline, Docker container architecture, MCP integration, agent workflow |
 | [TECH_STACK.md](TECH_STACK.md) | Detailed technology role descriptions organized by layer |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | OS-specific issues and fixes (Linux, Windows, macOS) |
+| [README.TESTING.md](README.TESTING.md) | How the tests run (the per-file Docker gate, tiers) and how to write them |
+| [README.MEMORY_GOVERNOR.md](README.MEMORY_GOVERNOR.md) | How RedAmon keeps one host from running out of RAM while scans and agent sessions run at once |
+| [README.SECURITY_POSTURE.md](README.SECURITY_POSTURE.md) | The defense-in-depth control catalog: every security layer in the product, with its evidence |
+| [README.TM.SYSTEM_OVERVIEW.md](README.TM.SYSTEM_OVERVIEW.md) | Threat model: assets, architecture, data flow, trust boundaries, entry points, network surface |
+| [README.DRIFT_MAP.md](README.DRIFT_MAP.md) | Every fact written down more than once, the guards that hold the copies equal, and what is stale today |
 
 ### Agent
 
@@ -1218,32 +1230,55 @@ All deep-dive documentation lives in the `docs/readmes/` folder alongside this f
 |----------|----------------|
 | [README.AGENTIC_SYSTEM.md](README.AGENTIC_SYSTEM.md) | Full pentest agent architecture: ReAct loop, LangGraph state machine, WebSocket protocol, tool specs, multi-objective support, RoE guardrails, EvoGraph attack chains, prompt token optimization |
 | [README.CYPHERFIX_AGENTS.md](README.CYPHERFIX_AGENTS.md) | Triage + CodeFix agents: hybrid architecture, prioritization algorithm, 11 code tools, diff approval flow, GitHub PR integration, WebSocket protocols |
+| [README.KBASE.md](README.KBASE.md) | The Knowledge Base: offline retrieval (FAISS + Neo4j) over curated security datasets, ahead of web search |
+| [README.TRADECRAFT.md](README.TRADECRAFT.md) | Tradecraft Lookup: how a knowledge resource a user adds reaches the agent during a session |
 
-
-### Reconnaissance
+### Reconnaissance and scanning
 
 | Document | What it covers |
 |----------|----------------|
-| [README.RECON.md](README.RECON.md) | Reconnaissance pipeline overview — all 6 phases |
+| [README.RECON.md](README.RECON.md) | Reconnaissance pipeline overview |
 | [README.RECON_ORCHESTRATOR.md](README.RECON_ORCHESTRATOR.md) | Container lifecycle management (spawn, health-check, SSE streaming, cleanup) |
-| [README.PORT_SCAN.md](README.PORT_SCAN.md) | Phase 2: Naabu port scanning + Shodan passive |
-| [README.HTTP_PROBE.md](README.HTTP_PROBE.md) | Phase 3: Httpx probing, Wappalyzer, TLS inspection |
-| [README.RESOURCE_ENUM.md](README.RESOURCE_ENUM.md) | Phase 4: Katana crawling, Kiterunner API discovery, GAU |
-| [README.VULN_SCAN.md](README.VULN_SCAN.md) | Phase 5: Nuclei template scanning |
+| [README.SETTINGS_REGISTRY.md](README.SETTINGS_REGISTRY.md) | The recon settings registry: why every parameter is described once, and what that guarantees |
+| [README.PORT_SCAN.md](README.PORT_SCAN.md) | Port scanning: Masscan + Naabu |
+| [README.HTTP_PROBE.md](README.HTTP_PROBE.md) | Httpx probing, Wappalyzer, TLS inspection |
+| [README.RESOURCE_ENUM.md](README.RESOURCE_ENUM.md) | Katana crawling, Kiterunner API discovery, GAU |
+| [README.OPENAPI.md](README.OPENAPI.md) | OpenAPI / Swagger import as a resource-enumeration source |
+| [AI_SURFACE_RECON_MODULE.md](AI_SURFACE_RECON_MODULE.md) | AI Surface Recon: fingerprinting LLM, MCP and vector-DB surfaces |
+| [README.VULN_SCAN.md](README.VULN_SCAN.md) | Nuclei template scanning |
+| [README.WCP_RECON_MODULE.md](README.WCP_RECON_MODULE.md) | Web cache poisoning and web cache deception detection |
 | [README.MITRE.md](README.MITRE.md) | MITRE CWE/CAPEC enrichment for discovered CVEs |
+| [README.SUPPLY_CHAIN.md](README.SUPPLY_CHAIN.md) | Malicious- and vulnerable-package detection, offline against a local OSV copy |
+| [AI_GAUNTLET_TECH_DOC.md](AI_GAUNTLET_TECH_DOC.md) | AI Gauntlet: the AI attack-surface scanner that runs discovered LLM endpoints through adversarial tools |
+| [README.GVM.md](README.GVM.md) | OpenVAS/GVM scanner integration (170k+ NVTs) |
+| [README.TRAFFIC.md](README.TRAFFIC.md) | HTTP Traffic Capture: the engagement-scoped proxy history, replay and fuzz |
 
 ### Infrastructure & Data
 
 | Document | What it covers |
 |----------|----------------|
 | [README.MCP.md](README.MCP.md) | The five MCP tool servers in the Kali sandbox (Network Recon, Nuclei, Metasploit, Nmap, Playwright) |
+| [README.MCP.SERVER.md](README.MCP.SERVER.md) | RedAmon as an inbound MCP server: external agents connecting with a personal access token |
 | [README.WEBAPP.md](README.WEBAPP.md) | Webapp architecture, component tree, page structure |
-| [README.GVM.md](README.GVM.md) | OpenVAS/GVM scanner integration (170k+ NVTs) |
 | [README.GRAPH_DB.md](README.GRAPH_DB.md) | Neo4j graph utilities |
 | [graph_db/schema_sections.md](../../graph_db/schema_sections.md) | THE declaration: every node label, property and relationship |
 | [GRAPH.SCHEMA.md](GRAPH.SCHEMA.md) | Why the graph is shaped this way: design principles, tenancy, the `Muted` label. Lists no labels |
 | [README.POSTGRES.md](README.POSTGRES.md) | PostgreSQL schema details (Prisma models, field reference) |
 | [README.GPIGS.md](README.GPIGS.md) | Guinea pigs — intentionally vulnerable test applications for local testing |
+
+### Plugins
+
+| Document | What it covers |
+|----------|----------------|
+| [README.PLUGINS.md](README.PLUGINS.md) | The plugin platform end to end: architecture, install, update, uninstall |
+| [README.PLUGIN_SDK.md](README.PLUGIN_SDK.md) | The plugin author's reference: everything a plugin can declare, call and show |
+
+### Guides for coding agents
+
+| Document | What it covers |
+|----------|----------------|
+| [coding_agent_prompts/](coding_agent_prompts/) | "How to add X" prompts: an agent tool, a recon tool, partial recon, an AI hook in recon, a built-in, community or chat skill, an LLM provider |
+| [skills_management/SKILLS_MANAGEMENT.md](skills_management/SKILLS_MANAGEMENT.md) | The skills and `AGENTS.md` ruleset system, its generator and its drift checks |
 
 ### Project-Level
 
