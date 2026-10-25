@@ -123,7 +123,7 @@ See [README.PLUGINS.md](README.PLUGINS.md) for the design and [README.PLUGIN_SDK
 
 | Protocol | Role |
 |----------|------|
-| **MCP (Model Context Protocol)** | Standardized tool integration — four MCP servers (Network Recon, Nuclei, Metasploit, Nmap) running inside the Kali sandbox |
+| **MCP (Model Context Protocol)** | Standardized tool integration — five MCP servers (Network Recon, Nuclei, Metasploit, Nmap, Playwright) running inside the Kali sandbox |
 | **SSE (Server-Sent Events)** | Unidirectional real-time streaming for recon logs, GVM scan progress, and GitHub hunt output |
 | **WebSocket** | Bidirectional real-time communication for the agent chat interface |
 | **Bolt** (Neo4j) | Binary protocol for high-performance Neo4j graph database queries |

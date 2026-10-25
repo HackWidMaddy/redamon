@@ -155,8 +155,8 @@ Browser ──→ Webapp (Next.js :3000) ──WebSocket──→ Agent (FastAPI
                 │                               ├── Network Recon (:8000)
                 │ Docker SDK                    ├── Nuclei (:8002)
                 ▼                               ├── Metasploit (:8003)
-        Ephemeral Containers                    └── Nmap (:8004)
-        ├── Recon Pipeline
+        Ephemeral Containers                    ├── Nmap (:8004)
+        ├── Recon Pipeline                      └── Playwright (:8005)
         ├── GVM/OpenVAS Scanner
         ├── GitHub Secret Hunter
         └── TruffleHog Secret Scanner
@@ -220,7 +220,7 @@ settings fetch.
 | `webapp` | redamon-webapp | 3000 | Next.js frontend + backend API |
 | `agent` | redamon-agent | 8090 (→8080 internal) | AI agent (LangGraph + FastAPI WebSocket) |
 | `recon-orchestrator` | redamon-recon-orchestrator | 8010 | Spawns recon/GVM/GitHub containers via Docker SDK |
-| `kali-sandbox` | redamon-kali | 8000, 8002–8004 | MCP tool servers (nmap, nuclei, metasploit, network-recon) |
+| `kali-sandbox` | redamon-kali | 8000, 8002–8005 | The five MCP tool servers (network-recon, nuclei, metasploit, nmap, playwright; `SERVERS` in `mcp/servers/run_servers.py`) |
 | `postgres` | redamon-postgres | 5432 | PostgreSQL database |
 | `neo4j` | redamon-neo4j | 7474, 7687 | Neo4j graph database |
 | `gvmd` | redamon-gvm-gvmd | internal | GVM daemon (vulnerability scanner) |
@@ -504,7 +504,7 @@ Phase transitions happen automatically — the agent classifies its own actions 
 
 **Tool execution:**
 
-- **MCP tools** — Security tools (Nmap, Nuclei, Metasploit, Network Recon) run in the `kali-sandbox` container and are accessed via the MCP protocol through `langchain-mcp-adapters`. The connection URL is `http://kali-sandbox:8000/sse`.
+- **MCP tools** — Security tools (Network Recon, Nuclei, Metasploit, Nmap, Playwright) run in the `kali-sandbox` container and are accessed via the MCP protocol through `langchain-mcp-adapters`. Each server has its own URL in the agent's environment (`MCP_NETWORK_RECON_URL` is `http://kali-sandbox:8000/sse`, and so on for `MCP_NUCLEI_URL`, `MCP_METASPLOIT_URL`, `MCP_NMAP_URL`, `MCP_PLAYWRIGHT_URL`).
 - **Native tools** — Neo4j Cypher queries (text-to-Cypher via LLM), Tavily web search, Shodan API, and Google Dork are implemented directly in Python within `tools.py`.
 
 **WebSocket streaming:**
@@ -1189,7 +1189,12 @@ These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if 
 | `AGENT_PORT` | `8090` | Host port for the agent API (maps to internal :8080) |
 | `RECON_ORCH_PORT` | `8010` | Host port for the recon orchestrator |
 
-> MCP server ports (8000, 8002–8004) are hardcoded in `docker-compose.yml`. To change them, edit the `ports:` section directly.
+> The MCP servers listen on fixed container ports (8000, 8002–8005, from `SERVERS` in
+> `mcp/servers/run_servers.py`). Their host ports, bound to `127.0.0.1`, come from
+> `MCP_NETWORK_RECON_PORT`, `MCP_NUCLEI_PORT`, `MCP_METASPLOIT_PORT`, `MCP_NMAP_PORT` and
+> `MCP_PLAYWRIGHT_PORT` in `docker-compose.yml` (defaults 8000, 8002, 8003, 8004, 8005). The agent
+> reaches the servers on the internal network at the container ports, so a host port change does
+> not affect it.
 
 ---
 
@@ -1231,7 +1236,7 @@ All deep-dive documentation lives in the `docs/readmes/` folder alongside this f
 
 | Document | What it covers |
 |----------|----------------|
-| [README.MCP.md](README.MCP.md) | MCP tool servers in the Kali sandbox (Nmap, Nuclei, Metasploit, Network Recon) |
+| [README.MCP.md](README.MCP.md) | The five MCP tool servers in the Kali sandbox (Network Recon, Nuclei, Metasploit, Nmap, Playwright) |
 | [README.WEBAPP.md](README.WEBAPP.md) | Webapp architecture, component tree, page structure |
 | [README.GVM.md](README.GVM.md) | OpenVAS/GVM scanner integration (170k+ NVTs) |
 | [README.GRAPH_DB.md](README.GRAPH_DB.md) | Neo4j graph utilities |
