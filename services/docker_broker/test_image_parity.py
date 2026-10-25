@@ -1,4 +1,4 @@
-"""Broker/recon image-allowlist parity (recon -> broker direction).
+"""Broker/recon image-allowlist parity, both directions.
 
 Recon and partial recon spawn every scan tool as a sibling container through
 the broker's filtered socket (container_manager.py points their DOCKER_HOST at
@@ -9,6 +9,12 @@ images recon/entrypoint.sh pre-pulls, and asserts the broker's shipped list
 allows every one of them. Locally built `redamon-*` images are included: they
 go through the broker like any other, and exempting them is how the WCVS image
 was refused at run time with this test green (drift-map #2, #29).
+
+The reverse direction keeps the broker list from growing past what is used:
+every shipped entry is a recon tool image or a BROKER_IMAGES_BEYOND_RECON entry
+that names its broker-socket caller. And the entrypoint pre-pull list must be
+the `*_DOCKER_IMAGE` set exactly, so a tool added to one is caught missing from
+the other at test time rather than mid-scan (drift-map #2).
 
 Run: ./redamon.sh test unit (section docker_broker)
 """
@@ -38,6 +44,44 @@ _ENTRYPOINT = os.path.join(_REPO, "recon", "entrypoint.sh")
 # reason. Empty today: recon reaches Docker only through the broker. An entry
 # here is a claim about container_manager.py, so name the spawn path.
 RECON_IMAGES_OUTSIDE_BROKER: dict[str, str] = {}
+
+# Shipped broker entries that are not a recon `*_DOCKER_IMAGE` tool, as
+# image -> (repo file that runs it through the broker socket, reason). The file
+# must name the image, so a caller that stops using it turns this red. None
+# means no broker caller exists today: the entry is dead weight on a security
+# allowlist and should be dropped from broker.py, after which this test fails
+# until the line here goes too.
+BROKER_IMAGES_BEYOND_RECON: dict[str, tuple[str | None, str]] = {
+    "alpine": (
+        "recon/helpers/docker_helpers.py",
+        "recon's temp-file cleanup and nuclei-template volume probe "
+        "(docker_helpers.ensure_templates_volume, vuln_scan.py, domain_recon.py) "
+        "run `docker run alpine` through DOCKER_HOST=broker",
+    ),
+    "alpine:latest": (
+        "recon/helpers/docker_helpers.py",
+        "the spelling the daemon normalizes the bare `alpine` above to",
+    ),
+    "redamon-supply-chain-analyzer:latest": (
+        "scanners/supply_chain_common/guarddog_runner.py",
+        "the DIRTY GuardDog/retire analyzer; analyzer_dispatch.run_analyzer_job "
+        "shells out to `docker run` from the recon container "
+        "(supply_chain_recon.py) and the supply-chain scan container, both on "
+        "DOCKER_HOST=broker",
+    ),
+    "redamon-supply-chain:latest": (
+        None,
+        "drift-map: found in wave 2. The orchestrator starts the clean scanner "
+        "with the Docker SDK on the real socket (ContainerManager.start_supply_chain), "
+        "not through the broker, and no broker-socket caller runs it",
+    ),
+    "sxcurity/gau:arm64": (
+        None,
+        "drift-map: found in wave 2. No file names this tag: gau_helpers.py runs "
+        "GAU_DOCKER_IMAGE (sxcurity/gau:latest) with --platform linux/amd64 on an "
+        "ARM64 host",
+    ),
+}
 
 
 def _broker_allows(image: str) -> bool:
@@ -103,6 +147,65 @@ def test_outside_broker_entries_are_live_and_explained():
     assert not stale, f"RECON_IMAGES_OUTSIDE_BROKER names images recon no longer uses: {stale}"
     unexplained = sorted(i for i, why in RECON_IMAGES_OUTSIDE_BROKER.items() if not why.strip())
     assert not unexplained, f"RECON_IMAGES_OUTSIDE_BROKER entries need a reason: {unexplained}"
+
+
+def _shipped_canonical() -> set[str]:
+    return {broker._canonical_image(i) for i in broker._DEFAULT_ALLOWED_IMAGES}
+
+
+def _recon_tool_images_canonical() -> set[str]:
+    return {broker._canonical_image(i)
+            for i in set(_docker_image_defaults().values()) | set(_entrypoint_images())}
+
+
+def test_every_broker_image_is_a_recon_tool_or_named():
+    named = {broker._canonical_image(i) for i in BROKER_IMAGES_BEYOND_RECON}
+    unexplained = sorted(_shipped_canonical() - _recon_tool_images_canonical() - named)
+    assert not unexplained, (
+        "services/docker_broker/broker.py _DEFAULT_ALLOWED_IMAGES lets these through, "
+        "but recon runs none of them and BROKER_IMAGES_BEYOND_RECON does not say who "
+        f"does: {unexplained}. Drop the entry or name its broker-socket caller."
+    )
+
+
+def test_beyond_recon_entries_are_live_and_explained():
+    shipped = _shipped_canonical()
+    recon = _recon_tool_images_canonical()
+    problems = []
+    for image, (caller, why) in sorted(BROKER_IMAGES_BEYOND_RECON.items()):
+        canon = broker._canonical_image(image)
+        if canon not in shipped:
+            problems.append(f"{image}: no longer on _DEFAULT_ALLOWED_IMAGES; delete the entry")
+        if canon in recon:
+            problems.append(f"{image}: recon runs it as a tool image; the entry is redundant")
+        if not why.strip():
+            problems.append(f"{image}: needs a reason")
+        if caller is None:
+            continue
+        path = os.path.join(_REPO, caller)
+        if not os.path.isfile(path):
+            problems.append(f"{image}: named caller {caller} does not exist")
+            continue
+        with open(path, encoding="utf-8") as f:
+            if image.split(":", 1)[0] not in f.read():
+                problems.append(f"{image}: named caller {caller} no longer mentions it")
+    assert not problems, "BROKER_IMAGES_BEYOND_RECON is stale:\n" + "\n".join(problems)
+
+
+def test_entrypoint_prepull_list_equals_docker_image_defaults():
+    """recon/entrypoint.sh IMAGES is a hand copy of the `*_DOCKER_IMAGE`
+    defaults. A tool only in the defaults is first pulled mid-scan; an image only
+    in IMAGES is pulled for nothing on every recon start."""
+    entry = _entrypoint_images()
+    dupes = sorted({i for i in entry if entry.count(i) > 1})
+    defaults = set(_docker_image_defaults().values())
+    only_defaults = sorted(defaults - set(entry))
+    only_entrypoint = sorted(set(entry) - defaults)
+    assert not (dupes or only_defaults or only_entrypoint), (
+        "recon/entrypoint.sh IMAGES must equal the set of *_DOCKER_IMAGE defaults in "
+        f"recon/project_settings.py. Missing from IMAGES: {only_defaults}; not a "
+        f"default: {only_entrypoint}; listed twice: {dupes}"
+    )
 
 
 def test_wcvs_and_tlsx_specifically_are_on_both():
