@@ -7,31 +7,6 @@
    "item": "drift-map #54"
   },
   {
-   "file": "redamon.wiki/AI-Assisted-Development.md",
-   "path": "recon/domain_recon.py",
-   "item": "drift-map #43"
-  },
-  {
-   "file": "redamon.wiki/AI-Assisted-Development.md",
-   "path": "recon/port_scan.py",
-   "item": "drift-map #43"
-  },
-  {
-   "file": "redamon.wiki/AI-Assisted-Development.md",
-   "path": "recon/resource_enum.py",
-   "item": "drift-map #43"
-  },
-  {
-   "file": "redamon.wiki/AI-Assisted-Development.md",
-   "path": "recon/shodan_enrich.py",
-   "item": "drift-map #43"
-  },
-  {
-   "file": "redamon.wiki/AI-Assisted-Development.md",
-   "path": "recon/urlscan_enrich.py",
-   "item": "drift-map #43"
-  },
-  {
    "file": "redamon.wiki/Building-a-Plugin.md",
    "path": ".github/CODEOWNERS",
    "item": "not a path: a file of the redamon-plugins repository"
