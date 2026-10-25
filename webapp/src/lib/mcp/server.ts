@@ -407,6 +407,9 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'means one of three things: never scanned, scanned and clean, or every such finding ' +
         'suppressed (suppressed findings are not counted). Check `coverage` and the suppressed ' +
         'findings before calling anything clean. Counts only, never sample values.\n\n' +
+        'When the settled graph holds far fewer nodes than a saved version, or none after a ' +
+        'completed full scan, `warning` is "graph_data_missing" and `graphDataMissing` says what ' +
+        'was expected: the data was lost, so the graph\'s contents are UNKNOWN, not empty.\n\n' +
         `${GRAPH_TOOL_USAGE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),

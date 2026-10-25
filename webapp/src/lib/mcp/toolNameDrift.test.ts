@@ -134,6 +134,8 @@ const NOT_TOOLS = new Set([
   'mute_outcome_unknown', 'unmute_outcome_unknown',
   // Audit actions written without the `mcp.` prefix on their own line.
   'attach_authorization',
+  // graph_summary's warning code for a lost graph (plan 09.4).
+  'graph_data_missing',
 ])
 
 describe('P8: every tool named in an agent-facing string exists', () => {

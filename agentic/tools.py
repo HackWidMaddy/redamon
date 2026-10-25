@@ -1033,11 +1033,15 @@ Cypher Query:"""
                 logger.warning(f"[{user_id}/{project_id}] graph_summary coverage unreadable: {e}")
                 coverage = ["  Coverage could not be read this time; the counts above are still exact."]
 
+            # The scan history lives behind the webapp's user-session routes,
+            # out of this tool's reach, so both causes are named.
             if not nodes:
                 return (
-                    "This project's graph is EMPTY: no nodes of any type. "
-                    "Nothing has been scanned yet, so an absent finding here "
-                    "means 'not looked for', not 'not present'."
+                    "This project's graph is EMPTY: no nodes of any type. Either nothing "
+                    "has been scanned yet, or the graph data was lost (a reset database "
+                    "or a failed restore); the project's scan history in the app tells "
+                    "which. Either way an absent finding here means 'not looked for' or "
+                    "'unknown', never 'not present'."
                 )
 
             lines = ["Node types in this project (count):"]

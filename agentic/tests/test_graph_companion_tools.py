@@ -162,6 +162,15 @@ class GraphSummaryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("EMPTY", out)
         self.assertIn("not looked for", out)
 
+    async def test_an_EMPTY_graph_names_lost_data_as_a_cause(self):
+        # Plan 09.4: a reset database or a failed restore also empties the
+        # graph, and "nothing has been scanned yet" would then be a false claim.
+        with _tenant():
+            out = await _call(_manager(_FakeGraph(nodes=[])).get_summary_tool())
+        self.assertIn("graph data was lost", out)
+        self.assertIn("scan history", out)
+        self.assertNotIn("Nothing has been scanned yet, so", out)
+
     async def test_a_read_failure_is_an_ERROR_never_an_empty_summary(self):
         with _tenant():
             out = await _call(_manager(_FakeGraph(raises=True)).get_summary_tool())
