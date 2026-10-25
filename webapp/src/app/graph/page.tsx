@@ -67,7 +67,7 @@ import { useScanStartFailure } from '@/hooks/useScanStartFailure'
 import { useDrawerOffsets } from '@/hooks/useDrawerOffsets'
 import { useGraphTypeFilterPrefs, useGraphViewPrefs } from '@/hooks/useUserPreferences'
 import { useProject } from '@/providers/ProjectProvider'
-import { GITHUB_HUNT_PHASES, GVM_PHASES, PARTIAL_RECON_PHASE_MAP, TRUFFLEHOG_PHASES } from '@/lib/recon-types'
+import { GITHUB_HUNT_PHASES, GVM_PHASES, PARTIAL_RECON_TOTAL_PHASES, TRUFFLEHOG_PHASES } from '@/lib/recon-types'
 import { WORKFLOW_TOOLS } from '@/components/projects/ProjectForm/WorkflowView/workflowDefinition'
 import type { ReconStatus } from '@/lib/recon-types'
 import type { ScanMode } from '@/hooks/useReconStatus'
@@ -1954,7 +1954,7 @@ export default function GraphPage() {
           onClearLogs={() => clearPartialReconLogsForRun(run.run_id)}
           onStop={() => handleStopPartialRecon(run.run_id)}
           title={`Partial Recon: ${WORKFLOW_TOOLS.find(t => t.id === run.tool_id)?.label || 'Running'}`}
-          totalPhases={(PARTIAL_RECON_PHASE_MAP[run.tool_id || ''] || ['Running']).length}
+          totalPhases={PARTIAL_RECON_TOTAL_PHASES}
           hidePhaseProgress
         />
       ))}

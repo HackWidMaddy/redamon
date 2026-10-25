@@ -4,15 +4,17 @@
  * Each drawer shows "Phase N/M": N is the number the orchestrator's
  * *_PHASE_PATTERNS entry carries (recon_orchestrator/container_manager.py), M
  * is the length of the TS list. The GVM drawer hard-coded M = 4 against five
- * patterns and showed "Phase 5/4" (drift-map #22). The Python source is parsed,
- * so a pattern added there fails here.
+ * patterns and showed "Phase 5/4" (drift-map #22). A partial run's count was a
+ * per-tool list of names nothing printed (drift-map #64); the orchestrator pins
+ * every partial event to phase 1. The Python source is parsed, so a pattern
+ * added or a pin changed there fails here.
  *
  * @vitest-environment node
  */
 import { describe, test, expect } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { GITHUB_HUNT_PHASES, GVM_PHASES, TRUFFLEHOG_PHASES } from './recon-types'
+import { GITHUB_HUNT_PHASES, GVM_PHASES, PARTIAL_RECON_TOTAL_PHASES, TRUFFLEHOG_PHASES } from './recon-types'
 
 const CONTAINER_MANAGER = join(__dirname, '../../../recon_orchestrator/container_manager.py')
 const available = existsSync(CONTAINER_MANAGER)
@@ -39,5 +41,16 @@ describe.skipIf(!available)('drawer phase lists equal the orchestrator patterns'
     // Same names in the same order, numbered 1..n, so N never exceeds M.
     expect([...ts]).toEqual(py.map(([phase]) => phase))
     expect(py.map(([, n]) => n)).toEqual(py.map((_, i) => i + 1))
+  })
+})
+
+describe.skipIf(!available)('a partial run is phase 1 of PARTIAL_RECON_TOTAL_PHASES', () => {
+  test('stream_partial_logs pins every event to that phase number', () => {
+    const src = readFileSync(CONTAINER_MANAGER, 'utf8')
+    const fn = /\n    async def stream_partial_logs\([\s\S]*?(?=\n    (?:async )?def )/.exec(src)
+    expect(fn, 'stream_partial_logs not found in container_manager.py').toBeTruthy()
+    const pins = [...fn![0].matchAll(/event\.phase_number = (\d+)/g)].map(m => Number(m[1]))
+    expect(pins.length).toBeGreaterThan(0)
+    expect(new Set(pins)).toEqual(new Set([PARTIAL_RECON_TOTAL_PHASES]))
   })
 })
