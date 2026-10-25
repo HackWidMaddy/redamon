@@ -789,11 +789,13 @@ class ContainerManager:
         try/except so it merely stops writing to Neo4j in silence; partial recon has
         no such net and hard-crashes. See issue #169.
 
-        So when the image ALREADY bakes graph_db (recon, gvm, github-hunt,
-        trufflehog), an unverifiable guess is strictly worse than not mounting at
-        all: skip it and let the baked copy serve, at the cost of graph_db source
-        hot-reload until the operator adds the compose mount. Only an image that
-        does NOT bake it (supply-chain) has to gamble on the guess.
+        So when the image ALREADY bakes graph_db (recon, gvm, github-hunt), an
+        unverifiable guess is strictly worse than not mounting at all: skip it and
+        let the baked copy serve, at the cost of graph_db source hot-reload until
+        the operator adds the compose mount. Only an image that does NOT bake it
+        (supply-chain) has to gamble on the guess. TruffleHog gets no graph_db at
+        all, baked or mounted: its scan container holds no Neo4j credentials, and
+        the orchestrator ingests its findings afterwards with its own graph_db.
         """
         # getattr: api.py sets this AFTER construction, and the helpers are also
         # exercised on instances built without __init__.
