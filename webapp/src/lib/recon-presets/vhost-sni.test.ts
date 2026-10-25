@@ -195,8 +195,8 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
 // ===========================================================================
 describe('Recon preset content -- vhost_sni enablement', () => {
   // The preset list comes from the registry, so a new preset fails here until
-  // it is given a decision above (the wiki promises a preset without one "will
-  // fail CI").
+  // it is given a decision above (the wiki promises a preset without one fails
+  // the unit gate).
   const byId = new Map(RECON_PRESETS.map(p => [p.id, p]))
   const params = (id: string) => byId.get(id)!.parameters as Record<string, unknown>
   const decided: readonly string[] = [
