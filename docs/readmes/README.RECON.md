@@ -769,6 +769,47 @@ What follows from that:
   current graph cannot start while a scan runs. Arming the rules for new scans
   is allowed at any time.
 
+### Per-host coverage stamps (what each host got)
+
+The coverage record above is per run and per org, and lists what was CUT. It
+cannot say whether "no Secret on `app.example.com`" means analyzed and clean, JS
+Recon off, no JS from the crawler, or the file cap. So the modules that work
+per web host also report, for every host they *considered*, one row
+`{status, inputs, outputs, reason}`, and their graph writers stamp it on the
+matching `BaseURL` as `<module>_at` / `_status` / `_inputs` / `_outputs` /
+`_reason` (declared in `graph_db/schema_sections.md`).
+
+| Piece | Where |
+|---|---|
+| Row vocabulary, `base_url_key` (`https://x` and `https://x:443` are one host) | `recon/helpers/coverage_stamps.py` |
+| JS Recon rows | `_js_coverage` in `recon/main_recon_modules/js_recon.py`, in `scan_metadata.coverage` |
+| Nuclei rows | `_nuclei_coverage` in `recon/main_recon_modules/vuln_scan.py`, in `vuln_scan.scan_metadata.coverage` |
+| The stamp (MATCH only, tenant-scoped, module name from an allowlist) | `stamp_base_url_coverage` in `graph_db/coverage_stamps.py`, called by `update_graph_from_js_recon` and `update_graph_from_vuln_scan` |
+| The per-module counts readers use | `COVERAGE_SUMMARY_CYPHER` / `coverage_summary` in the same file: the agent's `/graph/exec` summary op (MCP `graph_summary`) and the in-app `graph_summary` |
+| Webapp copy of the vocabulary | `webapp/src/lib/coverageStamps.ts` (node drawer, report, MCP); `tests/test_coverage_stamps_parity.py` holds the three lists equal |
+
+- **Considered.** JS Recon: every host http_probe got a live (< 500) answer
+  from, every host it was handed pages on (`resource_enum` URLs, which is how
+  partial runs pass their targets), and every host serving a JS candidate; a
+  host the RoE exclude is never considered. Nuclei: every host a pass targeted;
+  when Nuclei was meant to run but could not start, every live host.
+- **Status.** `complete`; `no_input` (no candidate, or every candidate turned
+  out not to be JavaScript); `partial` with the reasons (`file cap`, `host
+  unreachable`, `analyzer failed or timed out`; `runtime cap`, `nuclei exited
+  <code>`); `failed` (all lost, a fatal error, or Nuclei unavailable). A Nuclei
+  pass stopped at `NUCLEI_MAX_RUNTIME` leaves all its hosts partial: the run
+  never says which targets it reached.
+- **Absence.** A module switched off stamps nothing. Readers say "not scanned"
+  for a live BaseURL without a module's stamp only when some BaseURL of the
+  project carries it, and "coverage not recorded" otherwise (a graph written
+  before the stamps, or a module that never ran). A full run rebuilds every
+  BaseURL, so stamps describe the latest full run plus partial JS Recon and
+  Nuclei runs since; partial JS Recon writes even when it found nothing.
+- **Recon Delta.** Every stamp is in `VOLATILE_PROPERTIES`.
+- **Follow-ups.** Only JS Recon and Nuclei stamp. `resource_enum`, the security
+  checks and the GraphQL, cache and vhost scanners are the obvious next modules,
+  and Subdomain / IP nodes the place for host-level modules.
+
 ---
 
 ## 🎯 Targeting Modes

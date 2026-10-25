@@ -349,6 +349,14 @@ across the run's scan roots of that org (`recon_coverage_roots`, keyed by
 `recon_coverage_run`), and `openapi_source_status` entries prefixed with their
 scan root (`<scanRoot>|<id>|<hash>|<code>|<time>`).
 
+That record lists what a run CUT. What a module did on each web host lives on the
+host instead: flat `<module>_at` / `_status` / `_inputs` / `_outputs` / `_reason`
+properties on `BaseURL` (a property cannot hold a map), written by JS Recon and
+Nuclei for every host they considered and by MATCH only. A host without its
+stamp reads "not scanned" only when the module stamped another host of the
+project, "coverage not recorded" otherwise. See README.RECON, "Per-host coverage
+stamps".
+
 ### AWS Deployment Architecture
 
 ```
@@ -424,9 +432,26 @@ render shape, because a snapshot must be restorable back into Neo4j:
   ],
   "relationships": [
     { "startExportId": "<uuid>", "endExportId": "<uuid>", "type": "RESOLVES_TO", "properties": {} }
+  ],
+  // absent in snapshots stored before plan 09.5
+  "referenceLinks": [
+    { "startExportId": "<uuid>", "endExportId": null, "type": "HAS_KNOWN_CVE",
+      "refLabel": "CVE", "refKey": "CVE-2021-23017", "properties": {} }
   ]
 }
 ```
+
+**Reference nodes are never captured, their links are.** `CVE`, `MitreData` and
+`Capec` carry no tenant key and are shared by every project, so a snapshot or a
+project export (manifest 1.1.0, `neo4j/reference_links.json`) holds no such node
+and no property of one. Each edge to one is a link record: the project end by
+export id, the other end (the `null` id) by its natural key. A restore validates
+the label against the catalogue and the key against its shape, MATCHes the node
+(never MERGE, never SET; label and key property from a fixed map), and skips and
+counts a link whose node is missing. A payload that carries a reference node
+anyway has it dropped. Activation sweeps orphaned reference nodes only after the
+restore, so a CVE only this project linked survives the swap
+(`webapp/src/lib/graphReferenceLinks.ts`).
 
 The graph screen renders a version by converting this to the same
 `{ nodes, links }` payload `/api/graph` returns, so the canvas, the clustering and
