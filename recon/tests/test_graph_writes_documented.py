@@ -177,6 +177,22 @@ def test_every_member_of_an_alternation_is_read():
     assert found == ["HAS_BASE_URL", "HAS_BASEURL", "X", "Y"]
 
 
+def test_the_graph_view_clusters_only_edges_something_writes():
+    """STRUCTURAL_EDGE_TYPES is a string list, not Cypher, so the scan above
+    cannot see it; an entry nothing writes (POWERED_BY was one) is dead."""
+    cluster = WEBAPP_SRC / "app" / "graph" / "utils" / "clusterNodes.ts"
+    if not cluster.exists():
+        pytest.skip("webapp/ is not in this checkout")
+    block = re.search(r"STRUCTURAL_EDGE_TYPES = new Set\(\[(.*?)\]\)",
+                      cluster.read_text(encoding="utf-8"), re.S)
+    assert block, "STRUCTURAL_EDGE_TYPES not found in clusterNodes.ts"
+    types = re.findall(r"'([A-Z_]+)'", block.group(1))
+    assert len(types) > 10
+    written, _ = _scan()
+    dead = sorted(t for t in types if t not in written and t not in INTENTIONAL_PHANTOMS)
+    assert not dead, f"STRUCTURAL_EDGE_TYPES names edges nothing writes: {dead}"
+
+
 def test_the_scan_reads_the_webapp_cypher():
     """The webapp routes carry graph reads of their own; a scan that silently
     found none of them would pass the phantom test vacuously."""

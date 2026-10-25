@@ -78,8 +78,10 @@ DROP_LEGACY_CONSTRAINTS = [
     "DROP CONSTRAINT jsreconfinding_unique IF EXISTS",
     "DROP CONSTRAINT secret_unique IF EXISTS",
     "DROP CONSTRAINT userinput_unique IF EXISTS",
-    # K25: the `Exploit` label is constrained but nothing has ever written one.
+    # K25: the `Exploit` label is constrained and indexed but nothing has ever
+    # written one.
     "DROP CONSTRAINT exploit_unique IF EXISTS",
+    "DROP INDEX idx_exploit_tenant IF EXISTS",
     # K25: tenant indexes on the SHARED reference nodes. They have no tenant
     # keys (strip_reference_node_tenant removes any it finds), so these indexed
     # nothing but empty values and cost a write on every CVE upsert.
@@ -181,12 +183,10 @@ TENANT_INDEXES = [
     "CREATE INDEX idx_endpoint_tenant IF NOT EXISTS FOR (e:Endpoint) ON (e.user_id, e.project_id)",
     "CREATE INDEX idx_parameter_tenant IF NOT EXISTS FOR (p:Parameter) ON (p.user_id, p.project_id)",
     "CREATE INDEX idx_vulnerability_tenant IF NOT EXISTS FOR (v:Vulnerability) ON (v.user_id, v.project_id)",
-    "CREATE INDEX idx_exploit_tenant IF NOT EXISTS FOR (e:Exploit) ON (e.user_id, e.project_id)",
     "CREATE INDEX idx_exploitgvm_tenant IF NOT EXISTS FOR (e:ExploitGvm) ON (e.user_id, e.project_id)",
     # GitHub Secret Hunt tenant indexes
     "CREATE INDEX idx_githubhunt_tenant IF NOT EXISTS FOR (gh:GithubHunt) ON (gh.user_id, gh.project_id)",
     "CREATE INDEX idx_githubrepo_tenant IF NOT EXISTS FOR (gr:GithubRepository) ON (gr.user_id, gr.project_id)",
-    "CREATE INDEX idx_sbomdoc_tenant IF NOT EXISTS FOR (d:SbomDocument) ON (d.user_id, d.project_id)",
     "CREATE INDEX idx_githubpath_tenant IF NOT EXISTS FOR (gp:GithubPath) ON (gp.user_id, gp.project_id)",
     "CREATE INDEX idx_githubsecret_tenant IF NOT EXISTS FOR (gs:GithubSecret) ON (gs.user_id, gs.project_id)",
     "CREATE INDEX idx_githubsensitivefile_tenant IF NOT EXISTS FOR (gsf:GithubSensitiveFile) ON (gsf.user_id, gsf.project_id)",

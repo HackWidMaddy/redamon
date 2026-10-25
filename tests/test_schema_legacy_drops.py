@@ -6,6 +6,10 @@ full re-index, with a window in which concurrent MERGEs have no uniqueness
 guard. That is what happened to subdomain_unique, ip_unique and baseurl_unique,
 whose names survived the move to tenant-scoped keys (drift-map #5).
 
+It also keeps the index lists free of duplicate and dead declarations
+(drift-map #62): a name declared twice is one index counted as two, and an
+index removed from the lists must be DROPped so existing databases lose it too.
+
 Run: ./redamon.sh test unit (root tests, agent image)
 """
 import re
@@ -20,10 +24,11 @@ from graph_db import schema  # noqa: E402
 from graph_db.schema_keys import KEY_CONSTRAINTS  # noqa: E402
 
 DECLARED = {k["constraint"]: k for k in KEY_CONSTRAINTS}
-CREATED_INDEXES = {
+INDEX_NAMES = [
     re.match(r"CREATE INDEX (\w+) ", s).group(1)
     for s in schema.TENANT_INDEXES + schema.ADDITIONAL_INDEXES
-}
+]
+CREATED_INDEXES = set(INDEX_NAMES)
 
 
 def _dropped(kind):
@@ -55,6 +60,22 @@ class TestNoUnconditionalDropOfALiveName(unittest.TestCase):
         for name in schema.LEGACY_SHAPED_CONSTRAINTS:
             with self.subTest(name=name):
                 self.assertIn(name, DECLARED)
+
+
+class TestIndexDeclarations(unittest.TestCase):
+    def test_every_index_statement_is_parsed(self):
+        self.assertEqual(len(INDEX_NAMES),
+                         len(schema.TENANT_INDEXES) + len(schema.ADDITIONAL_INDEXES))
+
+    def test_index_names_are_unique(self):
+        dupes = sorted({n for n in INDEX_NAMES if INDEX_NAMES.count(n) > 1})
+        self.assertEqual(dupes, [], "an index is declared more than once")
+
+    def test_the_dead_exploit_index_is_dropped_not_created(self):
+        """Nothing writes the `Exploit` label (ExploitGvm is a different one)."""
+        self.assertIn("idx_exploit_tenant", _dropped("INDEX"))
+        ddl = " ".join(schema.TENANT_INDEXES + schema.ADDITIONAL_INDEXES)
+        self.assertNotRegex(ddl, r":Exploit\)")
 
 
 def _shape(name, properties=None):

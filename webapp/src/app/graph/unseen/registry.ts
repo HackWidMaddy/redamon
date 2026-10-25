@@ -30,7 +30,7 @@ import type { TableViewMode } from '../components/ViewTabs'
  */
 export const ALL_GRAPH_LABELS = [
   'AttackChain', 'BaseURL', 'Capec', 'Certificate', 'ChainDecision', 'ChainFailure',
-  'ChainFinding', 'ChainStep', 'CVE', 'DNSRecord', 'Domain', 'Endpoint', 'Exploit',
+  'ChainFinding', 'ChainStep', 'CVE', 'DNSRecord', 'Domain', 'Endpoint',
   'ExploitGvm', 'ExternalDomain', 'GithubHunt', 'GithubPath', 'GithubRepository',
   'GithubSecret', 'GithubSensitiveFile', 'Header', 'IP', 'JsReconFinding',
   'MalPackageFinding', 'Malware', 'MitreData', 'MultiscannerBucket',

@@ -210,9 +210,6 @@ INTENTIONALLY_UNDOCUMENTED = {
     "Muted",
     # Knowledge-base RAG chunks. Not attack surface, never a recon answer.
     "KBChunk",
-    # Its uniqueness constraint is explicitly dropped in schema.py; it survives
-    # as an index only, so it is not a stable queryable entity.
-    "Exploit",
 }
 
 # Real documentation debt. EMPTY, and the test below keeps it that way: a label
