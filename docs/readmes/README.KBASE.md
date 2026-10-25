@@ -300,7 +300,7 @@ flowchart TD
 ### Initialization Sequence
 
 1. `AgentOrchestrator.initialize()` calls `_setup_knowledge_base()`
-2. Feature gate: checks `KB_ENABLED` env var (default `true`). If `false`, returns `None`
+2. Feature gate: checks the `KB_ENABLED` env var. `redamon.sh` sets it from the `.kbase-enabled` flag file, and compose defaults it to `false`. If `false`, returns `None`
 3. Dynamic import of KB modules (graceful degradation if dependencies missing)
 4. Creates `Embedder` (model from `KB_EMBEDDING_MODEL` env var or config)
 5. Creates `FAISSIndexer` pointed at `KB_PATH` (default `/app/knowledge_base/data`)
@@ -470,7 +470,7 @@ ingestion:
 
 | Variable | Config Path | Default |
 |---|---|---|
-| `KB_ENABLED` | top-level | `true` |
+| `KB_ENABLED` | none: the agent reads it, and `redamon.sh` sets it from `.kbase-enabled` | `false` |
 | `KB_EMBEDDING_MODEL` | `embedder.model` | `intfloat/e5-large-v2` |
 | `KB_RERANK_ENABLED` | `reranker.enabled` | `true` |
 | `KB_RERANKER_MODEL` | `reranker.model` | `BAAI/bge-reranker-base` |
@@ -818,7 +818,7 @@ There are **four ways** ingestion can start. Each ultimately calls the same Pyth
 flowchart TD
     subgraph "Entry Point 1: redamon.sh install / up / restart"
         CMD1["./redamon.sh install<br/>./redamon.sh up<br/>./redamon.sh restart"]
-        CHK1["is_kb_enabled()?<br/>reads KB_ENABLED env or<br/>kb_config.yaml"]
+        CHK1["is_kb_enabled()?<br/>.kbase-enabled flag file"]
         BOOT["_kb_bootstrap lite<br/>non-fatal on failure"]
         MAKE1["make kb-build-lite<br/>MODE=docker"]
         EXEC1["docker exec redamon-agent<br/>python -m knowledge_base<br/>.curation.data_ingestion<br/>--profile lite"]
@@ -904,19 +904,19 @@ flowchart TD
 
 | Step | What runs | Where | Code location |
 |---|---|---|---|
-| User runs `./redamon.sh install` | Starts containers, then calls `_kb_bootstrap lite` | Host shell | `redamon.sh:364-374` |
-| `_kb_bootstrap` calls `make kb-build-lite` | Runs `docker exec` into agent container | Host -> container | `Makefile:132-140` |
-| `data_ingestion.main()` starts | Parses CLI args, acquires lock | Agent container | `data_ingestion.py:580-640` |
-| `Embedder()` created | Loads `intfloat/e5-large-v2` model (pre-cached in image) | Agent container | `embedder.py:60-70` |
-| `FAISSIndexer()` created | Points at `/app/knowledge_base/data`, loads existing index if present | Agent container | `faiss_indexer.py:80-95` |
-| `Neo4jLoader()` created | Connects to `bolt://neo4j:7687`, creates schema | Agent container -> Neo4j | `neo4j_loader.py:82-100` |
+| User runs `./redamon.sh install` | Starts containers, then calls `_kb_bootstrap` with the profile `_kb_choose_profile` picks (`lite` or `cpu-lite`) | Host shell | `redamon.sh`: `cmd_install` |
+| `_kb_bootstrap` calls `make kb-build-<profile>` | Runs `docker exec` into agent container | Host -> container | `services/knowledge_base/Makefile`: `kb-build-lite` |
+| `data_ingestion.main()` starts | Parses CLI args; `run_ingestion` acquires the lock | Agent container | `data_ingestion.py`: `main`, `run_ingestion` |
+| Embedder created | `create_embedder` loads `intfloat/e5-large-v2` (pre-cached in image) or the API embedder | Agent container | `embedder.py`: `create_embedder`, `Embedder` |
+| `FAISSIndexer()` created | Points at `/app/knowledge_base/data`, loads existing index if present | Agent container | `faiss_indexer.py`: `FAISSIndexer` |
+| `Neo4jLoader()` created | Connects to `bolt://neo4j:7687`, creates schema | Agent container -> Neo4j | `neo4j_loader.py`: `Neo4jLoader` |
 | `client.fetch()` per source | Downloads tarball/CSV/API data via `safe_get()` | Agent container -> internet | `*_client.py` |
 | `client.to_chunks()` | Parses raw data into chunk dicts with `chunk_id`, `content`, `title` | Agent container (CPU) | `*_client.py` |
-| `_filter_unchanged()` | SHA-256 content hashes vs `.manifest.json`, drops unchanged | Agent container (CPU) | `data_ingestion.py:430-490` |
-| `embedder.embed_documents_batch()` | Runs sentence-transformer model on chunk texts, batch_size=64 | Agent container (CPU) | `embedder.py:130-160` |
-| `faiss_indexer.add()` | Adds vectors + chunk_ids to in-memory FAISS index | Agent container (RAM) | `faiss_indexer.py:105-125` |
-| `neo4j_loader.upsert_chunks()` | MERGE by chunk_id, dual-label (`:KBChunk:SourceChunk`) | Agent -> Neo4j | `neo4j_loader.py:130-175` |
-| `faiss_indexer.save()` | Atomic write `index.faiss` + `chunk_ids.json` + manifest | Agent container (disk) | `faiss_indexer.py:130-175` |
+| `_filter_unchanged()` | SHA-256 content hashes vs `.manifest.json`, drops unchanged | Agent container (CPU) | `data_ingestion.py`: `_filter_unchanged` |
+| `embedder.embed_documents_batch()` | Runs sentence-transformer model on chunk texts, batch_size=64 | Agent container (CPU) | `embedder.py`: `embed_documents_batch` |
+| `faiss_indexer.add()` | Adds vectors + chunk_ids to in-memory FAISS index | Agent container (RAM) | `faiss_indexer.py`: `add` |
+| `neo4j_loader.upsert_chunks()` | MERGE by chunk_id, dual-label (`:KBChunk:SourceChunk`) | Agent -> Neo4j | `neo4j_loader.py`: `upsert_chunks` |
+| `faiss_indexer.save()` | Atomic write `index.faiss` + `chunk_ids.json` + manifest | Agent container (disk) | `faiss_indexer.py`: `save` |
 
 ---
 
