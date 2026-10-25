@@ -1364,10 +1364,12 @@ def _collect_ip_targets(combined_result: dict) -> dict[str, list[dict]]:
 
 def _shared_edge_ips(combined_result: dict, ips: Iterable[str]) -> set[str]:
     """The target IPs a known edge CDN serves: flagged by naabu, httpx or tlsx
-    with an edge-only CDN name. Plain cloud-hosting labels (aws, azure, gcp)
-    do not count; those IPs serve the application itself."""
-    from recon.helpers.cdn_ranges import collect_reliable_edge_ips
-    return collect_reliable_edge_ips(combined_result) & set(ips)
+    with an edge-only CDN name, or inside a CDN's published edge prefix. Plain
+    cloud-hosting labels (aws, azure, gcp) do not count; those IPs serve the
+    application itself."""
+    from recon.helpers.cdn_ranges import collect_reliable_edge_ips, edge_cdn_for_ip
+    ips = set(ips)
+    return (collect_reliable_edge_ips(combined_result) & ips) | {ip for ip in ips if edge_cdn_for_ip(ip)}
 
 
 def _scheme_for_port(port: int) -> str:

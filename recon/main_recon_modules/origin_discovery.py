@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover - dependency guaranteed by the image
 
 from recon.main_recon_modules.ip_filter import is_non_routable_ip, is_url_safe_to_probe
 from recon.helpers.roe_scope import _is_roe_excluded
-from recon.helpers.cdn_ranges import is_reliable_edge_cdn_name
+from recon.helpers.cdn_ranges import edge_cdn_for_ip, edge_from_headers, is_reliable_edge_cdn_name
 from recon.helpers.public_suffix import org_domain
 
 import urllib3
@@ -78,51 +78,8 @@ _TLS_PORTS = {443, 8443, 9443}
 # MX hosts belonging to managed mail providers never point at the origin.
 _MX_SKIP_VENDORS = ("google", "outlook", "microsoft", "mimecast", "proofpoint", "barracuda", "pphosted")
 
-# Known CDN/WAF IP ranges — a candidate inside one is the edge, not the origin
-# (ported from unwaf waf.go wafCIDRs; broader than RedAmon's Cloudflare-only
-# prefix layer, so used in addition to the combined_result is_cdn flags).
-_WAF_CDN_CIDRS = [
-    # Cloudflare
-    "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
-    "104.16.0.0/13", "104.24.0.0/14", "108.162.192.0/18",
-    "131.0.72.0/22", "141.101.64.0/18", "162.158.0.0/15",
-    "172.64.0.0/13", "173.245.48.0/20", "188.114.96.0/20",
-    "190.93.240.0/20", "197.234.240.0/22", "198.41.128.0/17",
-    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32",
-    "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
-    # Akamai
-    "23.0.0.0/12", "104.64.0.0/10", "2600:1400::/24", "2600:1480::/24",
-    # Fastly
-    "151.101.0.0/16", "2a04:4e40::/32", "2a04:4e42::/32",
-    # Imperva / Incapsula
-    "199.83.128.0/21", "198.143.32.0/19",
-    # Sucuri
-    "192.88.134.0/23", "185.93.228.0/22",
-    # AWS CloudFront
-    "13.32.0.0/15", "13.35.0.0/16", "13.224.0.0/14",
-    "18.64.0.0/14", "18.154.0.0/15", "18.160.0.0/12",
-    "52.84.0.0/15", "54.182.0.0/16", "54.192.0.0/16",
-    "54.230.0.0/17", "54.239.128.0/18", "99.84.0.0/16",
-    "143.204.0.0/16", "205.251.192.0/19", "204.246.164.0/22", "2600:9000::/28",
-]
-
-# WAF/CDN response-header signatures (unwaf waf.go): a candidate whose response
-# carries one of these is still routed through the edge, so it is not a bypass.
-_WAF_HEADER_SIGNATURES = [
-    "cf-ray", "cf-cache-status", "cf-request-id",
-    "x-akamai-transformed", "akamai-origin-hop",
-    "x-amz-cf-id", "x-amz-cf-pop",
-    "x-fastly-request-id", "fastly-io-info",
-    "x-sucuri-id", "x-sucuri-cache",
-    "x-iinfo", "x-cdn",
-    "x-varnish", "x-sp-url", "x-sp-waf",
-    "barra_counter_session", "x-wa-info", "x-cnection",
-    "ddos-guard", "ar-asg", "ar-poweredby", "fortiwafsid", "x-rdwr",
-    "x-azure-ref", "x-fd-healthprobe", "x-goog-bot-verification",
-    "x-vercel-id", "x-vercel-cache", "x-nf-request-id",
-]
-_WAF_SERVER_TOKENS = ("cloudflare", "akamaighost", "akamai", "sucuri", "incapsula",
-                      "imperva", "ddos-guard", "fortiweb", "netlify")
+# CDN / WAF edge ranges, ASNs and response-header signatures live in
+# recon/helpers/cdn_ranges.py, the list every module shares.
 
 # Weighted-similarity model (unwaf verify.go calculateOverallScore).
 _W_HTML = 0.60
@@ -408,20 +365,27 @@ def _select_fronted_hosts(combined_result: dict, ctx: _RunCtx) -> Dict[str, dict
 
 import ipaddress as _ipaddress
 
-_PARSED_CDN_NETS = []
-for _c in _WAF_CDN_CIDRS:
-    try:
-        _PARSED_CDN_NETS.append(_ipaddress.ip_network(_c, strict=False))
-    except ValueError:
-        pass
-
 
 def _ip_in_cdn_ranges(ip: str) -> bool:
-    try:
-        addr = _ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    return any(addr in net for net in _PARSED_CDN_NETS)
+    """Inside a published CDN / WAF edge prefix: the edge, never the origin."""
+    return edge_cdn_for_ip(ip) is not None
+
+
+def _cdn_flagged_ips(combined_result: dict) -> Set[str]:
+    """IPs naabu, httpx or tlsx flagged with an edge CDN this run.
+
+    A label for plain cloud hosting (aws, azure, gcp) does not count: those IPs
+    serve the application themselves and are exactly where origins are found.
+    """
+    flagged: Set[str] = set()
+    for ip, info in (((combined_result.get("port_scan") or {}).get("by_ip")) or {}).items():
+        if isinstance(info, dict) and info.get("is_cdn") and _is_edge_cdn_label(info.get("cdn")):
+            flagged.add(ip)
+    for info in (((combined_result.get("http_probe") or {}).get("by_url")) or {}).values():
+        if (isinstance(info, dict) and info.get("ip") and info.get("is_cdn")
+                and _is_edge_cdn_label(info.get("cdn"))):
+            flagged.add(info["ip"])
+    return flagged
 
 
 # ---------------------------------------------------------------------------
@@ -855,12 +819,13 @@ def _url_host(ip: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _dedup_and_filter(candidates: Dict[str, str], entry: dict, ctx: _RunCtx,
-                      meta: dict) -> List[Tuple[str, str]]:
+                      meta: dict, flagged: Set[str] = frozenset()) -> List[Tuple[str, str]]:
     """Fail-closed filter. `candidates` maps ip -> source. Returns [(ip, source)].
 
     Drops (and counts): non-routable/metadata/reserved IPs (SSRF, G11), known CDN
-    edge IPs, IPs equal to the host's current DNS resolution, and RoE-excluded
-    IPs (G2). Caps at ORIGIN_DISCOVERY_MAX_CANDIDATES.
+    edge IPs (a published edge prefix, or ``flagged`` by this run's scanners),
+    IPs equal to the host's current DNS resolution, and RoE-excluded IPs (G2).
+    Caps at ORIGIN_DISCOVERY_MAX_CANDIDATES.
     """
     resolved = entry.get("resolved_ips") or set()
     kept: List[Tuple[str, str]] = []
@@ -873,7 +838,7 @@ def _dedup_and_filter(candidates: Dict[str, str], entry: dict, ctx: _RunCtx,
         if is_non_routable_ip(ip):          # G11 — the safety-critical drop
             dropped["ssrf"] += 1
             continue
-        if _ip_in_cdn_ranges(ip):
+        if ip in flagged or _ip_in_cdn_ranges(ip):
             dropped["cdn"] += 1
             continue
         if ip in resolved:
@@ -993,12 +958,7 @@ def _overall_score(html_sim: float, cert: float, hdr: float, ref_status: int, ca
 
 
 def _response_has_waf_headers(resp: dict) -> bool:
-    hdrs = resp.get("headers", {})
-    for sig in _WAF_HEADER_SIGNATURES:
-        if hdrs.get(sig):
-            return True
-    server = (hdrs.get("server") or "").lower()
-    return any(tok in server for tok in _WAF_SERVER_TOKENS)
+    return edge_from_headers(resp.get("headers")) is not None
 
 
 def _tls_handshake_cert(host_or_ip: str, sni: Optional[str], port: int, timeout: int) -> Optional[dict]:
@@ -1292,10 +1252,11 @@ def _candidate_key_rule(combined_result: dict):
     return _scan_root_key
 
 
-def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST) -> Tuple[List[dict], dict]:
+def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST,
+                  flagged: Set[str] = frozenset()) -> Tuple[List[dict], dict]:
     meta: dict = {"candidates": [], "methods": [], "errors": {}}
     candidates = _gather_candidates(host, entry, ctx, meta, key=key)
-    kept = _dedup_and_filter(candidates, entry, ctx, meta)
+    kept = _dedup_and_filter(candidates, entry, ctx, meta, flagged=flagged)
     meta["candidates"] = [ip for ip, _ in kept]
     if not kept:
         return [], meta
@@ -1372,10 +1333,11 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
     _log("*", f"selecting {len(fronted)} CDN-fronted host(s); "
               f"threshold={ctx.threshold:.0f}% budget={ctx.budget.remaining} search calls")
 
+    flagged = _cdn_flagged_ips(combined_result)
     all_confirmed: List[dict] = []
     for host, entry in fronted.items():
         try:
-            confirmed, meta = _process_host(host, entry, ctx, key=key_for(host))
+            confirmed, meta = _process_host(host, entry, ctx, key=key_for(host), flagged=flagged)
         except Exception as e:  # a host never sinks the whole module
             payload["candidates_meta"][host] = {"errors": {"fatal": str(e)[:200]}}
             _log("!", f"{host}: {e}")
