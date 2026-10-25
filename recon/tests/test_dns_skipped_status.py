@@ -103,7 +103,7 @@ def _partial(result, user_inputs=(), resolver=None):
            "user_inputs": list(user_inputs)}
     with patch("recon.main_recon_modules.domain_recon.discover_subdomains", return_value=result), \
          patch("recon.main_recon_modules.domain_recon.run_puredns_resolve",
-               side_effect=lambda subs, domain, s: list(subs)), \
+               side_effect=lambda subs, domain, s: (list(subs), "filtered")), \
          patch("recon.main_recon_modules.domain_recon.resolve_all_dns",
                side_effect=resolver or (lambda *a, **k: {})):
         subdomain_discovery.run_subdomain_discovery(cfg)
@@ -135,3 +135,5 @@ def test_partial_re_resolution_never_marks_an_unanswered_name_resolved(graph):
              user_inputs=["new.example.test", "gone.example.test"], resolver=resolver)
     status = _written(graph)["subdomain_status_map"]
     assert status == {"new.example.test": "resolved"}
+    # The second puredns pass (plan 08.2) reports how the list was filtered.
+    assert _written(graph)["metadata"]["wildcard_filter"] == "filtered"

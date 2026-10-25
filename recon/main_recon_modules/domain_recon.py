@@ -1204,7 +1204,36 @@ def _refresh_shared_resolvers(src: Path, shared: Path) -> None:
         print(f"[!][Puredns] Could not refresh the shared resolver list: {e}")
 
 
-def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) -> list:
+# Why puredns was meant to run and did not, as the coverage note words it.
+_PUREDNS_SKIP_REASONS = {
+    "breaker_open": "paused after repeated failures",
+    "no_resolvers": "no resolver list",
+    "no_output": "produced no output",
+    "timeout": "timed out",
+    "docker_missing": "Docker not found",
+    "error": "failed",
+}
+
+
+def _puredns_skipped(subdomains: list, reason: str) -> tuple:
+    """``(subdomains, "skipped:<reason>")``, recording the cut for the report.
+
+    Subdomains are assets, not findings, so this is a gap note with no prune
+    effect; it reaches the report's Coverage Limitations block.
+    """
+    try:
+        from recon.helpers import circuit_breaker as cb
+        cb.note_degraded("puredns", entries=[{
+            "source": "puredns",
+            "reason": f"{_PUREDNS_SKIP_REASONS[reason]}; names not wildcard-checked by puredns",
+            "skipped": len(subdomains),
+        }])
+    except Exception:  # noqa: BLE001 - a lost note must not fail discovery
+        pass
+    return subdomains, f"skipped:{reason}"
+
+
+def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) -> tuple:
     """
     Filter subdomains using puredns resolve to remove wildcards and DNS-poisoned entries.
 
@@ -1212,21 +1241,23 @@ def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) ->
     discovery tools, validates each entry against public DNS resolvers, and returns
     only the subdomains that are confirmed to exist (not wildcards or poisoned).
 
-    On any error, returns the original unfiltered list (graceful degradation).
+    Returns ``(names, status)``: status "filtered", or "skipped:<reason>" with the
+    input list unchanged. "disabled" (configuration or stealth mode) and
+    "no_input" are not cuts; every other skip is recorded as a coverage gap.
     """
     if settings is None:
         settings = {}
 
     if not settings.get('PUREDNS_ENABLED', True):
         print(f"[-][Puredns] Disabled — skipping wildcard filtering")
-        return subdomains
+        return subdomains, "skipped:disabled"
 
     if not subdomains:
         print(f"[-][Puredns] No subdomains to validate")
-        return subdomains
+        return subdomains, "skipped:no_input"
 
     if _source_skipped("puredns", "Puredns"):
-        return subdomains  # graceful: the unfiltered list is still usable
+        return _puredns_skipped(subdomains, "breaker_open")
 
     docker_image = settings.get('PUREDNS_DOCKER_IMAGE', 'frost19k/puredns:latest')
     threads = settings.get('PUREDNS_THREADS', 0)
@@ -1250,7 +1281,7 @@ def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) ->
     _refresh_shared_resolvers(resolver_src, resolver_shared)
     if not resolver_shared.exists():
         print(f"[!][Puredns] No resolver list found — skipping")
-        return subdomains
+        return _puredns_skipped(subdomains, "no_resolvers")
 
     # Write input subdomain list
     with open(input_file, 'w') as f:
@@ -1284,26 +1315,26 @@ def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) ->
             removed = len(subdomains) - len(filtered)
             print(f"[+][Puredns] Validated: {len(filtered)} real, {removed} filtered (wildcards/poisoned)")
             _source_record("puredns", _outcome("OK"))
-            return filtered
+            return filtered, "filtered"
         else:
             print(f"[!][Puredns] No output file produced — returning unfiltered list")
             if result.stderr:
                 print(f"[!][Puredns] stderr: {result.stderr[:500]}")
             _source_record("puredns", _outcome("TRANSIENT"),
                            detail=f"no output (exit {result.returncode})")
-            return subdomains
+            return _puredns_skipped(subdomains, "no_output")
 
     except subprocess.TimeoutExpired:
         print("[!][Puredns] Timed out (600s) — returning unfiltered list")
         _source_record("puredns", _outcome("TRANSIENT"), detail="timeout")
-        return subdomains
+        return _puredns_skipped(subdomains, "timeout")
     except FileNotFoundError:
         print("[!][Puredns] Docker not found — cannot run")
-        return subdomains
+        return _puredns_skipped(subdomains, "docker_missing")
     except Exception as e:
         print(f"[!][Puredns] Error: {e} — returning unfiltered list")
         _source_record("puredns", _outcome("TRANSIENT"), detail=type(e).__name__)
-        return subdomains
+        return _puredns_skipped(subdomains, "error")
     finally:
         # Cleanup temp files (may be root-owned from Docker)
         for tmp in [input_file, output_file]:
@@ -1428,7 +1459,7 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
 
     # Puredns wildcard filtering (after discovery fan-in, before DNS resolution)
     pre_filter_count = len(all_subs)
-    all_subs = run_puredns_resolve(all_subs, domain, settings)
+    all_subs, wildcard_filter = run_puredns_resolve(all_subs, domain, settings)
     if len(all_subs) < pre_filter_count:
         print(f"[+][Puredns] Wildcard filtering: {pre_filter_count} → {len(all_subs)} subdomains")
 
@@ -1439,7 +1470,8 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
             "scan_timestamp": datetime.now().isoformat(),
             "target_domain": domain,
             "anonymous_mode": False,
-            "bruteforce_mode": bruteforce
+            "bruteforce_mode": bruteforce,
+            "wildcard_filter": wildcard_filter,
         },
         "domain": domain,
         "subdomains": all_subs,
