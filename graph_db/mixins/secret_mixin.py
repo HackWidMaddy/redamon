@@ -600,7 +600,8 @@ class SecretMixin:
 
         MUST match scanners/trufflehog_scan/findings.py:digest — the two run in
         different images and cannot import each other, and
-        tests/test_trufflehog_stable_ids.py asserts they agree. Replaces the
+        test_digest_matches_the_scanner_side_implementation in
+        tests/test_trufflehog_graph_scoped_clear.py asserts they agree. Replaces the
         builtin hash(), which is randomised per process via PYTHONHASHSEED and so
         produced a different node id for the same repository on every run. The
         old blanket pre-clear hid that; with source-scoped clearing it would
