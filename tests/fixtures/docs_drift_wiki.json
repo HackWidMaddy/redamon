@@ -10,12 +10,6 @@
   {
    "kind": "count",
    "file": "redamon.wiki/AI-Assisted-Development.md",
-   "target": "node types:17",
-   "item": "drift-map #48"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/AI-Assisted-Development.md",
    "target": "settings:190+",
    "item": "drift-map #49"
   },
@@ -36,12 +30,6 @@
    "file": "redamon.wiki/Agent-Workspace.md",
    "target": "Creating-a-Project#switching-between-projects",
    "item": "drift-map #53"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Attack-Surface-Graph.md",
-   "target": "node types:25",
-   "item": "drift-map #48"
   },
   {
    "kind": "wiki-link",
@@ -102,12 +90,6 @@
    "file": "redamon.wiki/GraphQL-Security-Testing.md",
    "target": "Running-Reconnaissance#group-6-phase-a-nuclei--graphql-security-parallel",
    "item": "drift-map #53"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Home.md",
-   "target": "node types:22",
-   "item": "drift-map #48"
   },
   {
    "kind": "count",
