@@ -34,6 +34,8 @@ CPE_RESOLVER = PROJECT_ROOT / "graph_db" / "cpe_resolver.py"
 STILL_NAMED = {
     "docs/readmes/README.MITRE.md": "drift-map #60: docs are wave 3",
     "docs/readmes/README.DRIFT_MAP.md": "the drift map records the deletion",
+    "tests/fixtures/docs_paths_drift_readmes.json":
+        "the docs path audit allowlists README.MITRE.md's mention until wave 3 removes it",
 }
 
 
