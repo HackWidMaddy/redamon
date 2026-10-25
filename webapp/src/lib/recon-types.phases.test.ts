@@ -14,7 +14,7 @@
 import { describe, test, expect } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { GITHUB_HUNT_PHASES, GVM_PHASES, PARTIAL_RECON_TOTAL_PHASES, TRUFFLEHOG_PHASES } from './recon-types'
+import { GITHUB_HUNT_PHASES, GVM_PHASES, PARTIAL_RECON_TOTAL_PHASES, RECON_TOTAL_PHASES, TRUFFLEHOG_PHASES } from './recon-types'
 
 const CONTAINER_MANAGER = join(__dirname, '../../../recon_orchestrator/container_manager.py')
 const available = existsSync(CONTAINER_MANAGER)
@@ -41,6 +41,12 @@ describe.skipIf(!available)('drawer phase lists equal the orchestrator patterns'
     // Same names in the same order, numbered 1..n, so N never exceeds M.
     expect([...ts]).toEqual(py.map(([phase]) => phase))
     expect(py.map(([, n]) => n)).toEqual(py.map((_, i) => i + 1))
+  })
+})
+
+describe.skipIf(!available)('the full pipeline is RECON_TOTAL_PHASES phases', () => {
+  test('the last PHASE_PATTERNS number, which ReconState.total_phases also says', () => {
+    expect(RECON_TOTAL_PHASES).toBe(Math.max(...pythonPhases('PHASE_PATTERNS').map(([, n]) => n)))
   })
 })
 

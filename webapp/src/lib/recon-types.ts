@@ -239,3 +239,10 @@ export const PARTIAL_RECON_SUPPORTED_TOOLS = new Set(['SubdomainDiscovery', 'Naa
  * recon-types.phases.test.ts checks the pin.
  */
 export const PARTIAL_RECON_TOTAL_PHASES = 1
+
+/**
+ * The full pipeline's phase count: the last number PHASE_PATTERNS assigns
+ * (1-6, with an AI Surface Recon 4.5 between 4 and 5), as ReconState.total_phases
+ * says. recon-types.phases.test.ts checks it.
+ */
+export const RECON_TOTAL_PHASES = 6
