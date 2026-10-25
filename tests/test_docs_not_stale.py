@@ -168,14 +168,41 @@ def test_p20_no_agent_facing_guide_names_a_retired_deny_reason(reason):
 # --- P19: no guide tells an agent to hand-edit a generated artifact -----------------------
 
 #: Files a generator owns. Editing one by hand is undone by the next build, and
-#: the drift test fails afterwards rather than at the edit.
+#: the drift test fails afterwards rather than at the edit. Matched as a substring
+#: of a line, so a basename two files share carries its folder.
 _GENERATED = [
-    "reconSettingsAllowlist.generated.ts",
     "registry.json",
+    "registryDigest.generated.ts",
     "roe_parse_prompt.py",
+    "graph_db/schema_catalog.py",
+    "node_filters/catalog.json",
+    "nodeFilters/catalog.json",
+    "manifest.schema.json",
+    "screen.schema.json",
+    "catalog.schema.json",
     "MCP-API-Reference.md",
     "Project-Settings-Registry.md",
 ]
+
+#: Generated pages that live in the wiki checkout rather than in this repository.
+_GENERATED_IN_WIKI = {"MCP-API-Reference.md", "Project-Settings-Registry.md"}
+
+
+def test_p19_every_generated_artifact_still_exists():
+    """A name for a file that no longer exists guards nothing (drift-map #35)."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None or not (REPO_ROOT / ".git").exists():
+        pytest.skip("needs git and the repository's .git")
+    tracked = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files"], capture_output=True, text=True, check=True,
+    ).stdout.split("\n")
+    missing = [
+        name for name in _GENERATED
+        if name not in _GENERATED_IN_WIKI and not any(f.endswith(name) for f in tracked)
+    ]
+    assert missing == [], f"_GENERATED names files nothing tracks: {missing}"
 
 _EDIT_VERB = re.compile(
     r"\b(edit|add to|update|hand-edit|modify|append to|extend)\b[^\n]{0,80}", re.I
