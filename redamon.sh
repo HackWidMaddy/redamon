@@ -44,7 +44,8 @@ DISK_PARTIAL_BUILD_GB=15
 #
 # recon/ is bind mounted rw into the spawned recon container, and two of its
 # TRACKED data directories are re-downloaded there on a cache miss:
-#   * mitre_db          - add_mitre.py, CVE/CAPEC/CWE, 15 files, 24h TTL
+#   * mitre_db          - add_mitre.py, the 4 CAPEC/CWE resources, 24h TTL (the
+#                         CVE year files are downloaded too, but untracked)
 #   * wappalyzer_cache  - http_probe.py, technologies.json, 24h TTL
 # Both drift whenever their upstream publishes. Directories are listed rather
 # than files so a new sibling is covered automatically; entries may be either

@@ -1211,7 +1211,7 @@ def is_tool_allowed_in_phase(tool_name: str, phase: str) -> bool:
     1. Foundational fs_*/job_* tools: always allowed (phase-agnostic, like query_graph).
     2. Project's TOOL_PHASE_MAP override (per-project, per-tool, set via UI).
     3. MCP manifest default_phases (for tools declared by user-managed MCP servers).
-    4. Default to all phases (when nothing else specifies).
+    4. Otherwise denied: a tool no map names is allowed in no phase.
     """
     # fs_* (workspace filesystem) and job_* (background runner) are infrastructure
     # tools - blocking them by phase makes no sense. They cannot reach the network
