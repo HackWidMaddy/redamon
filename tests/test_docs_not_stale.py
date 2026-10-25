@@ -369,10 +369,14 @@ def _prose_lines(text: str):
 
 def _slug(heading: str) -> str:
     """GitHub's heading anchor: lowercased, punctuation but - and _ dropped,
-    each space a hyphen (so " - " becomes "---")."""
+    each space a hyphen (so " - " becomes "---"). Combining marks survive, so an
+    emoji's U+FE0F variation selector stays in the anchor, as GitHub keeps it."""
+    import unicodedata
+
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
     text = re.sub(r"<[^>]+>", "", text).strip().lower()
-    return re.sub(r"[^\w\- ]", "", text).replace(" ", "-")
+    kept = "".join(c for c in text if re.match(r"[\w\- ]", c) or unicodedata.category(c).startswith("M"))
+    return kept.replace(" ", "-")
 
 
 _ANCHORS: dict[Path, set[str]] = {}
