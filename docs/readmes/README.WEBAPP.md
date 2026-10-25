@@ -17,7 +17,7 @@ Production-ready Next.js 16 web application with Neo4j integration, PostgreSQL p
 ```
 webapp/
 ├── prisma/
-│   └── schema.prisma          # Database schema (169+ project params)
+│   └── schema.prisma          # Database schema (each Project column is described in recon_settings/registry.yaml)
 ├── src/
 │   ├── app/                    # Next.js App Router
 │   │   ├── api/               # API Routes

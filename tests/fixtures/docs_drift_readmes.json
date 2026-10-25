@@ -14,24 +14,6 @@
    "item": "drift-map #53"
   },
   {
-   "kind": "count",
-   "file": "docs/readmes/README.DEV.md",
-   "target": "settings:190+",
-   "item": "drift-map #49"
-  },
-  {
-   "kind": "count",
-   "file": "docs/readmes/README.POSTGRES.md",
-   "target": "settings:169+",
-   "item": "drift-map #49"
-  },
-  {
-   "kind": "count",
-   "file": "docs/readmes/README.RECON.md",
-   "target": "settings:169+",
-   "item": "drift-map #49"
-  },
-  {
    "kind": "anchor",
    "file": "docs/readmes/README.SUPPLY_CHAIN.md",
    "target": "#layer-l1--standalone-scan-other-scans",

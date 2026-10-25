@@ -103,7 +103,7 @@ Settings are resolved in the following order of precedence:
    PROJECT_ID=cml6xov4q0002h58pln96n20d
    WEBAPP_API_URL=http://localhost:3000
    ```
-   The recon module fetches all 169+ configurable parameters from:
+   The recon module fetches every project setting (each one is described in `recon_settings/registry.yaml`) from:
    ```
    GET /api/projects/{projectId}
    ```
@@ -128,7 +128,7 @@ settings = get_settings()
 TARGET_DOMAIN = settings['TARGET_DOMAIN']
 SUBDOMAIN_LIST = settings['SUBDOMAIN_LIST']
 SCAN_MODULES = settings['SCAN_MODULES']
-# ... all 169+ parameters
+# ... and every other setting
 ```
 
 ### Orchestrator Communication Flow
@@ -144,7 +144,7 @@ sequenceDiagram
     Webapp->>Orchestrator: POST /recon/{projectId}/start
     Orchestrator->>Recon: docker run with PROJECT_ID, WEBAPP_API_URL
     Recon->>API: GET /api/projects/{projectId}
-    API-->>Recon: Project settings (169+ params)
+    API-->>Recon: Project settings
     Recon->>Recon: Execute scan pipeline
     Recon->>Neo4j: Update graph with results
     Orchestrator->>Webapp: SSE log stream

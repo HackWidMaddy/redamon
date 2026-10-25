@@ -400,7 +400,7 @@ redamon/
 │   ├── server_actions/             #   Next.js server actions
 │   │   └── graph_queries.ts        #     Neo4j Cypher queries for graph visualization
 │   └── prisma/                     #   Prisma schema (push-based, NOT migration-based)
-│       └── schema.prisma           #     Database schema with 190+ project settings
+│       └── schema.prisma           #     Database schema (each Project column is described in recon_settings/registry.yaml)
 │
 ├── mcp/                            # MCP tool infrastructure
 │   ├── kali-sandbox/               #   Kali Linux Docker image for MCP servers
@@ -591,7 +591,7 @@ All REST endpoints live in `webapp/src/app/api/`. The main route groups:
 
 | Route Group | Purpose |
 |-------------|---------|
-| `projects/` | CRUD for projects + all project settings (190+ fields) |
+| `projects/` | CRUD for projects + all project settings |
 | `conversations/` | Agent conversation + chat message management |
 | `remediations/` | CypherFix remediation CRUD + batch operations |
 | `reports/` | Pentest report generation and retrieval |
@@ -675,7 +675,7 @@ plugins volume and serves the Gateway. When the runner is down, actions answer
 
 ### 4.5 Settings Architecture
 
-RedAmon has **190+ project settings** that control everything from Katana crawl depth to Metasploit payload configuration.
+RedAmon's project settings control everything from Katana crawl depth to Metasploit payload configuration. Each one is described once in `recon_settings/registry.yaml`; the generated wiki page [Project-Settings-Registry](https://github.com/samugit83/redamon/wiki/Project-Settings-Registry) lists them all.
 
 **Where settings live:**
 

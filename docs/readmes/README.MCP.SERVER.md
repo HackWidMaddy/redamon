@@ -595,9 +595,9 @@ may write:
 
 | Disposition | Count | What it means |
 | --- | --- | --- |
-| `settable` | 650 | write at any time through `update_recon_settings` |
+| `settable` | 673 | write at any time through `update_recon_settings` |
 | `create_only` | 19 | the engagement scope: written once by `create_project`, refused by name afterwards |
-| `never` | 48 | not a pipeline parameter at all; refused with its class. 24 of these are the engagement RECORD |
+| `never` | 49 | not a pipeline parameter at all; refused with its class. 20 of these are the engagement RECORD (`engagement-record`); the record's uploaded RoE document and its parse are 5 more, `upload-managed` |
 
 There used to be a fourth, `tighten_only`, holding the Rules of Engagement under
 a write-time direction rule. It is deleted rather than migrated. The rule bought
