@@ -266,6 +266,9 @@ bmark/
 # Knowledge base runtime data
 services/knowledge_base/data/
 **/.file_hashes.json
+# A root-owned leftover of an old mount point. Nothing reads it, and .dockerignore
+# keeps it out of the agent image, where it would shadow the baked kb_config.yaml.
+agentic/knowledge_base/
 
 # Deploy plan (local only)
 tooling/deploy/DEPLOY_PLAN_EC2.md
