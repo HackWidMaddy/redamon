@@ -1001,20 +1001,28 @@ def _response_has_waf_headers(resp: dict) -> bool:
     return any(tok in server for tok in _WAF_SERVER_TOKENS)
 
 
-def _fetch_peer_cert(host_or_ip: str, sni: str, port: int, timeout: int) -> Optional[dict]:
-    """TLS-dial host_or_ip:port with SNI=sni, return {serial, cn, sans}."""
+def _tls_handshake_cert(host_or_ip: str, sni: Optional[str], port: int, timeout: int) -> Optional[dict]:
+    """TLS-dial host_or_ip:port, return {serial, cn, sans}. sni None sends no SNI.
+
+    Raises the socket / TLS error, so a caller can say why the dial failed.
+    """
     ctx_ssl = ssl.create_default_context()
     ctx_ssl.check_hostname = False
     ctx_ssl.verify_mode = ssl.CERT_NONE
-    try:
-        with socket.create_connection((host_or_ip, port), timeout=timeout) as sock:
-            with ctx_ssl.wrap_socket(sock, server_hostname=sni) as ssock:
-                der = ssock.getpeercert(binary_form=True)
-                cert = ssock.getpeercert()  # decoded (verify off still returns fields on 3.11+? no)
-    except (OSError, ssl.SSLError, ValueError):
-        return None
+    with socket.create_connection((host_or_ip, port), timeout=timeout) as sock:
+        with ctx_ssl.wrap_socket(sock, server_hostname=sni) as ssock:
+            der = ssock.getpeercert(binary_form=True)
+            cert = ssock.getpeercert()
     # getpeercert() returns {} with CERT_NONE, so parse the DER for the fields.
     return _parse_cert_der(der, cert)
+
+
+def _fetch_peer_cert(host_or_ip: str, sni: str, port: int, timeout: int) -> Optional[dict]:
+    """TLS-dial host_or_ip:port with SNI=sni, return {serial, cn, sans} or None."""
+    try:
+        return _tls_handshake_cert(host_or_ip, sni, port, timeout)
+    except (OSError, ssl.SSLError, ValueError):
+        return None
 
 
 def _parse_cert_der(der: bytes, decoded: dict) -> Optional[dict]:
@@ -1064,6 +1072,83 @@ def _compare_certs(host: str, ip: str, port: int, ctx: _RunCtx) -> float:
         if overlap:
             score += 0.25 * overlap / len(ref["sans"])
     return score
+
+
+# A candidate whose default certificate is not the target's is likely a shared
+# edge serving the brand by name: never above Medium (severity is High at 80).
+_SHARED_EDGE_MAX_CONFIDENCE = 79.0
+
+
+def _cert_covers(cert: dict, domain: str) -> bool:
+    names = {cert.get("cn") or ""} | set(cert.get("sans") or ())
+    for name in names:
+        name = str(name).strip().lower().rstrip(".")
+        if name.startswith("*."):
+            name = name[2:]
+        if name and (name == domain or name.endswith("." + domain)):
+            return True
+    return False
+
+
+def _tls_failure_reason(exc: BaseException, port: int) -> str:
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "timeout"
+    if isinstance(exc, ConnectionRefusedError):
+        return f"port {port} closed"
+    if isinstance(exc, ssl.SSLError):
+        return "TLS error"
+    return "connection failed"
+
+
+def _default_cert_check(host: str, ip: str, port: int, ctx: _RunCtx) -> Tuple[str, str]:
+    """The certificate ``ip`` presents to a client that sends no SNI.
+
+    A dedicated origin answers with its own certificate; a shared edge answers
+    with a generic or another tenant's one, even though it serves the brand's
+    page and certificate when asked by name. Returns (status, detail), status
+    one of "target", "foreign" or "not_checked". A check that could not run is
+    never evidence either way.
+
+    The candidate came from passive sources and is untrusted: the routability
+    guard is applied again right before the dial, nothing it returns is
+    followed, and the dial obeys the RoE, the module's rate limit and host health.
+    """
+    from recon.helpers import circuit_breaker as cb
+    if is_non_routable_ip(ip):
+        return "not_checked", "non-routable address"
+    if ctx.roe_enabled and _is_roe_excluded(ip, ctx.roe_excluded):
+        return "not_checked", "excluded by the rules of engagement"
+    target = f"https://{_url_host(ip)}:{port}"
+    if not cb.host_health.allow(target):
+        return "not_checked", "host marked unreachable"
+    ctx.rate.wait()
+    try:
+        cert = _tls_handshake_cert(ip, None, port, min(ctx.timeout, 5))
+    except (OSError, ssl.SSLError, ValueError) as e:
+        cb.host_health.record_failure(target, e)
+        return "not_checked", _tls_failure_reason(e, port)
+    cb.host_health.record_alive(target)
+    if not cert:
+        return "not_checked", "no certificate presented"
+    domain = (org_domain(host) or host or "").lower()
+    return ("target", "") if domain and _cert_covers(cert, domain) else ("foreign", "")
+
+
+def _confirm_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optional[dict]:
+    """Score the candidate; if it passes, weigh its default certificate in."""
+    match = _score_candidate(host, reference, ip, ctx)
+    if not match:
+        return None
+    port = match["port"] if match["port"] in _TLS_PORTS else 443
+    status, detail = _default_cert_check(host, ip, port, ctx)
+    if status == "foreign":
+        match["confidence_score"] = min(match["confidence_score"], _SHARED_EDGE_MAX_CONFIDENCE)
+        match["default_cert_note"] = "default certificate does not belong to the target"
+    elif status == "target":
+        match["default_cert_note"] = "default certificate belongs to the target"
+    else:
+        match["default_cert_note"] = f"default certificate: not checked ({detail})"
+    return match
 
 
 def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optional[dict]:
@@ -1225,7 +1310,7 @@ def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST) -> T
 
     confirmed: List[dict] = []
     with ThreadPoolExecutor(max_workers=ctx.workers) as ex:
-        futs = {ex.submit(_score_candidate, host, reference, ip, ctx): (ip, source)
+        futs = {ex.submit(_confirm_candidate, host, reference, ip, ctx): (ip, source)
                 for ip, source in kept}
         for fut in as_completed(futs):
             ip, source = futs[fut]
@@ -1253,7 +1338,8 @@ def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST) -> T
                 "header_match": match["header_match"],
                 "status_code": match["status_code"],
                 "evidence": (f"{host} → {match['matched_ip']}:{match['port']} "
-                             f"({source}, {match['method']}, score {match['confidence_score']}%)"),
+                             f"({source}, {match['method']}, score {match['confidence_score']}%)"
+                             + (f"; {match['default_cert_note']}" if match.get("default_cert_note") else "")),
                 "source": "origin_discovery",
             })
             _log("+", f"{host} -> {match['matched_ip']}:{match['port']} "
