@@ -181,3 +181,48 @@ scenarios:
         cypher: "MATCH (b:BaseURL) RETURN DISTINCT b.host AS v"
         superset: [v1.api.nwlab.test, v2.api.nwlab.test, admin.v1.api.nwlab.test, internal.v1.api.nwlab.test]
     common: true
+
+  VH:
+    title: >-
+      vhost/SNI on web1 (plan 07): every nwlab.test name DNS points at
+      192.88.99.60 serves its own page there, and none is a hidden vhost; the
+      one name web1 serves with no DNS record still is
+    create:
+      # Every discovery source is off in this lab, so the hosts are listed: eight
+      # names web1 serves with DNS, and vhost-only, which no zone has. In an
+      # exact scope vhost/SNI tries listed names only, hence the full name in
+      # its custom wordlist. Nine names, not more: web1's pages differ only by
+      # the hostname they print, which the canonical fingerprint normalises
+      # away, so from ten candidates up the noisy-frontend guard reads them as
+      # one catch-all template and drops every anomaly before this rule runs.
+      targetDomain: nwlab.test
+      subdomainList: [www, shop, mail, secret, cdn, api, v1.api, v2.api, vhost-only]
+      settings:
+        <<: *lab
+        scanModules: [domain_discovery, http_probe, vuln_scan]
+        vhostSniEnabled: true
+        vhostSniTestL7: true
+        vhostSniTestL4: true
+        vhostSniUseGraphCandidates: true
+        vhostSniUseDefaultWordlist: false
+        vhostSniCustomWordlist: vhost-only.nwlab.test
+        vhostSniInjectDiscovered: true
+        # web1's pages differ from its default page by a few bytes only
+        vhostSniBaselineSizeTolerance: 0
+    checks:
+      - id: no_dns_known_name_is_a_finding
+        cypher: "MATCH (v:Vulnerability {source:'vhost_sni_enum'}) WHERE v.hostname <> 'vhost-only.nwlab.test' RETURN v.hostname AS v"
+        count: 0
+      - id: the_name_with_no_dns_is_a_hidden_vhost
+        cypher: "MATCH (v:Vulnerability {source:'vhost_sni_enum'}) RETURN v.name AS v"
+        equals: ["Hidden Virtual Host: vhost-only.nwlab.test"]
+      - id: dns_known_names_were_probed_and_set_aside
+        cypher: "MATCH (i:IP {address:'192.88.99.60'}) RETURN coalesce(i.vhost_sni_suppressed_dns_known, 0) >= 5 AS v"
+        "true": true
+      - id: no_dns_known_subdomain_flagged_hidden
+        cypher: "MATCH (s:Subdomain) WHERE s.vhost_hidden = true AND s.name <> 'vhost-only.nwlab.test' RETURN s.name AS v"
+        count: 0
+      - id: only_the_hidden_name_is_injected
+        cypher: "MATCH (b:BaseURL) WHERE b.discovery_source = 'vhost_sni_enum' RETURN b.host AS v"
+        equals: ["vhost-only.nwlab.test"]
+    common: true

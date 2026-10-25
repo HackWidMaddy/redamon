@@ -15,6 +15,7 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --rerun <id> --shodan-state 'unavailable=192.88.94.13&hide=CVE-2019-11043'
     python3 e2e_fp.py --js-coverage         # the plan-06 JS-coverage project (.20 + the bulk host .29)
     python3 e2e_fp.py --rerun <id> --no-triage --set '{"jsReconMaxFiles": 60}' --spa-state 'hide=/js/app.min.js'
+    python3 e2e_fp.py --vhost-origin        # the plan-07 vhost-naming / tlsx CDN-tag project (.31, .32)
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
 never prints it.
@@ -126,6 +127,22 @@ JS_COVERAGE_SETTINGS = {
 SPA_STATE = f"http://{NET}.20/_lab/js"
 
 
+# Vhost naming and the tlsx CDN tag (plan 07) run as their own project. tlsx
+# may read 443 here (it skips HTTP ports by default), so .32's Cloudflare-issued
+# certificate reaches it; .31 presents the lab's ordinary certificate.
+VHOST_ORIGIN_TARGETS = [f"{NET}.{n}" for n in (31, 32)]
+VHOST_ORIGIN_NAMES = ["portal", "split", "admin", "dev", "qa", "status"]
+VHOST_ORIGIN_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "vuln_scan"],
+    "naabuCustomPorts": "443",
+    "tlsxEnabled": True, "tlsxIncludeHttpPorts": True,
+    "katanaEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "webCachePoisonEnabled": False,
+    "vhostSniCustomWordlist": "\n".join(f"{w}.{APEX}" for w in VHOST_ORIGIN_NAMES),
+}
+
+
 def spa_state(query=""):
     """Which .20 paths answer with the SPA shell for the next run ('' resets it)."""
     with urllib.request.urlopen(f"{SPA_STATE}?{query}", timeout=10) as resp:
@@ -209,6 +226,8 @@ def main():
                     help="create the plan-06 JS-coverage project instead of the main one")
     ap.add_argument("--spa-state", metavar="QUERY", default="",
                     help="SPA (.20) state for this run, e.g. 'hide=/js/app.min.js'")
+    ap.add_argument("--vhost-origin", action="store_true",
+                    help="create the plan-07 vhost-naming / tlsx CDN-tag project instead of the main one")
     args = ap.parse_args()
 
     mcp.init()
@@ -217,12 +236,14 @@ def main():
         project_id = args.rerun
     else:
         kind = (" (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else
-                " (JS coverage)" if args.js_coverage else "")
+                " (JS coverage)" if args.js_coverage else " (vhost and CDN tag)" if args.vhost_origin else "")
         targets, settings = ((HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
                              (PASSIVE_TARGETS, PASSIVE_SETTINGS) if args.passive_cves else
                              (JS_COVERAGE_TARGETS, {**JS_COVERAGE_SETTINGS,
                                                     "katanaExcludePatterns": _default_katana_excludes()})
-                             if args.js_coverage else (TARGETS, SETTINGS))
+                             if args.js_coverage else
+                             (VHOST_ORIGIN_TARGETS, VHOST_ORIGIN_SETTINGS) if args.vhost_origin else
+                             (TARGETS, SETTINGS))
         name = f"FP regression lab{kind} {time.strftime('%Y-%m-%d %H:%M:%S')}"
         out = call("create_project", {"name": name, "engagementKind": "internal",
                                       "description": "Guinea pig: testing/guinea_pigs/fp_regression_target",

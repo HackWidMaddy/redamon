@@ -6,7 +6,7 @@ Every case that must stay silent sits next to one that must still fire, so a
 green run proves both halves.
 
 ```bash
-docker compose up -d --build        # seventeen hosts on 192.88.94.0/24, no host ports
+docker compose up -d --build        # nineteen hosts on 192.88.94.0/24, no host ports
 docker compose down
 ```
 
@@ -107,6 +107,20 @@ the host.
    `--spa-state` makes `.20` answer the listed paths with its HTML shell for
    that run only (`/_lab/js?hide=<paths>`; e2e_fp.py resets it after).
 
+8. **Vhost naming and the tlsx CDN tag (plan 07).** `python3 e2e_fp.py
+   --vhost-origin --no-triage` creates an `internal` IP-mode project over `.31`
+   and `.32` with naabu on 443, tlsx on (allowed to read 443), vhost/SNI with a
+   fixed `*.fplab.test` list and nothing else, then `python3 validate_e2e.py
+   <id> --vhost-origin`. The CDN-edge wordlist skip needs a domain-mode run
+   (an IP-mode run has no apex, so it never uses the default wordlist), so it
+   is checked by running the real module against the two hosts:
+
+   ```bash
+   docker run --rm --network host -v "$PWD/../../..:/repo" -w /repo/recon \
+     -e PYTHONPATH=/repo/recon:/repo --entrypoint python redamon-recon:latest \
+     /repo/testing/guinea_pigs/fp_regression_target/vhost_wordlist_edge.py
+   ```
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -156,6 +170,9 @@ the host.
 | `.13`, `.10` | a rerun where the stub fails for `.13` and dropped `.10`'s catalog CVE | P-07..P-09 | `.13`'s CVE is kept untouched, `.10`'s dropped CVE is pruned, and the coverage record names Shodan once, for one IP |
 | `.14` | a rerun with naabu on 80,443 | P-10/P-11 | the scan did not look at 22: `.14`'s CVE has no `port_confirmed`; `.10`'s port 80 stays confirmed |
 | all | a rerun with Shodan switched off, after muting one CVE | P-12 | every Shodan CVE is pruned but the muted one, which is kept with `stale_since` |
+| `.31` | an HTTPS proxy routing on the Host header: `portal` gets the same app with or without the SNI, `split` gets one app by Host and another when the SNI names it too (vhost project) | V-11/V-12/V-13 | `portal` is "Hidden Virtual Host" (`hidden_vhost`, layer `both`, medium), not a routing inconsistency; `split` is "Routing Inconsistency (L7 vs L4)" (`host_header_bypass`, high); no other name |
+| `.32`, `.31` | `.32` presents a self-signed certificate whose issuer is "Cloudflare Inc ECC CA-3"; `.31` the lab's own | T-01/T-02 | after the run `.32` has `is_cdn` true, `cdn_name` cloudflare, `cdn_source` tlsx; `.31` no CDN tag |
+| `.32`, `.31` | the real vhost module in a domain-mode shape, default wordlist on, `.32` carrying tlsx's tag (`vhost_wordlist_edge.py`) | V-14 | no wordlist name is tried on `.32`, all of them on `.31` (`portal` and `split` found); one `vhost_sni_wordlist` coverage note, "shared CDN edge", 1 IP |
 
 ## Not covered here
 

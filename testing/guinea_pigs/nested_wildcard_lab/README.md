@@ -19,6 +19,9 @@ and on `192.88.99.50-79`. **Scan nothing else from this harness.**
 
 Every vhost returns `<h1>{host}</h1>` from a fixed map (never from the Host
 header), so httpx results are per host and no host-header reflection appears.
+web1 also serves `vhost-only.nwlab.test`, which no zone has: the one name the
+vhost/SNI scenario `VH` must report as a hidden vhost, while every name DNS
+points at web1 must not be (plan 07).
 
 ### `nwlab.test`: the "clean" org (A records → web1)
 

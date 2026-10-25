@@ -13,6 +13,9 @@ The JS-coverage project (e2e_fp.py --js-coverage): `--js-coverage first` after
 its first run (prints JS_BULK_COUNT=<n>), then rerun it with a low
 jsReconMaxFiles and .20's /js/app.min.js hidden, and `--js-coverage capped <n>`.
 
+The vhost-naming / tlsx CDN-tag project (e2e_fp.py --vhost-origin):
+`--vhost-origin`.
+
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
 when every assertion holds. Case ids match README.md.
@@ -26,7 +29,8 @@ sys.path.insert(0, HERE)
 import mcp_client as mcp  # noqa: E402
 
 USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer"
-         " | --passive-cves baseline|partial|unscanned|off | --js-coverage first | --js-coverage capped <n>]")
+         " | --passive-cves baseline|partial|unscanned|off | --js-coverage first | --js-coverage capped <n>"
+         " | --vhost-origin]")
 if len(sys.argv) not in (2, 3, 4, 5):
     sys.exit(USAGE)
 P = sys.argv[1]
@@ -246,6 +250,33 @@ def js_coverage_checks(stage, expected_bulk=None):
     check("F-03", got == expected_bulk, f"the capped host keeps its findings: {got} (expect {expected_bulk})")
 
 
+def vhost_origin_checks():
+    """Plan 07 cases, on the project e2e_fp.py --vhost-origin creates."""
+    rows = q(f"""MATCH (v:Vulnerability) WHERE v.source = 'vhost_sni_enum' AND v.ip = '{NET}.31'
+                 RETURN v.hostname AS h, v.name AS name, v.type AS type, v.layer AS layer,
+                        v.severity AS sev ORDER BY h""")
+    by_host = {r["h"]: r for r in rows}
+    portal = by_host.get(f"portal.{APEX}") or {}
+    check("V-11", (portal.get("name"), portal.get("type"), portal.get("layer"))
+          == (f"Hidden Virtual Host: portal.{APEX}", "hidden_vhost", "both"),
+          f"same app on L7 and L4: {portal} (expect the hidden-vhost name and type, layer both)")
+    split = by_host.get(f"split.{APEX}") or {}
+    check("V-12", (split.get("name"), split.get("type"), split.get("layer"), split.get("sev"))
+          == (f"Routing Inconsistency (L7 vs L4): split.{APEX}", "host_header_bypass", "both", "high"),
+          f"Host and SNI reach different apps: {split} (expect the routing name, high)")
+    check("V-13", sorted(by_host) == [f"portal.{APEX}", f"split.{APEX}"],
+          f"names reported on .31: {sorted(by_host)} (expect portal and split only; the rest hit the default page)")
+    ips = {r["ip"]: r for r in q(f"""MATCH (i:IP) WHERE i.address IN ['{NET}.31', '{NET}.32']
+                                     RETURN i.address AS ip, i.is_cdn AS cdn, i.cdn_name AS name,
+                                            i.cdn_source AS src""")}
+    edge = ips.get(f"{NET}.32") or {}
+    check("T-01", (edge.get("cdn"), edge.get("name"), edge.get("src")) == (True, "cloudflare", "tlsx"),
+          f".32 behind a Cloudflare-issued certificate: {edge} (expect is_cdn, cloudflare, cdn_source tlsx)")
+    plain = ips.get(f"{NET}.31") or {}
+    check("T-02", plain and not plain.get("cdn") and plain.get("src") is None,
+          f".31 with the lab's own certificate: {plain} (expect no CDN tag)")
+
+
 def js_recon_count():
     """JsReconFinding + Secret written by js_recon: what a run with no JS input must keep."""
     findings = q("MATCH (f:JsReconFinding) WHERE f.source = 'js_recon' RETURN count(f) AS n")
@@ -270,6 +301,9 @@ if len(sys.argv) > 2:
         sys.exit(report())
     if sys.argv[2] == "--js-coverage" and sys.argv[3:4] == ["capped"] and len(sys.argv) == 5:
         js_coverage_checks("capped", int(sys.argv[4]))
+        sys.exit(report())
+    if sys.argv[2] == "--vhost-origin" and len(sys.argv) == 3:
+        vhost_origin_checks()
         sys.exit(report())
     if sys.argv[2] == "--passive-cves" and len(sys.argv) == 4:
         passive_cves(sys.argv[3])

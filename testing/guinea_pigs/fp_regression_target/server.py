@@ -22,6 +22,11 @@ real finding that must survive. Stdlib only. See README.md for the case table.
     ROLE=loginwall  an HTTPS origin that 302s every path to /login
     ROLE=deny       one gateway deny page (403) on every path, the same bytes on every host
     ROLE=bulk       BULK_CHUNKS Next.js-style chunks, each with a first-party source map
+    ROLE=tlsvhost   an HTTPS reverse proxy routing on the Host header: portal gets the
+                    same app on L7 and L4, split gets one app by Host and another
+                    when the SNI also names it; every other name the default page
+    ROLE=cdncert    an HTTPS host whose self-signed certificate names Cloudflare as
+                    issuer (TLS_SUBJECT): tlsx attributes it a CDN from that alone
 """
 
 import base64
@@ -504,17 +509,46 @@ class Shodan(Base):
         return self.send(404, '{"error":"not found"}', "application/json")
 
 
+# --------------------------------------------------------------------------- vhost naming / CDN tag
+class TlsVhost(Base):
+    """A Host-routing proxy. The default page answers the bare IP and every
+    unknown name alike, so the vhost controls calibrate on it."""
+
+    def do_GET(self):
+        sni = getattr(self.request, "_sni", "") or ""
+        host = self.host()
+        if host == f"portal.{APEX}":
+            # The same app whatever the SNI: a hidden vhost seen on both layers.
+            return self.send(200, "<html><head><title>Partner portal</title></head>"
+                                  "<body><h1>Partner portal</h1><p>Sign in with your partner id.</p></body></html>")
+        if host == f"split.{APEX}":
+            if sni == host:
+                return self.send(200, '{"service":"billing-admin","build":"3c9e"}', "application/json")
+            return self.send(200, "<html><head><title>Status</title></head><body><h1>All systems normal</h1></body></html>")
+        return self.send(404, "<html><head><title>Not found</title></head><body><h1>No such site</h1></body></html>")
+
+
+class CdnCert(Base):
+    def do_GET(self):
+        return self.send(403, "<html><head><title>Forbidden</title></head><body><h1>Forbidden</h1></body></html>")
+
+
 # --------------------------------------------------------------------------- main
 ROLES = {"fastly": Fastly, "cloudflare": Cloudflare, "redirect": Redirect, "akamai": Akamai,
          "ratelimit": RateLimit, "cache": Cache, "spa": Spa, "vendor": Vendor, "shodan": Shodan,
-         "api": Api, "jsonall": JsonAll, "sso": Sso, "loginwall": LoginWall, "deny": Deny, "bulk": Bulk}
+         "api": Api, "jsonall": JsonAll, "sso": Sso, "loginwall": LoginWall, "deny": Deny, "bulk": Bulk,
+         "tlsvhost": TlsVhost, "cdncert": CdnCert}
+
+# A self-signed certificate's issuer is its subject, so TLS_SUBJECT also sets
+# the issuer tlsx reads.
+TLS_SUBJECT = os.environ.get("TLS_SUBJECT", f"/CN=*.{APEX}")
 
 
 def _tls_context():
     cert, key = "/tmp/cert.pem", "/tmp/key.pem"
     if not os.path.exists(cert):
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key,
-                        "-out", cert, "-days", "30", "-subj", f"/CN=*.{APEX}"], check=True, capture_output=True)
+                        "-out", cert, "-days", "30", "-subj", TLS_SUBJECT], check=True, capture_output=True)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
 

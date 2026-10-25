@@ -126,6 +126,23 @@ services:
     environment: { ROLE: bulk, PORTS: "80", BULK_CHUNKS: "520" }
     networks: { fp_lab: { ipv4_address: 192.88.94.29 } }
 
+  # vhost naming and the tlsx CDN tag (plan 07).
+  fp-tlsvhost:
+    <<: *lab
+    container_name: redamon-fp-tlsvhost
+    environment: { ROLE: tlsvhost, PORTS: "443", TLS_PORTS: "443" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.31 } }
+
+  fp-cdncert:
+    <<: *lab
+    container_name: redamon-fp-cdncert
+    environment:
+      ROLE: cdncert
+      PORTS: "443"
+      TLS_PORTS: "443"
+      TLS_SUBJECT: "/CN=Cloudflare Inc ECC CA-3/O=Cloudflare, Inc./C=US"
+    networks: { fp_lab: { ipv4_address: 192.88.94.32 } }
+
 networks:
   fp_lab:
     name: redamon_fp_lab
