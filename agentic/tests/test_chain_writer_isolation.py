@@ -278,7 +278,8 @@ class GraphReadsHaveTheirOwnPool(unittest.IsolatedAsyncioTestCase):
         import tools as tools_mod
         src = inspect.getsource(tools_mod)
         self.assertNotIn("asyncio.to_thread(manager.graph.query", src)
-        self.assertEqual(src.count("await run_neo4j_read("), 3)
+        # query_graph, and graph_summary's node, relationship and coverage reads.
+        self.assertEqual(src.count("await run_neo4j_read("), 4)
 
 
 class MemberNodeFinishesWhileNeo4jIsStuck(unittest.IsolatedAsyncioTestCase):

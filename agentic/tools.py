@@ -18,7 +18,6 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_neo4j import Neo4jGraph
 
 from project_settings import get_setting, is_tool_allowed_in_phase
-from graph_db.coverage_stamps import COVERAGE_SUMMARY_CYPHER, coverage_summary, coverage_summary_lines
 from graph_db.tenant_filter import (
     find_disallowed_write_operation as _shared_find_disallowed_write_operation,
     inject_tenant_filter as _shared_inject_tenant_filter,
@@ -1024,8 +1023,12 @@ Cypher Query:"""
                 # as "nothing has ever been scanned".
                 return "Error: could not read the graph summary."
             # The coverage lines explain the counts; an unreadable one is said
-            # so, never shown as zero or as "not recorded".
+            # so, never shown as zero or as "not recorded". Imported here: many
+            # tests import this module with graph_db stubbed as a bare module.
             try:
+                from graph_db.coverage_stamps import (
+                    COVERAGE_SUMMARY_CYPHER, coverage_summary, coverage_summary_lines,
+                )
                 coverage = coverage_summary_lines(coverage_summary(next(iter(
                     await run_neo4j_read(manager.graph.query, COVERAGE_SUMMARY_CYPHER, params=params)
                 ), None)))
