@@ -235,6 +235,8 @@ settings fetch.
 
 ## 3. Project Filesystem Overview
 
+A selection of the files a developer reaches for first; `git ls-files <folder>` lists the rest.
+
 ```
 redamon/
 ├── agentic/                        # AI agent orchestrator (Python 3.11 / LangGraph / FastAPI)
@@ -245,10 +247,6 @@ redamon/
 │   ├── tools.py                    #   Tool managers: MCP, Neo4j (Cypher), WebSearch, Shodan, GoogleDork
 │   ├── websocket_api.py            #   Session management, streaming events, approval flow
 │   ├── project_settings.py         #   Fetches settings from webapp API, falls back to DEFAULT_AGENT_SETTINGS
-│   ├── model_providers.py          #   Multi-provider LLM routing (OpenAI, Anthropic, Bedrock, OpenRouter, local)
-│   ├── guardrail.py                #   Scope guardrail — prevents scanning unauthorized targets
-│   ├── chat_persistence.py         #   Saves conversation history to PostgreSQL via webapp API
-│   ├── report_summarizer.py        #   Generates pentest report summaries from agent sessions
 │   ├── logging_config.py           #   Structured logging setup for the agent container
 │   ├── utils.py                    #   Shared utility functions
 │   ├── prompts/                    #   All LLM prompt templates
@@ -271,7 +269,13 @@ redamon/
 │   │   │   ├── execute_plan_node.py #      Multi-step plan execution
 │   │   │   ├── generate_response_node.py # Final response formatting
 │   │   │   └── approval_nodes.py   #      Human-in-the-loop approval + question gates
-│   │   ├── llm_setup.py            #     LLM initialization with project settings
+│   │   ├── llm_setup.py            #     LLM initialization with project settings, prefix-routed model ids
+│   │   ├── model_providers.py      #     Lists the models each configured provider offers, for the frontend
+│   │   ├── guardrail.py            #     Soft (LLM) scope guardrail — prevents scanning unauthorized targets
+│   │   ├── hard_guardrail.py       #     Deterministic, non-disableable target blocklist
+│   │   ├── roe_gate.py             #     RoE + recon-budget gate every executor path asks before a tool runs
+│   │   ├── chat_persistence.py     #     Saves conversation history to PostgreSQL via webapp API
+│   │   ├── report_summarizer.py    #     Generates pentest report summaries from agent sessions
 │   │   ├── streaming.py            #     WebSocket event emission (status, thoughts, tool output)
 │   │   ├── phase.py                #     Phase classification & transition logic
 │   │   ├── chain_graph_writer.py   #     Neo4j attack chain recording (EvoGraph)
@@ -299,30 +303,32 @@ redamon/
 │   ├── container_manager.py        #   Docker SDK: spawn containers, health checks, log streaming, cleanup
 │   └── models.py                   #   Pydantic request/response models (ReconState, GvmState, etc.)
 │
-├── recon/                          # 6-phase reconnaissance pipeline (runs in ephemeral Kali container)
-│   ├── main.py                     #   Pipeline entry point — runs phases sequentially
+├── recon/                          # Reconnaissance pipeline (redamon-recon image, spawned per scan by the orchestrator)
+│   ├── main.py                     #   Full-pipeline entry point — runs the phases in order
+│   ├── partial_recon.py            #   Partial-recon entry point (one tool on demand, inputs from the graph)
 │   ├── entrypoint.sh               #   Docker entrypoint script
-│   ├── domain_recon.py             #   Phase 1: DNS, crt.sh, HackerTarget, Knockpy subdomain enumeration
-│   ├── whois_recon.py              #   WHOIS lookups (called by domain_recon)
-│   ├── port_scan.py                #   Phase 2: Naabu SYN/CONNECT scan + Shodan InternetDB passive
-│   ├── http_probe.py               #   Phase 3: Httpx probing, Wappalyzer tech detection, TLS inspection
-│   ├── resource_enum.py            #   Phase 4: Katana web crawling, Kiterunner API discovery, GAU passive URLs
-│   ├── vuln_scan.py                #   Phase 5: Nuclei template scanning (9000+ templates)
-│   ├── shodan_enrich.py            #   Phase 6: Shodan host lookup, reverse DNS, passive CVEs
-│   ├── add_mitre.py                #   MITRE CWE/CAPEC enrichment for discovered CVEs
 │   ├── project_settings.py         #   Fetches scan settings from webapp API
+│   ├── main_recon_modules/         #   One module per pipeline tool
+│   │   ├── domain_recon.py         #     DNS, crt.sh, HackerTarget, Knockpy subdomain enumeration
+│   │   ├── whois_recon.py          #     WHOIS lookups
+│   │   ├── port_scan.py            #     Naabu SYN/CONNECT scan (masscan_scan.py beside it)
+│   │   ├── http_probe.py           #     Httpx probing, Wappalyzer tech detection, TLS inspection
+│   │   ├── resource_enum.py        #     Katana web crawling, Kiterunner API discovery, GAU passive URLs
+│   │   ├── vuln_scan.py            #     Nuclei template scanning
+│   │   ├── shodan_enrich.py        #     Shodan host lookup, reverse DNS, passive CVEs (and the other *_enrich.py)
+│   │   └── add_mitre.py            #     MITRE CWE/CAPEC enrichment for discovered CVEs
+│   ├── partial_recon_modules/      #   Per-tool modules for partial recon
 │   ├── helpers/                    #   Shared helper modules
 │   │   ├── target_helpers.py       #     Target parsing and validation
-│   │   ├── katana_helpers.py       #     Katana crawl output processing
 │   │   ├── nuclei_helpers.py       #     Nuclei result parsing
 │   │   ├── security_checks.py      #     Security header analysis
 │   │   ├── cve_helpers.py          #     CVE lookup and enrichment
 │   │   ├── docker_helpers.py       #     Container-aware path resolution
 │   │   ├── iana_services.py        #     IANA port/service mapping
-│   │   └── resource_enum/          #     Resource enumeration sub-helpers
+│   │   └── resource_enum/          #     Resource enumeration sub-helpers (katana_helpers.py, gau_helpers.py, ...)
 │   ├── tests/                      #   Recon test suite
-│   ├── data/                       #   Static data files (wordlists, templates)
-│   └── Dockerfile                  #   Kali-based recon container image
+│   ├── data/                       #   Static data files (IANA services, popular npm names)
+│   └── Dockerfile                  #   python:3.11-slim-bookworm image, Go tools built in earlier stages
 │
 ├── webapp/                         # Next.js frontend + backend API (TypeScript)
 │   ├── src/
@@ -342,7 +348,6 @@ redamon/
 │   │   │   │   ├── gvm/            #       GVM scanner status and control
 │   │   │   │   ├── github-hunt/    #       GitHub secret hunt control
 │   │   │   │   ├── trufflehog/    #       TruffleHog secret scanner control
-│   │   │   │   ├── guardrail/      #       Scope guardrail validation
 │   │   │   │   ├── roe/            #       Rules of Engagement management
 │   │   │   │   ├── plugins/        #       Plugin platform: Plugins page model, lifecycle, actions, jobs, overrides
 │   │   │   │   ├── plugin-gateway/ #       The Gateway plugin code calls (call token only)
@@ -405,14 +410,25 @@ redamon/
 │   │   ├── nuclei_server.py        #     Nuclei vulnerability scanning (:8002)
 │   │   ├── metasploit_server.py    #     Metasploit Framework RPC (:8003)
 │   │   ├── nmap_server.py          #     Nmap network scanning (:8004)
-│   │   └── run_servers.py          #     Supervisor that starts all MCP servers
+│   │   ├── playwright_server.py    #     Browser automation (:8005)
+│   │   ├── run_servers.py          #     Supervisor that starts the MCP servers in its SERVERS dict
+│   │   └── terminal_server.py      #     WebSocket PTY behind the RedAmon Terminal tab (:8016, not an MCP server)
 │   ├── nuclei-templates/           #   Nuclei template collection
 │   └── docker-compose.yml          #   MCP-specific compose overrides
 │
-├── graph_db/                       # Neo4j graph utilities and schema helpers
-├── scanners/gvm_scan/                       # OpenVAS/GVM vulnerability scanner Python wrapper
-├── scanners/github_secret_hunt/             # GitHub credential scanner (40+ regex patterns + Shannon entropy)
-├── scanners/trufflehog_scan/                # TruffleHog secret scanner (detector-based credential verification + deep git history)
+├── graph_db/                       # Neo4j graph layer: client, mixins, schema (schema_keys.py, schema_sections.md)
+├── recon_settings/                 # The recon settings registry (registry.yaml) and its generator (build.py)
+├── scanners/                       # One folder per scan tool, each its own image
+│   ├── gvm_scan/                   #   OpenVAS/GVM vulnerability scanner Python wrapper
+│   ├── github_secret_hunt/         #   GitHub credential scanner (40+ regex patterns + Shannon entropy)
+│   ├── trufflehog_scan/            #   TruffleHog secret scanner (detector-based credential verification + deep git history)
+│   ├── supply_chain_scan/          #   Supply-chain scan (with supply_chain_analyzer/ and supply_chain_common/)
+│   ├── capture_proxy/              #   mitmproxy HTTP capture
+│   ├── ai_attack_surface_scan/     #   LLM/AI attack-surface scanning
+│   └── baddns_scan/  wcvs/  codefix_sandbox/  scan_targets/
+├── services/docker_broker/         # Filtering Docker socket proxy the recon containers get instead of the raw socket
+├── services/knowledge_base/        # Knowledge base package (baked into the agent image as `knowledge_base`)
+├── services/postgres_db/           # Postgres compose file
 ├── services/plugin_runner/          # Plugin runner + plugin-gateway proxy: one image, two services (plugin platform)
 │   ├── supervisor/                 #   FastAPI supervisor on :7080: run list, workers, jobs, logs, data migrations
 │   ├── worker/bootstrap.py         #   One worker process per plugin version (python -I -S, own UID, limits)
@@ -421,13 +437,14 @@ redamon/
 │   ├── platform_version.py         #   Must equal PLUGIN_PLATFORM_VERSION in the webapp
 │   ├── tests/                      #   The plugin_runner test section (image redamon-plugin-runner)
 │   └── tests_live/probe.py         #   Isolation probe run by tests/plugins_isolation_live.sh
-├── testing/guinea_pigs/                    # Intentionally vulnerable test applications
-│   ├── apache_2.4.49/              #   Apache CVE-2021-41773 (path traversal + RCE)
-│   ├── apache_2.4.25/              #   Apache CVE-2017-3167 (auth bypass)
-│   └── node_serialize_1.0.0/       #   Node.js deserialization RCE
+├── testing/guinea_pigs/            # Intentionally vulnerable test applications (README.GPIGS.md lists them)
+├── testing/e2e/                    # Playwright end-to-end tests
+├── tests/                          # Repo-root Python tests and the shell suites (tests/*_test.sh)
+├── tooling/                        # scripts/, the git hooks (hooks/pre-commit), deploy/
+├── skills/                         # Agent skills (this repository's ruleset system)
 │
-├── docs/readmes/                        # All documentation (you are here)
-├── .github/                        # GitHub Actions CI/CD workflows
+├── docs/readmes/                   # All documentation (you are here)
+├── .github/                        # Issue and pull request templates (there is no CI)
 ├── docker-compose.yml              # Full stack orchestration — all containers, networks, volumes
 ├── docker-compose.plugins.yml      # Plugin overlay (webapp on plugins-edge + plugins volume); loaded only by redamon.sh
 ├── redamon-plugins/                # NOT part of this repository: optional local clone of the plugin repository, ignored by .gitignore

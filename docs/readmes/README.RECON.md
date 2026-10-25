@@ -1923,36 +1923,46 @@ docker-compose run --rm recon python /app/recon/main.py
 
 ```
 recon/
-├── Dockerfile              # Container build
-├── docker-compose.yml      # Orchestration
-├── project_settings.py     # 🔗 Settings fetcher (API or built-in defaults)
-├── main.py                 # 🚀 Entry point
-├── domain_recon.py         # Subdomain discovery
-├── whois_recon.py          # WHOIS lookup
-├── urlscan_enrich.py       # URLScan.io OSINT enrichment
-├── censys_enrich.py        # Censys threat intelligence enrichment
-├── fofa_enrich.py          # FOFA internet asset search enrichment
-├── otx_enrich.py           # OTX (AlienVault) threat intelligence enrichment
-├── netlas_enrich.py        # Netlas internet intelligence enrichment
-├── virustotal_enrich.py    # VirusTotal reputation enrichment
-├── zoomeye_enrich.py       # ZoomEye host search enrichment
-├── criminalip_enrich.py    # Criminal IP threat intelligence enrichment
-├── port_scan.py            # Port scanning
-├── http_probe.py           # HTTP probing
-├── resource_enum.py        # Endpoint discovery
-├── main_recon_modules/
-│   └── ai_surface_recon.py # AI/LLM/MCP/vector-DB surface fingerprinting (Phase 4.5)
-├── vuln_scan.py            # Vulnerability scanning
-├── add_mitre.py            # MITRE enrichment
-├── github_secret_hunt.py   # GitHub secrets
-├── scanners/trufflehog_scan/        # TruffleHog secret scanner (separate service)
-├── output/                 # 📄 Scan results (JSON)
-├── data/                   # 📦 Cached databases
-│   ├── mitre_db/           # CVE2CAPEC database
-│   └── wappalyzer/         # Technology rules
-├── helpers/                # Tool helpers
-└── docs/readmes/                # 📖 Module docs
+├── Dockerfile                # Container build (the redamon-recon image)
+├── docker-compose.yml        # Standalone compose (the root docker-compose.yml runs the stack)
+├── entrypoint.sh             # Container entrypoint
+├── project_settings.py       # 🔗 Settings fetcher (API or built-in defaults)
+├── settings_registry.py      # Reads the recon settings registry (recon_settings/registry.json)
+├── main.py                   # 🚀 Full-pipeline entry point
+├── partial_recon.py          # Partial recon: one tool on demand, inputs from the graph
+├── main_recon_modules/       # One module per pipeline tool
+│   ├── domain_recon.py       #   Subdomain discovery
+│   ├── whois_recon.py        #   WHOIS lookup
+│   ├── urlscan_enrich.py     #   URLScan.io OSINT enrichment
+│   ├── shodan_enrich.py      #   Shodan / InternetDB enrichment
+│   ├── censys_enrich.py      #   Censys, and fofa_, otx_, netlas_, virustotal_, zoomeye_,
+│   │                         #   criminalip_, uncover_enrich.py beside it
+│   ├── port_scan.py          #   Port scanning (Naabu); masscan_scan.py, nmap_scan.py beside it
+│   ├── http_probe.py         #   HTTP probing (+ Wappalyzer); tls_scan.py beside it
+│   ├── resource_enum.py      #   Endpoint discovery
+│   ├── js_recon.py           #   JavaScript analysis
+│   ├── ai_surface_recon.py   #   AI/LLM/MCP/vector-DB surface fingerprinting (Phase 4.5)
+│   ├── vuln_scan.py          #   Vulnerability scanning (Nuclei)
+│   ├── add_mitre.py          #   MITRE enrichment
+│   ├── subdomain_takeover.py, vhost_sni_enum.py, origin_discovery.py,
+│   │   supply_chain_recon.py, sca_intel_correlate.py, ip_filter.py
+│   └── data/                 #   📦 Cached databases
+│       ├── mitre_db/         #     CVE2CAPEC database (CVE year files downloaded at scan time)
+│       └── wappalyzer_cache/ #     Technology rules, refreshed by http_probe.py
+├── partial_recon_modules/    # Per-tool modules for partial recon
+├── helpers/                  # Tool helpers (ai_planner/, js_recon/, openapi/, resource_enum/, supply_chain/)
+├── graphql_scan/             # GraphQL probe
+├── cache_scan/               # Web cache poisoning probe
+├── serialized_scan/          # Serialized-object probe
+├── data/                     # Static data (IANA services, popular npm names)
+├── wordlists/                # vhost wordlist
+├── tests/                    # pytest suite (runs in the redamon-recon image)
+└── output/                   # 📄 Scan results (JSON)
 ```
+
+The GitHub secret hunt and TruffleHog run in their own images, from
+`scanners/github_secret_hunt/` and `scanners/trufflehog_scan/`; the module docs
+are in `docs/readmes/` (this folder).
 
 ---
 
