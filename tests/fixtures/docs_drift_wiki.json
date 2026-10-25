@@ -8,12 +8,6 @@
    "item": "drift-map #53"
   },
   {
-   "kind": "count",
-   "file": "redamon.wiki/AI-Assisted-Development.md",
-   "target": "settings:190+",
-   "item": "drift-map #49"
-  },
-  {
    "kind": "anchor",
    "file": "redamon.wiki/AI-Gauntlet.md",
    "target": "#screenshots-to-capture",
@@ -36,18 +30,6 @@
    "file": "redamon.wiki/CVE-Intel.md",
    "target": "Project-Settings-Reference#tool-matrix",
    "item": "drift-map #53"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Creating-a-Project.md",
-   "target": "settings:196+",
-   "item": "drift-map #49"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Data-Export-and-Import.md",
-   "target": "settings:180+",
-   "item": "drift-map #49"
   },
   {
    "kind": "anchor",
@@ -92,24 +74,6 @@
    "item": "drift-map #53"
   },
   {
-   "kind": "count",
-   "file": "redamon.wiki/Home.md",
-   "target": "settings:245+",
-   "item": "drift-map #49"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Home.md",
-   "target": "settings:328+",
-   "item": "drift-map #49"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/MCP-Server.md",
-   "target": "settings:717",
-   "item": "drift-map #49"
-  },
-  {
    "kind": "image",
    "file": "redamon.wiki/MCP-Tool-Plugins.md",
    "target": "images/mcp-tool-plugins-overview.png",
@@ -126,24 +90,6 @@
    "file": "redamon.wiki/Project-Settings-Reference.md",
    "target": "Agent-Skills#phishing--social-engineering",
    "item": "drift-map #53"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Recon-Pipeline-Workflow.md",
-   "target": "settings:196+",
-   "item": "drift-map #49"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Recon-Presets.md",
-   "target": "settings:196+",
-   "item": "drift-map #49"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Recon-Presets.md",
-   "target": "settings:328+",
-   "item": "drift-map #49"
   },
   {
    "kind": "wiki-link",
