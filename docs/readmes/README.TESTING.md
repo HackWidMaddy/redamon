@@ -114,7 +114,7 @@ through `testing/e2e/scripts/stub-llm-server.mjs`, registered as an OpenAI-compa
 the run and removed at the end, and analyses `testing/e2e/fixtures/skiller-session.json`. Each
 spec skips itself when its files are missing.
 
-### Two oracles, and only one of them runs in CI
+### Two oracles, and only one of them runs in the gate
 
 Some unit-tier files mix hermetic checks with checks that need a live Neo4j and
 self-skip without one. The graph-schema suites are the example, and the split is

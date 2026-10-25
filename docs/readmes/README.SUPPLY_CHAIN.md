@@ -436,7 +436,7 @@ flowchart LR
 |---|---|
 | **DIRTY sandbox** `cap_drop=ALL`, `read_only` rootfs + tmpfs, non-root, mem/pids/cpu caps, **no secrets** | `run_supply_chain_analyzer` (modeled on `codefix_sandbox`) |
 | **Network isolation** - OSV path zero-egress; GuardDog registry-egress opt-in, fails closed | dedicated `redamon-supply-chain-net` bridge |
-| **NO-INSTALL invariant** - never run `npm/pip/... install` on a target manifest (lifecycle scripts = RCE); static parse only | CI grep test over supply-chain source |
+| **NO-INSTALL invariant** - never run `npm/pip/... install` on a target manifest (lifecycle scripts = RCE); static parse only | a grep over supply-chain source in the unit gate (`tests/test_supply_chain_security.py`, `TestNoInstallInvariant`) |
 | **Name sanitization** (S6/S7) - charset allowlist before any subprocess/filename | `sanitize_name` |
 | **DIRTY->CLEAN boundary** (S5) - schema-validate the artifact | `validate_artifact` |
 | **SSRF guard** (S4) - L2 makes no new fetches; it parses data JS-recon already downloaded | `harvest.py` (no `requests.get`) |

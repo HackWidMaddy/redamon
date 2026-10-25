@@ -107,7 +107,7 @@ Four tests, and they fail rather than warn:
 
 - every label declared in `schema_keys.py` has catalog documentation
 - every relationship and property the CODE writes is documented
-  (`recon/tests/test_graph_writes_documented.py`, hermetic, runs in CI)
+  (`recon/tests/test_graph_writes_documented.py`, hermetic, runs in the unit gate `./redamon.sh test unit`)
 - every relationship and property in a LIVE graph is documented
   (`recon/tests/test_schema_catalog.py`, skips without a database)
 - no query reads a relationship nothing writes - this one found a real bug,
