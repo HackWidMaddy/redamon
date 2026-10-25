@@ -102,61 +102,6 @@
    "item": "drift-map #39"
   },
   {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_AGENTIC_TOOL.md",
-   "path": "webapp/src/components/projects/ProjectForm/sections/index.ts",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_BUILTIN_AGENT_SKILL.md",
-   "path": "../../../_local/internal/SKILL_TO_ADD.md",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_PARTIAL_RECON.md",
-   "path": "recon/domain_recon.py",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
-   "path": "recon/censys_enrich.py",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
-   "path": "recon/domain_recon.py",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
-   "path": "recon/port_scan.py",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
-   "path": "recon/resource_enum.py",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
-   "path": "recon/shodan_enrich.py",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
-   "path": "recon/urlscan_enrich.py",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
-   "path": "recon/whois_recon.py",
-   "item": "drift-map #37"
-  },
-  {
-   "file": "docs/readmes/coding_agent_prompts/PROMPT.ADD_RECON_TOOL.md",
-   "path": "webapp/src/app/graph/components/DataTable/DataTableToolbar.tsx",
-   "item": "drift-map #37"
-  },
-  {
    "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
    "path": "../../.pre-commit-config.yaml",
    "item": "drift-map #41"
