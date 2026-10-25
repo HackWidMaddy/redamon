@@ -10,15 +10,19 @@ function toNum(val: unknown): number {
   return typeof val === 'number' ? val : 0
 }
 
-// Sensitive-port categories for network-layer initial-access targeting.
-// Keep in sync with recon/helpers/security_checks.py port lists.
+// Sensitive-port categories for network-layer initial-access targeting. Every
+// port in ADMIN_PORTS, DATABASE_PORTS and KUBERNETES_API_PORTS of
+// recon/helpers/security_checks.py is here (recon/tests/test_net_init_access_parity.py),
+// except 443: the Kubernetes check only probes it, and categorising it would
+// list every HTTPS service. The rest are management ports Python does not flag.
 const PORT_CATEGORY: Record<number, string> = {
   22: 'ssh', 23: 'telnet', 3389: 'rdp', 5985: 'winrm', 5986: 'winrm',
-  3306: 'database', 5432: 'database', 1433: 'database', 27017: 'database',
-  6379: 'database', 9200: 'database', 11211: 'database', 5984: 'database',
+  3306: 'database', 5432: 'database', 1433: 'database', 1521: 'database',
+  27017: 'database', 27018: 'database', 6379: 'database', 9200: 'database',
+  9300: 'database', 11211: 'database', 5984: 'database',
   2375: 'k8s', 2376: 'k8s', 10250: 'k8s', 6443: 'k8s', 8443: 'k8s',
   25: 'smtp', 465: 'smtp', 587: 'smtp',
-  161: 'snmp', 623: 'ipmi', 445: 'smb', 139: 'smb', 5900: 'vnc',
+  161: 'snmp', 623: 'ipmi', 445: 'smb', 139: 'smb', 5900: 'vnc', 5901: 'vnc',
 }
 
 // Vulnerability.type strings emitted by recon/helpers/security_checks.py
