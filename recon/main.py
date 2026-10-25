@@ -261,6 +261,14 @@ def _graph_update_bg(update_method_name: str, combined_result: dict,
     _graph_futures.append(future)
 
 
+def _stamp_wildcard_zones(combined_result: dict) -> None:
+    """Stamp every zone the wildcard control checked this group. The domain
+    writer already stamped discovery's zones; the SAN, tlsx, js_recon and
+    uncover merges can check new ones later in the run."""
+    if (combined_result or {}).get("wildcard_zones"):
+        _graph_update_bg("update_graph_wildcard_zones", combined_result, USER_ID, PROJECT_ID)
+
+
 def _graph_wait_all():
     """Wait for every queued graph DB update to finish, then tear down the executor."""
     global _graph_executor
@@ -551,6 +559,7 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
         "status_map": {s: st for s, st in status_map.items()
                        if s in set(discovered_subs)},
         "include_root": include_root,
+        "wildcard_zones": dict((recon_result or {}).get("wildcard_zones") or {}),
     }
 
 
@@ -1798,6 +1807,10 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         combined_result["subdomain_count"] = len(discovered_subs)
         combined_result["dns"] = merged["dns"]
         combined_result["subdomain_status_map"] = merged["status_map"]
+        combined_result["wildcard_zones"] = merged["wildcard_zones"]
+        wildcard_filter = ((recon_result or {}).get("metadata") or {}).get("wildcard_filter")
+        if wildcard_filter:
+            combined_result["metadata"]["wildcard_filter"] = wildcard_filter
         # Always stamped: a missing key defaults to True in target_helpers, which
         # would scan the apex the operator deliberately left out.
         combined_result["metadata"]["include_root_domain"] = merged["include_root"]
@@ -2223,6 +2236,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             _graph_update_bg("update_graph_from_external_domains", combined_result, USER_ID, PROJECT_ID)
     except Exception as e:
         print(f"[!][Pipeline] external_domains aggregation failed: {e}")
+
+    _stamp_wildcard_zones(combined_result)
 
     # Wait for all background graph DB updates to finish before returning
     _graph_wait_all()

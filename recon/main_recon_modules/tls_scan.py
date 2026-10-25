@@ -452,6 +452,24 @@ def _discovered_hostnames(by_target: dict) -> list:
     return sorted(out)
 
 
+def _wildcard_dropped(combined_result: dict, names: list, settings: dict) -> set:
+    """The certificate names that answer only through their zone's wildcard
+    DNS (recon/helpers/wildcard_control.py). Both the full pipeline and partial
+    tlsx call run_tlsx_enrichment, so the check sits here: these names are
+    never merged as targets, and the tlsx writer links no Subdomain to them.
+    The roots are the ones that writer uses."""
+    roots = [r for r in (combined_result.get("domains") or [combined_result.get("domain")])
+             if isinstance(r, str) and r.strip()]
+    if not roots or not names:
+        return set()
+    from recon.helpers import wildcard_control
+    candidates = sorted({_strip_wildcard(n).rstrip(".") for n in names if n})
+    control = wildcard_control.filter_late_names(candidates, roots, settings, label="tlsx")
+    if control.zones:
+        combined_result.setdefault("wildcard_zones", {}).update(control.zones)
+    return set(control.dropped)
+
+
 def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
     """Grab TLS certificates for open non-HTTP ports. Never raises."""
     settings = settings or {}
@@ -503,9 +521,13 @@ def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
         _attribute_cdn(combined_result, by_target)
 
         with_cert = sum(1 for c in by_target.values() if c.get("fingerprint_sha256") or c.get("subject_cn"))
+        discovered = _discovered_hostnames(by_target)
+        dropped = _wildcard_dropped(combined_result, discovered, settings)
         combined_result["tlsx"] = {
             "by_target": by_target,
-            "discovered_hostnames": _discovered_hostnames(by_target),
+            "discovered_hostnames": [n for n in discovered
+                                     if _strip_wildcard(n).rstrip(".") not in dropped],
+            "wildcard_dropped": sorted(dropped),
             "cdn_by_ip": _cdn_attributions(combined_result),
             "summary": {
                 "targets": len(lines),

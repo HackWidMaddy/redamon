@@ -33,6 +33,8 @@
 - recon_coverage_run (string): the start of the full recon run that wrote the coverage record; the groups of one run merge into it, a new run replaces it
 - recon_skipped_hosts (list[string]): host:port targets this run skipped as unreachable (first 500, sorted); their findings were kept, not re-checked
 - recon_nuclei_truncated (boolean): a Nuclei pass hit NUCLEI_MAX_RUNTIME and was stopped; its partial findings were kept
+- is_wildcard_zone (boolean): RedAmon's wildcard control probed random names under this domain and they resolved, so the zone answers EVERY name (wildcard DNS); false when they did not resolve; absent when it was never checked (DNS resolution off, or the probe failed). Names that only resolve through the wildcard are not kept as Subdomains
+- wildcard_ips (list[string]): the addresses the wildcard answers with (empty when the zone is no wildcard)
 Additional properties present on this node type, not yet described:
 - admin_name (string)
 - admin_org (string)
@@ -89,6 +91,7 @@ Additional properties present on this node type, not yet described:
 - http_live_url_count (int): count of URLs with status < 500
 - http_probed_at (datetime): when last HTTP-probed
 - source (string): discovery source ("crt.sh", "hackertarget", "knockpy", "shodan_rdns", "shodan_dns", "urlscan", "fofa", "otx_passive_dns", "censys_rdns", "uncover")
+- is_wildcard_zone (boolean), wildcard_ips (list[string]): set only on a subdomain that is itself a zone the wildcard control checked (a scan root below its org, or a parent with many discovered names), with the same meaning as on Domain
 Additional properties present on this node type, not yet described:
 - actual_ip (string)
 - discovered_at (datetime)

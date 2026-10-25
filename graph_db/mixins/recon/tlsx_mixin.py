@@ -4,7 +4,9 @@ Writes, all tenant-scoped on {natural_key, user_id, project_id}:
   - Certificate           MERGEd on cert_key (Phase 0.2 shared key)
   - (IP)-[:HAS_CERTIFICATE]->(Certificate)   the documented non-HTTP TLS anchor
   - (Certificate)-[:COVERS_HOST]->(Subdomain) per in-scope SAN entry, so SAN
-        data is traversable instead of a dead list property
+        data is traversable instead of a dead list property; a SAN listed in
+        the payload's wildcard_dropped (it answers only through its zone's
+        wildcard DNS) gets none
   - Service enrichment: advisory TLS props on the EXISTING Service node
         (never a rename -- name is part of the Service MERGE key, so writing a
         different one orphans the node)
@@ -145,6 +147,9 @@ class TlsxMixin:
             return True
 
         mismatched_by_cert = _mismatched_by_cert(by_target)
+        # Names that answer only through their zone's wildcard DNS: the
+        # certificate keeps them in its san list, but no Subdomain stands for them.
+        wildcard_dropped = {str(n).strip().lower() for n in tlsx_data.get("wildcard_dropped") or []}
 
         with self.driver.session() as session:
             for key, entry in by_target.items():
@@ -270,7 +275,7 @@ class TlsxMixin:
                     # --- COVERS_HOST for each in-scope SAN --------------------
                     for san_name in entry.get("san") or []:
                         name = (san_name or "").strip().lower().lstrip("*.")
-                        if not name or not _in_scope(name):
+                        if not name or not _in_scope(name) or name in wildcard_dropped:
                             continue
                         try:
                             session.run(

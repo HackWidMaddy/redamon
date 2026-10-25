@@ -1353,6 +1353,18 @@ def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) ->
                     pass
 
 
+def _guessing_sources(bruteforce: bool, settings: dict) -> set:
+    """Discovery sources that guess names from a wordlist instead of observing
+    them. knockpy --recon alone reads passive sources; amass guesses only with
+    -brute, and its passive names come back in the same set."""
+    guessing = set()
+    if bruteforce:
+        guessing.add("knockpy")
+    if settings.get('AMASS_ENABLED', False) and settings.get('AMASS_BRUTE', False):
+        guessing.add("amass")
+    return guessing
+
+
 def discover_subdomains(domain: str, bruteforce: bool = False,
                         resolve: bool = True, save_output: bool = True, project_id: str = None,
                         settings: dict = None) -> dict:
@@ -1481,10 +1493,27 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
     }
     
     # DNS Resolution for domain + all subdomains
+    from recon.helpers import wildcard_control
     if resolve:
         dns_workers = (settings or {}).get('DNS_MAX_WORKERS', 50)
         dns_record_parallel = (settings or {}).get('DNS_RECORD_PARALLELISM', True)
         result["dns"] = resolve_all_dns(domain, all_subs, max_workers=dns_workers, record_parallelism=dns_record_parallel, settings=settings)
+        # RedAmon's own wildcard check, whatever puredns did: it stands in when
+        # puredns was skipped and records which zones are wildcards.
+        control = wildcard_control.filter_discovered(
+            domain, all_subs, result["dns"], sourced_subs, settings or {},
+            guessing=_guessing_sources(bruteforce, settings or {}))
+        if control.dropped:
+            dropped = set(control.dropped)
+            all_subs = [s for s in all_subs if s not in dropped]
+            for s in dropped:
+                (result["dns"].get("subdomains") or {}).pop(s, None)
+            result["subdomains"] = all_subs
+            result["subdomain_count"] = len(all_subs)
+        result["wildcard_zones"] = control.zones
+        result["metadata"]["wildcard_dropped"] = len(control.dropped)
+    elif wildcard_filter != "filtered":
+        wildcard_control.note_unchecked(len(all_subs), wildcard_control.REASON_DNS_OFF)
 
     # Build subdomain status map from DNS results
     subdomain_status_map = {}

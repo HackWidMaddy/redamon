@@ -507,6 +507,9 @@ def merge_discovered_hostnames(
          into the newline-delimited target files).
       4. Resolve-and-check: drop any name resolving to a non-routable IP.
       5. Cap the injected count (``max_injected``).
+      6. Wildcard DNS (``wildcard_control``): drop a name that answers only
+         through its zone's wildcard. The zones checked are recorded in
+         ``combined_result["wildcard_zones"]``.
 
     Fails closed: without ``root_domain`` nothing is injected (names are still
     recorded as external), because there is no apex to test against — e.g. batch
@@ -595,6 +598,16 @@ def merge_discovered_hostnames(
 
     # 5. Resolve-and-check (SAN-derived names only, never the port-scan list).
     in_scope = [n for n in in_scope if _resolves_to_routable(n)]
+
+    # 6. Wildcard DNS: these names arrive after puredns, so they get RedAmon's
+    # own check. A name that answers only through its zone's wildcard is no
+    # evidence of a host.
+    if in_scope:
+        from recon.helpers import wildcard_control
+        control = wildcard_control.filter_late_names(in_scope, roots, settings, label=source)
+        in_scope = control.kept
+        if control.zones:
+            result.setdefault("wildcard_zones", {}).update(control.zones)
 
     # Merge in-scope names into dns.subdomains (the DICT shape). Only in-scope
     # names reach here, so the eventual HAS_SUBDOMAIN edge cannot promote a
