@@ -44,6 +44,7 @@ async def _execute_single_step(
     total_steps: int,
     *,
     phase: str,
+    iteration: int,
     wave_id: str,
     user_id: str,
     project_id: str,
@@ -64,21 +65,21 @@ async def _execute_single_step(
         step["error_message"] = "No tool name provided"
         return False
 
-    roe_msg = roe_gate.check_tool_call(tool_name, tool_args, phase)
-    if roe_msg:
-        logger.warning(f"[{user_id}/{project_id}/{session_id}] {roe_msg}")
-        step["tool_output"] = roe_msg
+    refusal = roe_gate.check_tool_call(tool_name, tool_args, phase, iteration)
+    if refusal:
+        logger.warning(f"[{user_id}/{project_id}/{session_id}] refused '{tool_name}' at iter {iteration}: {refusal.error}")
+        step["tool_output"] = refusal.message
         step["success"] = False
-        step["error_message"] = roe_msg
+        step["error_message"] = refusal.error
         if streaming_cb:
             try:
                 await streaming_cb.on_tool_start(tool_name, tool_args, wave_id=wave_id, step_index=step_index)
                 await streaming_cb.on_tool_complete(
-                    tool_name, False, roe_msg, wave_id=wave_id, step_index=step_index,
+                    tool_name, False, refusal.message, wave_id=wave_id, step_index=step_index,
                     duration_ms=0,
                 )
             except Exception as e:
-                logger.warning(f"Error emitting RoE block events: {e}")
+                logger.warning(f"Error emitting refusal events: {e}")
         return False
 
     # Emit tool_start
@@ -383,6 +384,7 @@ async def execute_plan_node(
                 index,
                 len(steps),
                 phase=phase,
+                iteration=iteration,
                 wave_id=wave_id,
                 user_id=user_id,
                 project_id=project_id,

@@ -1,10 +1,11 @@
-"""Every executor path asks the one RoE gate, and the gate names real tools.
+"""Every executor path asks the one pre-dispatch gate, and the gate names real tools.
 
 Drift-map #1: the Rules of Engagement ban (ROE_FORBIDDEN_TOOLS,
 ROE_FORBIDDEN_CATEGORIES, the account-lockout Hydra block) used to be checked in
 plan waves only, so a single `use_tool` call to a forbidden tool ran. #8: the
 category map named two retired tools and missed proxy_brain, so forbidding a
-category refused nothing new.
+category refused nothing new. #9: the recon budget was the mirror image, checked
+in the single-tool path only, over a list naming two tools that do not exist.
 
 These tests drive each executor path for real (the single-tool node, the plan
 wave, and a fireteam member's own graph, for both of its executors) and check
@@ -66,16 +67,16 @@ def _dispatched(ex) -> bool:
     return ex.execute.await_count + ex.execute_with_progress.await_count > 0
 
 
-def _single_state(tool_name, tool_args=None, phase="exploitation"):
+def _single_state(tool_name, tool_args=None, phase="exploitation", iteration=1):
     return {
-        "messages": [], "current_iteration": 1, "current_phase": phase,
+        "messages": [], "current_iteration": iteration, "current_phase": phase,
         "_current_step": {"tool_name": tool_name, "tool_args": tool_args or {}},
     }
 
 
-def _plan_state(tool_names, phase="exploitation"):
+def _plan_state(tool_names, phase="exploitation", iteration=1):
     return {
-        "messages": [], "current_iteration": 1, "current_phase": phase,
+        "messages": [], "current_iteration": iteration, "current_phase": phase,
         "_current_plan": {"steps": [
             {"tool_name": n, "tool_args": {}} for n in tool_names
         ]},
@@ -100,17 +101,17 @@ def _member_state(action, tool_name, phase="exploitation"):
     return state
 
 
-async def _run_single(ex, tool_name, tool_args=None, phase="exploitation"):
+async def _run_single(ex, tool_name, tool_args=None, phase="exploitation", iteration=1):
     out = await execute_tool_node(
-        _single_state(tool_name, tool_args, phase), _CONFIG, tool_executor=ex,
+        _single_state(tool_name, tool_args, phase, iteration), _CONFIG, tool_executor=ex,
         streaming_callbacks={}, session_manager_base="http://x",
     )
     return out["_current_step"]
 
 
-async def _run_plan(ex, tool_names, phase="exploitation"):
+async def _run_plan(ex, tool_names, phase="exploitation", iteration=1):
     out = await execute_plan_node(
-        _plan_state(tool_names, phase), _CONFIG, tool_executor=ex,
+        _plan_state(tool_names, phase, iteration), _CONFIG, tool_executor=ex,
         streaming_callbacks={}, session_manager_base="http://x",
     )
     return out["_current_plan"]["steps"]
@@ -135,11 +136,13 @@ class EveryPathConsultsTheGate(unittest.IsolatedAsyncioTestCase):
 
     async def _assert_consults(self, run):
         ex = _executor()
-        gate = MagicMock(return_value="RoE BLOCKED: test refusal")
+        gate = MagicMock(return_value=roe_gate.Refusal("RoE BLOCKED: test refusal", "refused"))
         with mock.patch.object(roe_gate, "check_tool_call", gate), _settings():
             steps = await run(ex)
         self.assertTrue(gate.called, "this executor path never asked the RoE gate")
         self.assertEqual(gate.call_args.args[0], "execute_nmap")
+        self.assertEqual(gate.call_args.args[2:], ("exploitation", 1),
+                         "the gate must see the phase and iteration the step runs at")
         self.assertFalse(_dispatched(ex), "a refused tool reached the executor")
         for step in steps:
             self.assertFalse(step["success"])
@@ -217,25 +220,75 @@ class AForbiddenToolIsRefusedOnEveryPath(unittest.IsolatedAsyncioTestCase):
 class TheGateItself(unittest.TestCase):
     def test_disabled_roe_refuses_nothing(self):
         with _settings(ROE_ENABLED=False, ROE_FORBIDDEN_TOOLS=["execute_nmap"]):
-            self.assertIsNone(roe_gate.check_tool_call("execute_nmap", {}, "exploitation"))
+            self.assertIsNone(roe_gate.check_tool_call("execute_nmap", {}, "exploitation", 1))
 
     def test_the_phase_cap_refuses_any_tool_past_it(self):
         with _roe(ROE_MAX_SEVERITY_PHASE="informational"):
-            reason = roe_gate.check_tool_call("execute_curl", {}, "exploitation")
-        self.assertIn("exceeds maximum allowed phase", reason)
+            refusal = roe_gate.check_tool_call("execute_curl", {}, "exploitation", 1)
+        self.assertIn("exceeds maximum allowed phase", refusal.message)
 
     def test_proxy_brain_is_in_both_active_traffic_categories(self):
         for category in ("brute_force", "exploitation"):
             with self.subTest(category=category), _roe(ROE_FORBIDDEN_CATEGORIES=[category]):
-                self.assertIsNotNone(roe_gate.check_tool_call("proxy_brain", {}, "exploitation"))
+                self.assertIsNotNone(roe_gate.check_tool_call("proxy_brain", {}, "exploitation", 1))
 
     def test_a_job_spawn_of_an_allowed_tool_passes(self):
         with _roe(ROE_FORBIDDEN_TOOLS=["execute_hydra"]):
             self.assertIsNone(roe_gate.check_tool_call(
-                "job_spawn", {"tool_name": "execute_nmap"}, "exploitation"))
+                "job_spawn", {"tool_name": "execute_nmap"}, "exploitation", 1))
 
 
-class TheCategoryMapNamesRealTools(unittest.TestCase):
+class TheReconBudgetHoldsOnEveryPath(unittest.IsolatedAsyncioTestCase):
+    """Past the informational budget a discovery tool is refused, whichever
+    executor the agent picks."""
+
+    PAST = 15  # RECON_MAX_INFORMATIONAL_ITERS default
+
+    async def _assert_budget_refuses(self, run):
+        ex = _executor()
+        with _settings(ROE_ENABLED=False):
+            steps = await run(ex)
+        self.assertFalse(_dispatched(ex), "a discovery tool ran past the recon budget")
+        for step in steps:
+            self.assertFalse(step["success"])
+            self.assertEqual(step["error_message"], "recon budget exceeded")
+            self.assertIn("RECON BUDGET EXCEEDED", step["tool_output"])
+
+    async def test_single_tool_path(self):
+        async def run(ex):
+            return [await _run_single(ex, "execute_amass", phase="informational",
+                                      iteration=self.PAST)]
+        await self._assert_budget_refuses(run)
+
+    async def test_plan_wave_path(self):
+        await self._assert_budget_refuses(lambda ex: _run_plan(
+            ex, ["shodan", "google_dork", "execute_jsluice"], phase="informational",
+            iteration=self.PAST))
+
+    async def test_a_discovery_tool_cannot_be_started_as_a_background_job(self):
+        async def run(ex):
+            return [await _run_single(ex, "job_spawn", {"tool_name": "execute_nmap"},
+                                      phase="informational", iteration=self.PAST)]
+        await self._assert_budget_refuses(run)
+
+    async def test_non_discovery_tools_stay_available(self):
+        ex = _executor()
+        with _settings(ROE_ENABLED=False):
+            steps = await _run_plan(ex, ["execute_curl", "kali_shell", "graph_schema"],
+                                    phase="informational", iteration=self.PAST)
+        self.assertEqual(ex.execute.await_count, 3)
+        self.assertTrue(all(step["success"] for step in steps))
+
+    async def test_the_budget_binds_only_once_spent_and_only_in_recon(self):
+        for phase, iteration in (("informational", self.PAST - 1), ("exploitation", self.PAST)):
+            with self.subTest(phase=phase, iteration=iteration):
+                ex = _executor()
+                with _settings(ROE_ENABLED=False):
+                    step = await _run_single(ex, "execute_nmap", phase=phase, iteration=iteration)
+                self.assertTrue(step["success"])
+
+
+class TheGateNamesRealTools(unittest.TestCase):
     def test_every_category_tool_is_a_registry_key(self):
         unknown = {
             cat: sorted(set(tools) - set(TOOL_REGISTRY))
@@ -244,6 +297,13 @@ class TheCategoryMapNamesRealTools(unittest.TestCase):
         }
         self.assertEqual(unknown, {}, "CATEGORY_TOOL_MAP names tools the agent does not have, "
                                       "so forbidding the category refuses nothing for them")
+
+    def test_every_discovery_tool_is_a_registry_key(self):
+        unknown = sorted(roe_gate.RECON_DISCOVERY_TOOLS - set(TOOL_REGISTRY))
+        self.assertEqual(unknown, [], "the recon budget names tools the agent does not have")
+
+    def test_the_orientation_tools_are_never_budgeted(self):
+        self.assertFalse({"graph_schema", "graph_summary"} & roe_gate.RECON_DISCOVERY_TOOLS)
 
 
 # Modules that call the tool executor directly and are, on purpose, not agent
