@@ -66,6 +66,7 @@ _DEFAULT_ALLOWED_IMAGES = [
     "ghcr.io/zaproxy/zaproxy:stable",
     "dolevf/graphql-cop:1.14",
     "redamon-baddns:latest",
+    "redamon-wcvs:latest",
     # Supply-chain feature (plan Phase 0.5/2): the DIRTY analyzer and the CLEAN
     # standalone scanner. The analyzer may be spawned by a broker-socket caller
     # (recon in L2), so it must be allowlisted or the spawn fails closed.
