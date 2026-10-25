@@ -16,9 +16,9 @@ of RedAmon.
 - [The offline OSV database](#the-offline-osv-database)
 - [The shared engine (`supply_chain_common`)](#the-shared-engine-supply_chain_common)
 - [Security posture: the DIRTY / CLEAN split](#security-posture-the-dirty--clean-split)
-- [Layer L3 - Agent tools](#layer-l3--agent-tools)
-- [Layer L1 - Standalone scan (Other Scans)](#layer-l1--standalone-scan-other-scans)
-- [Layer L2 - Recon pipeline module](#layer-l2--recon-pipeline-module)
+- [Layer L3 - Agent tools](#layer-l3---agent-tools)
+- [Layer L1 - Standalone scan (Other Scans)](#layer-l1---standalone-scan-other-scans)
+- [Layer L2 - Recon pipeline module](#layer-l2---recon-pipeline-module)
 - [Graph model](#graph-model)
 - [The Supply-Chain SCA table](#the-supply-chain-sca-table)
 - [Container topology](#container-topology)
@@ -111,7 +111,7 @@ flowchart TB
 
 Kali holds **no Docker socket**: it is the least-trusted, target-facing worker, so
 the one L3 tool that spawns a container (`execute_guarddog`) goes through the
-orchestrator instead. See [Layer L3](#layer-l3--agent-tools).
+orchestrator instead. See [Layer L3](#layer-l3---agent-tools).
 
 The **shared engine** (`scanners/supply_chain_common/`) is a pure-Python package of runners
 and parsers mounted read-only into every CLEAN/DIRTY container the same way

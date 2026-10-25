@@ -154,7 +154,7 @@ sequenceDiagram
 
 ---
 
-## 🏗️ Docker-in-Docker Architecture
+## 🏗 Docker-in-Docker Architecture
 
 The recon module uses a **Docker-in-Docker (DinD)** pattern where the main recon container orchestrates sibling containers for each scanning tool.
 
@@ -1859,7 +1859,7 @@ flowchart TB
 
 ---
 
-## ⚙️ Key Configuration Parameters
+## ⚙ Key Configuration Parameters
 
 ### Essential Settings
 

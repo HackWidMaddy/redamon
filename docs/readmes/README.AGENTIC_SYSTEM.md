@@ -85,7 +85,7 @@ Engineers wanting to extend the platform should focus on the LangGraph chapter, 
 11. [Exploit-Path Search (LATS)](#exploit-path-search-lats)
 12. [Productivity Verdict & Unproductive-Streak Loop Detector](#productivity-verdict--unproductive-streak-loop-detector-1)
 13. [Wave Execution (Parallel Tool Plans)](#wave-execution-parallel-tool-plans)
-14. [Fireteam - Parallel Specialist Sub-Agents](#fireteam--parallel-specialist-sub-agents)
+14. [Fireteam - Parallel Specialist Sub-Agents](#fireteam---parallel-specialist-sub-agents)
 15. [Output Analysis (Inline)](#output-analysis-inline)
 16. [Guardrails (Hard, Soft, Scope)](#guardrails-hard-soft-scope)
 17. [Rules of Engagement (RoE)](#rules-of-engagement-roe)
@@ -93,7 +93,7 @@ Engineers wanting to extend the platform should focus on the LangGraph chapter, 
 19. [Frontend Integration](#frontend-integration)
 20. [Detailed Workflows](#detailed-workflows)
 21. [Multi-Objective Support](#multi-objective-support)
-22. [EvoGraph - Evolutive Attack Chain Graph](#evograph--evolutive-attack-chain-graph)
+22. [EvoGraph, Evolutive Attack Chain Graph](#evograph-evolutive-attack-chain-graph)
 23. [Security & Multi-Tenancy](#security--multi-tenancy)
 24. [Token Accounting & Cost Tracking](#token-accounting--cost-tracking)
 25. [Knowledge Base Integration](#knowledge-base-integration)
@@ -597,7 +597,7 @@ EvoGraph is the agent's **structured long-term memory**, persisted in Neo4j alon
 
 The model has five node types: `AttackChain` (the root, one per session), `ChainStep` (each tool execution with inputs, outputs, and analysis), `ChainFinding` (intelligence discovered during a step, classified by severity), `ChainDecision` (strategic choices like phase transitions or aborts), and `ChainFailure` (structured records of dead ends with `lesson_learned` text). Each of these is connected back to the recon graph via "bridge relationships", for example, a `ChainFinding` of type `vulnerability_confirmed` automatically gets a `FOUND_ON` edge to the relevant `IP` node and a `FINDING_RELATES_CVE` edge to the `CVE` node. The bridges are populated both from explicit fields the LLM emits and from regex-scanning the evidence prose, so even when the LLM forgets to fill `related_cves` the bridges still get drawn.
 
-The advantage is twofold. **Within a session**, the agent's prompt no longer carries a flat wall-of-text execution trace, instead it gets a deduplicated, severity-sorted Findings section, a Failed-Attempts section with lessons, and a Decisions section, so the model spends its tokens on signal rather than scrolling. **Across sessions**, the next time the operator works on the same project, the agent loads the prior chains via `query_prior_chains()` and starts already knowing what was tried, what worked, and what failed. This turns the agent from a stateless tool runner into a **knowledge-accumulating system** that builds on prior work. Full details: [EvoGraph chapter](#evograph--evolutive-attack-chain-graph).
+The advantage is twofold. **Within a session**, the agent's prompt no longer carries a flat wall-of-text execution trace, instead it gets a deduplicated, severity-sorted Findings section, a Failed-Attempts section with lessons, and a Decisions section, so the model spends its tokens on signal rather than scrolling. **Across sessions**, the next time the operator works on the same project, the agent loads the prior chains via `query_prior_chains()` and starts already knowing what was tried, what worked, and what failed. This turns the agent from a stateless tool runner into a **knowledge-accumulating system** that builds on prior work. Full details: [EvoGraph chapter](#evograph-evolutive-attack-chain-graph).
 
 ### Recon Graph & `query_graph` (Persistent Project Intelligence)
 
@@ -613,7 +613,7 @@ A **Fireteam** is how the root agent fans out into N specialist sub-agents that 
 
 When the root's `think` decides `action=deploy_fireteam`, the deploy node spawns one async task per member, each running a stripped-down 5-node ReAct subgraph (`think` / `execute_tool` / `execute_plan` / `await_confirmation` / `complete`) against its own `FireteamMemberState`. Members run concurrently and interleave naturally on the event loop. Each member writes attributed `ChainStep` and `ChainFinding` rows to EvoGraph in real time, so the graph DB knows which specialist produced which finding. Dangerous-tool approvals are handled **per-member, in parallel, in-place**: a member parks on its own `asyncio.Event` and the operator decides on each panel independently, N members can be awaiting decisions simultaneously without serializing.
 
-The advantage over a single agent doing the same work sequentially is **speed and focus**. A single agent investigating an auth surface, a route map, and a security-header posture would do them one at a time and accumulate context-switch cost in its prompt. Three Fireteam members do them in parallel, each with a focused prompt scoped to their mission, and the root only sees the consolidated findings at the end. The operator sees one Fireteam card on screen with three always-visible specialist panels, no modal queues, no detached cards, no sequential gating. Full details: [Fireteam chapter](#fireteam--parallel-specialist-sub-agents).
+The advantage over a single agent doing the same work sequentially is **speed and focus**. A single agent investigating an auth surface, a route map, and a security-header posture would do them one at a time and accumulate context-switch cost in its prompt. Three Fireteam members do them in parallel, each with a focused prompt scoped to their mission, and the root only sees the consolidated findings at the end. The operator sees one Fireteam card on screen with three always-visible specialist panels, no modal queues, no detached cards, no sequential gating. Full details: [Fireteam chapter](#fireteam---parallel-specialist-sub-agents).
 
 ### Skills System (Built-In, User, Chat)
 
