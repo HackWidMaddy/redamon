@@ -3484,8 +3484,10 @@ _map_core_changes() {
         restart_only+=(recon-orchestrator)
     fi
 
-    # kali-sandbox: rebuild only if Dockerfile/entrypoint changed, else restart
-    if echo "$changed_files" | grep -q "^mcp/kali-sandbox/\(Dockerfile\|entrypoint\)"; then
+    # kali-sandbox: its image bakes everything under mcp/kali-sandbox/ (pip
+    # constraints, the adkc helpers, the motd) and mcp/requirements.txt; any other
+    # mcp/ path is mounted over the baked copy, so a restart picks it up.
+    if echo "$changed_files" | grep -qE "^(mcp/kali-sandbox/|mcp/requirements\.txt$)"; then
         rebuild_core+=(kali-sandbox)
     elif echo "$changed_files" | grep -q "^mcp/"; then
         restart_only+=(kali-sandbox)
@@ -3525,17 +3527,105 @@ _map_core_changes() {
     fi
 }
 
-# graph_db/ is COPY-baked into these tool images. The orchestrator mounts the live
-# copy over it at spawn, except where it cannot resolve the host path (Docker
-# Desktop / WSL2, issue #169), and there the baked copy runs. Appends to the
-# CALLER's `rebuild_tools`; runs outside _map_core_changes so a release that also
-# changes docker-compose.yml (which skips that map) still rebuilds them.
+# graph_db/ is COPY-baked into these tool images (their Dockerfiles COPY it; the
+# supply-chain images only bind-mount it). The orchestrator mounts the live copy
+# over it at spawn, except where it cannot resolve the host path (Docker Desktop /
+# WSL2, issue #169), and there the baked copy runs. Appends to the CALLER's
+# `rebuild_tools`; called by _map_tool_changes, which runs even when
+# docker-compose.yml changed (that skips _map_core_changes).
 _map_baked_graph_db() {
     echo "$1" | grep -q "^graph_db/" || return 0
     local img
-    for img in recon vuln-scanner github-secret-hunter supply-chain supply-chain-analyzer; do
+    for img in recon vuln-scanner github-secret-hunter; do
         [[ " ${rebuild_tools[*]-} " == *" $img "* ]] || rebuild_tools+=("$img")
     done
+}
+
+# changed file -> tool-profile image map for `update`. Appends to the CALLER's
+# `rebuild_tools` and sets the CALLER's `rebuild_capture` / `rebuild_plugins`.
+_map_tool_changes() {
+    local changed_files="$1"
+    # Tool-profile images build ONLY from their own source dirs — a docker-compose.yml
+    # change never alters their content. So rebuild a tool image ONLY when its source
+    # actually changed, even under rebuild_all. This avoids spuriously rebuilding heavy
+    # / fragile tool images (e.g. ai-attack-surface, whose pyrit deps need a Rust
+    # toolchain on arm64) on an unrelated compose change.
+    # The recon image also COPYs recon_settings/ (the registry bounds and caps), and
+    # a scan whose host recon_settings path does not resolve runs the baked copy.
+    if echo "$changed_files" | grep -qE "^(recon|recon_settings)/"; then
+        rebuild_tools+=(recon)
+    fi
+    # wcvs: the Web Cache Vulnerability Scanner image (web cache poisoning module),
+    # run docker-in-docker by the recon container. Build-only; rebuild when its
+    # Dockerfile (or pinned WCVS_REF) changes.
+    if echo "$changed_files" | grep -q "^scanners/wcvs/"; then
+        rebuild_tools+=(wcvs)
+    fi
+    if echo "$changed_files" | grep -q "^scanners/gvm_scan/"; then
+        rebuild_tools+=(vuln-scanner)
+    fi
+    if echo "$changed_files" | grep -q "^scanners/github_secret_hunt/"; then
+        rebuild_tools+=(github-secret-hunter)
+    fi
+    if echo "$changed_files" | grep -q "^scanners/trufflehog_scan/"; then
+        rebuild_tools+=(trufflehog-scanner)
+    fi
+    if echo "$changed_files" | grep -q "^scanners/baddns_scan/"; then
+        rebuild_tools+=(baddns-scanner)
+    fi
+    # ai-attack-surface: heavy build-only image (Node + promptfoo + per-tool venvs).
+    # The adapter .py files are volume-mounted into the scan container at spawn
+    # (hot-reload, no rebuild); ONLY the baked-in toolchain — the Dockerfile or any
+    # requirements file — needs a rebuild.
+    if echo "$changed_files" | grep -qE "^scanners/ai_attack_surface_scan/(Dockerfile|.*requirements)"; then
+        rebuild_tools+=(ai-attack-surface)
+    fi
+    # codefix-sandbox: the isolated CodeFix build sandbox (T6/E10). Build-only
+    # image; rebuild when anything in its build context changes.
+    if echo "$changed_files" | grep -q "^scanners/codefix_sandbox/"; then
+        rebuild_tools+=(codefix-sandbox)
+    fi
+    # supply-chain (L1 CLEAN scanner): the .py source is volume-mounted into the
+    # spawned scan container (hot-reload), so rebuild the image ONLY when the
+    # baked layer changes -- the Dockerfile (osv-scanner binary) or requirements.
+    # Matches recon-orchestrator's precise rule. On the FIRST update onto this
+    # release these files are new, so the image is built; thereafter a pure .py
+    # change hot-reloads at spawn with no rebuild.
+    if echo "$changed_files" | grep -qE "^scanners/supply_chain_scan/(Dockerfile|requirements)"; then
+        rebuild_tools+=(supply-chain)
+    fi
+    # supply-chain-analyzer (DIRTY analyzer): entrypoint.py is BAKED (COPY), not
+    # mounted, so rebuild on ANY change to the analyzer dir (entrypoint or Dockerfile).
+    if echo "$changed_files" | grep -q "^scanners/supply_chain_analyzer/"; then
+        rebuild_tools+=(supply-chain-analyzer)
+    fi
+    _map_baked_graph_db "$changed_files"
+    # capture-proxy / traffic-ingest (HTTP Traffic Capture): both share the
+    # redamon-capture-proxy:latest image, built from scanners/capture_proxy/. It is in the
+    # "capture" profile — never started by `up`, but SPAWNED on demand by the
+    # orchestrator, which just runs the image (no on-demand build; scanners/capture_proxy/ is
+    # not mounted into the orchestrator). So `update` MUST rebuild it here or the
+    # proxy would keep serving stale capture/ingest/redaction/egress code. Handled
+    # separately from rebuild_tools because it needs its own profile flag to build.
+    if echo "$changed_files" | grep -q "^scanners/capture_proxy/"; then
+        rebuild_capture=true
+    fi
+    # The proxy image also COPYs two files OUT of recon_orchestrator/ at build
+    # time (hard_guardrail.py, ip_denylist.py — the shared hostname and
+    # resolved-IP denylists). Those live outside scanners/capture_proxy/, so a
+    # change to either would otherwise leave the proxy enforcing a stale guard
+    # while the orchestrator enforced the new one. tests/redamon_update_map_test.sh
+    # checks every COPY source of every built image against these rules.
+    if echo "$changed_files" | grep -qE "^recon_orchestrator/(hard_guardrail|ip_denylist)\.py$"; then
+        rebuild_capture=true
+    fi
+    # The plugin runner image: rebuilt when its sources or a compose file it depends on
+    # changed (cmd_update also builds it when missing). Never in rebuild_core or
+    # restart_only: plugins_converge alone starts the runner and the gateway, and
+    # recreates both after this rebuild.
+    if echo "$changed_files" | grep -qE "^(docker-compose(\.plugins)?\.yml$|services/plugin_runner/)"; then
+        rebuild_plugins=true
+    fi
 }
 
 # The webapp reaches the plugin services only through the overlay's network and volume,
@@ -3687,86 +3777,9 @@ cmd_update() {
         _map_core_changes "$changed_files"
     fi
 
-    # Tool-profile images build ONLY from their own source dirs — a docker-compose.yml
-    # change never alters their content. So rebuild a tool image ONLY when its source
-    # actually changed, even under rebuild_all. This avoids spuriously rebuilding heavy
-    # / fragile tool images (e.g. ai-attack-surface, whose pyrit deps need a Rust
-    # toolchain on arm64) on an unrelated compose change.
-    if echo "$changed_files" | grep -q "^recon/"; then
-        rebuild_tools+=(recon)
-    fi
-    # wcvs: the Web Cache Vulnerability Scanner image (web cache poisoning module),
-    # run docker-in-docker by the recon container. Build-only; rebuild when its
-    # Dockerfile (or pinned WCVS_REF) changes.
-    if echo "$changed_files" | grep -q "^scanners/wcvs/"; then
-        rebuild_tools+=(wcvs)
-    fi
-    if echo "$changed_files" | grep -q "^scanners/gvm_scan/"; then
-        rebuild_tools+=(vuln-scanner)
-    fi
-    if echo "$changed_files" | grep -q "^scanners/github_secret_hunt/"; then
-        rebuild_tools+=(github-secret-hunter)
-    fi
-    if echo "$changed_files" | grep -q "^scanners/trufflehog_scan/"; then
-        rebuild_tools+=(trufflehog-scanner)
-    fi
-    if echo "$changed_files" | grep -q "^scanners/baddns_scan/"; then
-        rebuild_tools+=(baddns-scanner)
-    fi
-    # ai-attack-surface: heavy build-only image (Node + promptfoo + per-tool venvs).
-    # The adapter .py files are volume-mounted into the scan container at spawn
-    # (hot-reload, no rebuild); ONLY the baked-in toolchain — the Dockerfile or any
-    # requirements file — needs a rebuild.
-    if echo "$changed_files" | grep -qE "^scanners/ai_attack_surface_scan/(Dockerfile|.*requirements)"; then
-        rebuild_tools+=(ai-attack-surface)
-    fi
-    # codefix-sandbox: the isolated CodeFix build sandbox (T6/E10). Build-only
-    # image; rebuild when anything in its build context changes.
-    if echo "$changed_files" | grep -q "^scanners/codefix_sandbox/"; then
-        rebuild_tools+=(codefix-sandbox)
-    fi
-    # supply-chain (L1 CLEAN scanner): the .py source is volume-mounted into the
-    # spawned scan container (hot-reload), so rebuild the image ONLY when the
-    # baked layer changes -- the Dockerfile (osv-scanner binary) or requirements.
-    # Matches recon-orchestrator's precise rule. On the FIRST update onto this
-    # release these files are new, so the image is built; thereafter a pure .py
-    # change hot-reloads at spawn with no rebuild.
-    if echo "$changed_files" | grep -qE "^scanners/supply_chain_scan/(Dockerfile|requirements)"; then
-        rebuild_tools+=(supply-chain)
-    fi
-    # supply-chain-analyzer (DIRTY analyzer): entrypoint.py is BAKED (COPY), not
-    # mounted, so rebuild on ANY change to the analyzer dir (entrypoint or Dockerfile).
-    if echo "$changed_files" | grep -q "^scanners/supply_chain_analyzer/"; then
-        rebuild_tools+=(supply-chain-analyzer)
-    fi
-    _map_baked_graph_db "$changed_files"
-    # capture-proxy / traffic-ingest (HTTP Traffic Capture): both share the
-    # redamon-capture-proxy:latest image, built from scanners/capture_proxy/. It is in the
-    # "capture" profile — never started by `up`, but SPAWNED on demand by the
-    # orchestrator, which just runs the image (no on-demand build; scanners/capture_proxy/ is
-    # not mounted into the orchestrator). So `update` MUST rebuild it here or the
-    # proxy would keep serving stale capture/ingest/redaction/egress code. Handled
-    # separately from rebuild_tools because it needs its own profile flag to build.
-    local rebuild_capture=false
-    if echo "$changed_files" | grep -q "^scanners/capture_proxy/"; then
-        rebuild_capture=true
-    fi
-    # The proxy image also COPYs two files OUT of recon_orchestrator/ at build
-    # time (hard_guardrail.py, ip_denylist.py — the shared hostname and
-    # resolved-IP denylists). Those live outside scanners/capture_proxy/, so a
-    # change to either would otherwise leave the proxy enforcing a stale guard
-    # while the orchestrator enforced the new one. Keep this list in step with
-    # the COPY lines in scanners/capture_proxy/Dockerfile.
-    if echo "$changed_files" | grep -qE "^recon_orchestrator/(hard_guardrail|ip_denylist)\.py$"; then
-        rebuild_capture=true
-    fi
-    # The plugin runner image: rebuilt when its sources or a compose file it depends on
-    # changed, built when missing. Never in rebuild_core or restart_only: plugins_converge
-    # alone starts the runner and the gateway, and recreates both after this rebuild.
-    local rebuild_plugins=false
-    if echo "$changed_files" | grep -qE "^(docker-compose(\.plugins)?\.yml$|services/plugin_runner/)"; then
-        rebuild_plugins=true
-    elif ! docker image inspect "$PLUGINS_RUNNER_IMAGE" >/dev/null 2>&1; then
+    local rebuild_capture=false rebuild_plugins=false
+    _map_tool_changes "$changed_files"
+    if [[ "$rebuild_plugins" != "true" ]] && ! docker image inspect "$PLUGINS_RUNNER_IMAGE" >/dev/null 2>&1; then
         rebuild_plugins=true
     fi
 
