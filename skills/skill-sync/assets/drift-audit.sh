@@ -14,9 +14,10 @@
 #
 # ---------------------------------------------------------------------------
 # CONFIGURE HERE: component roots, relative to the repository root. Skills cite
-# paths relative to a COMPONENT root, not the repo root, so a citation counts
-# as live if it resolves under the citing file's own dir, the repo root, OR any
-# root below. Leave this wrong and the audit floods with false positives.
+# paths relative to a COMPONENT root, not the repo root, so a backticked path
+# counts as live if it resolves under the citing file's own dir, the repo root,
+# OR any root below. A markdown link must resolve from the citing file's dir.
+# Leave this wrong and the audit floods with false positives.
 # ---------------------------------------------------------------------------
 ROOTS=(
   "."                    # repository root
@@ -101,18 +102,22 @@ is_path_like() {
   return 0
 }
 
-# resolve a candidate against the citing file's dir, then every ROOT, then repo root
+# resolve a candidate against the citing file's dir, then every ROOT, then repo
+# root. $3 is the origin: a markdown link (L) resolves against the citing file's
+# dir only, because that is where a renderer sends the click; trying the roots
+# made [AGENTS.md](../AGENTS.md) in skills/<name>/SKILL.md pass via
+# webapp/../AGENTS.md although skills/AGENTS.md does not exist. Only the full
+# cited path is tried, never its basename: a basename match is a different file.
 resolves() {
-  local cand="$1" fdir="$2" p="${1%%#*}"        # strip a trailing #anchor
+  local cand="$1" fdir="$2" origin="$3" p="${1%%#*}"   # strip a trailing #anchor
   p="${p%\)}"                                     # stray close paren
   [ -n "$p" ] || return 0
   [ -e "$fdir/$p" ] && return 0
+  [ "$origin" = "L" ] && return 1
   local r base
   for r in "${ROOTS[@]}"; do
     if [ "$r" = "." ]; then base="$REPO_ROOT"; else base="$REPO_ROOT/$r"; fi
     [ -e "$base/$p" ] && return 0
-    # also try the basename under the root (skills cite files by short path)
-    [ -e "$base/$(basename "$p")" ] && return 0
   done
   [ -e "$REPO_ROOT/$p" ] && return 0
   return 1
@@ -131,7 +136,7 @@ for f in "${FILES[@]}"; do
     [ -n "$cand" ] || continue
     is_path_like "$cand" "$origin" || continue
     checked=$((checked+1))
-    if ! resolves "$cand" "$fdir"; then
+    if ! resolves "$cand" "$fdir" "$origin"; then
       if [ "$is_agents" -eq 1 ]; then
         agents_dead+=("$rel -> $cand")
       else
