@@ -66,7 +66,7 @@ export const SECTION_NODE_MAP: Record<string, string[]> = {
   Github:             ['GithubHunt', 'GithubRepository', 'GithubPath', 'GithubSecret', 'GithubSensitiveFile'],
   SecurityChecks:     ['Vulnerability'],
   Uncover:            ['IP', 'Subdomain', 'Port', 'Endpoint'],
-  JsRecon:            ['Secret', 'Endpoint'],
+  JsRecon:            ['Secret', 'Endpoint', 'JsReconFinding'],
   SerializedScan:     ['Vulnerability'],
   SupplyChainRecon:   ['Package', 'MalPackageFinding'],
   GraphqlScan:        ['Vulnerability', 'Endpoint'],

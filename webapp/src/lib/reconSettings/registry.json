@@ -15464,13 +15464,6 @@
   "agent": {
    "form_section": "AgentBehaviourSection",
    "phase": "standalone",
-   "produces": [
-    "AttackChain",
-    "ChainStep",
-    "ChainFinding",
-    "ChainDecision",
-    "ChainFailure"
-   ],
    "title": "Agent",
    "traffic": "active"
   },
@@ -15480,6 +15473,9 @@
    "module": "recon.main_recon_modules.ai_surface_recon",
    "partial_recon_module": "ai_surface_recon",
    "phase": "http_probe",
+   "produces": [
+    "Vulnerability"
+   ],
    "title": "AI attack-surface recon",
    "traffic": "active"
   },
@@ -15490,9 +15486,6 @@
    "module": "recon.main_recon_modules.domain_recon",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
-   "produces": [
-    "Subdomain"
-   ],
    "title": "Amass",
    "traffic": "passive"
   },
@@ -15521,9 +15514,6 @@
    "module": "recon.main_recon_modules.subdomain_takeover",
    "partial_recon_module": "vulnerability_scanning",
    "phase": "vuln_scan",
-   "produces": [
-    "Vulnerability"
-   ],
    "title": "BadDNS",
    "traffic": "active"
   },
@@ -15533,9 +15523,6 @@
    "module": "recon.main_recon_modules.port_scan",
    "partial_recon_module": "port_scanning",
    "phase": "port_scan",
-   "produces": [
-    "Service"
-   ],
    "title": "Banner grab",
    "traffic": "active"
   },
@@ -15554,11 +15541,6 @@
    "module": "recon.main_recon_modules.censys_enrich",
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
-   "produces": [
-    "IP",
-    "Port",
-    "Certificate"
-   ],
    "title": "Censys",
    "traffic": "passive"
   },
@@ -15570,10 +15552,6 @@
    "module": "recon.main_recon_modules.criminalip_enrich",
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
-   "produces": [
-    "IP",
-    "Port"
-   ],
    "title": "CriminalIP",
    "traffic": "passive"
   },
@@ -15583,10 +15561,6 @@
    "module": "recon.main_recon_modules.domain_recon",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
-   "produces": [
-    "Subdomain",
-    "Certificate"
-   ],
    "title": "crt.sh",
    "traffic": "passive"
   },
@@ -15596,7 +15570,9 @@
    "partial_recon_module": "vulnerability_scanning",
    "phase": "vuln_scan",
    "produces": [
-    "CVE"
+    "CVE",
+    "MitreData",
+    "Capec"
    ],
    "title": "CVE lookup",
    "traffic": "passive"
@@ -15619,11 +15595,6 @@
    "module": "recon.main_recon_modules.domain_recon",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
-   "produces": [
-    "DNSRecord",
-    "Subdomain",
-    "IP"
-   ],
    "title": "DNS",
    "traffic": "active"
   },
@@ -15652,7 +15623,9 @@
    "partial_recon_module": "web_crawling",
    "phase": "resource_enum",
    "produces": [
-    "Endpoint"
+    "Endpoint",
+    "BaseURL",
+    "ExternalDomain"
    ],
    "title": "ffuf",
    "traffic": "active"
@@ -15671,11 +15644,6 @@
    "module": "recon.main_recon_modules.fofa_enrich",
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
-   "produces": [
-    "IP",
-    "Port",
-    "Technology"
-   ],
    "title": "FOFA",
    "traffic": "passive"
   },
@@ -15688,7 +15656,9 @@
    "phase": "resource_enum",
    "produces": [
     "Endpoint",
-    "Parameter"
+    "Parameter",
+    "BaseURL",
+    "ExternalDomain"
    ],
    "title": "gau",
    "traffic": "passive"
@@ -15699,9 +15669,9 @@
    "produces": [
     "GithubHunt",
     "GithubRepository",
+    "GithubPath",
     "GithubSecret",
-    "GithubSensitiveFile",
-    "GithubPath"
+    "GithubSensitiveFile"
    ],
    "title": "GitHub secret hunt",
    "traffic": "passive"
@@ -15714,8 +15684,8 @@
    "partial_recon_module": "graphql_scanning",
    "phase": "vuln_scan",
    "produces": [
-    "Endpoint",
-    "Vulnerability"
+    "Vulnerability",
+    "Endpoint"
    ],
    "title": "GraphQL security",
    "traffic": "active"
@@ -15726,9 +15696,6 @@
    "image": "dolevf/graphql-cop:1.14",
    "partial_recon_module": "graphql_scanning",
    "phase": "vuln_scan",
-   "produces": [
-    "Vulnerability"
-   ],
    "title": "GraphQL Cop",
    "traffic": "active"
   },
@@ -15736,8 +15703,14 @@
    "form_section": "GvmScanSection",
    "phase": "standalone",
    "produces": [
+    "Vulnerability",
+    "Technology",
+    "Traceroute",
+    "Certificate",
     "ExploitGvm",
-    "Vulnerability"
+    "CVE",
+    "MitreData",
+    "Capec"
    ],
    "title": "GVM vulnerability scan",
    "traffic": "active"
@@ -15748,9 +15721,6 @@
    "module": "recon.main_recon_modules.domain_recon",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
-   "produces": [
-    "Subdomain"
-   ],
    "title": "HackerTarget",
    "traffic": "passive"
   },
@@ -15762,7 +15732,10 @@
    "partial_recon_module": "web_crawling",
    "phase": "resource_enum",
    "produces": [
-    "Endpoint"
+    "Endpoint",
+    "Parameter",
+    "BaseURL",
+    "ExternalDomain"
    ],
    "title": "hakrawler",
    "traffic": "active"
@@ -15782,9 +15755,9 @@
    "phase": "http_probe",
    "produces": [
     "BaseURL",
+    "Certificate",
     "Technology",
-    "Header",
-    "Certificate"
+    "Header"
    ],
    "title": "httpx",
    "traffic": "active"
@@ -15802,9 +15775,9 @@
    "partial_recon_module": "js_analysis",
    "phase": "js_recon",
    "produces": [
-    "JsReconFinding",
+    "Secret",
     "Endpoint",
-    "Secret"
+    "JsReconFinding"
    ],
    "title": "JS recon",
    "traffic": "active"
@@ -15816,9 +15789,11 @@
    "partial_recon_module": "web_crawling",
    "phase": "js_recon",
    "produces": [
-    "JsReconFinding",
     "Endpoint",
-    "Secret"
+    "Parameter",
+    "BaseURL",
+    "Secret",
+    "ExternalDomain"
    ],
    "title": "jsluice",
    "traffic": "active"
@@ -15832,7 +15807,9 @@
    "phase": "resource_enum",
    "produces": [
     "Endpoint",
-    "Parameter"
+    "Parameter",
+    "BaseURL",
+    "ExternalDomain"
    ],
    "title": "Katana",
    "traffic": "active"
@@ -15844,7 +15821,8 @@
    "partial_recon_module": "parameter_discovery",
    "phase": "resource_enum",
    "produces": [
-    "Endpoint"
+    "Endpoint",
+    "BaseURL"
    ],
    "title": "Kiterunner",
    "traffic": "active"
@@ -15855,9 +15833,6 @@
    "module": "recon.main_recon_modules.domain_recon",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
-   "produces": [
-    "Subdomain"
-   ],
    "title": "knockpy",
    "traffic": "passive"
   },
@@ -15897,7 +15872,8 @@
    "partial_recon_module": "port_scanning",
    "phase": "port_scan",
    "produces": [
-    "Port"
+    "Port",
+    "Service"
    ],
    "title": "naabu",
    "traffic": "active"
@@ -15910,10 +15886,6 @@
    "module": "recon.main_recon_modules.netlas_enrich",
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
-   "produces": [
-    "IP",
-    "Port"
-   ],
    "title": "Netlas",
    "traffic": "passive"
   },
@@ -15924,8 +15896,9 @@
    "partial_recon_module": "port_scanning",
    "phase": "port_scan",
    "produces": [
-    "Service",
-    "Vulnerability"
+    "Technology",
+    "Vulnerability",
+    "CVE"
    ],
    "title": "Nmap",
    "traffic": "active"
@@ -15938,7 +15911,12 @@
    "partial_recon_module": "vulnerability_scanning",
    "phase": "vuln_scan",
    "produces": [
-    "Vulnerability"
+    "Vulnerability",
+    "Endpoint",
+    "Parameter",
+    "CVE",
+    "MitreData",
+    "Capec"
    ],
    "title": "Nuclei",
    "traffic": "active"
@@ -15951,8 +15929,8 @@
    "phase": "resource_enum",
    "produces": [
     "Endpoint",
-    "Parameter",
-    "BaseURL"
+    "BaseURL",
+    "Parameter"
    ],
    "title": "OpenAPI ingestion",
    "traffic": "active"
@@ -15965,7 +15943,8 @@
    "partial_recon_module": "origin_enrichment",
    "phase": "http_probe",
    "produces": [
-    "IP"
+    "IP",
+    "Vulnerability"
    ],
    "title": "Origin discovery",
    "traffic": "active"
@@ -15975,6 +15954,18 @@
    "form_section": "OsintEnrichmentSection",
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
+   "produces": [
+    "Subdomain",
+    "Port",
+    "Service",
+    "ExternalDomain",
+    "DNSRecord",
+    "ThreatPulse",
+    "Malware",
+    "Certificate",
+    "Vulnerability",
+    "CVE"
+   ],
    "title": "OSINT enrichment",
    "traffic": "passive"
   },
@@ -15986,10 +15977,6 @@
    "module": "recon.main_recon_modules.otx_enrich",
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
-   "produces": [
-    "ThreatPulse",
-    "Malware"
-   ],
    "title": "AlienVault OTX",
    "traffic": "passive"
   },
@@ -16000,7 +15987,10 @@
    "partial_recon_module": "parameter_discovery",
    "phase": "resource_enum",
    "produces": [
-    "Parameter"
+    "Endpoint",
+    "Parameter",
+    "BaseURL",
+    "ExternalDomain"
    ],
    "title": "ParamSpider",
    "traffic": "passive"
@@ -16048,10 +16038,6 @@
    "module": "recon.main_recon_modules.domain_recon",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
-   "produces": [
-    "Subdomain",
-    "IP"
-   ],
    "title": "puredns",
    "traffic": "active"
   },
@@ -16107,9 +16093,12 @@
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
    "produces": [
-    "IP",
     "Port",
     "Service",
+    "Subdomain",
+    "ExternalDomain",
+    "DNSRecord",
+    "Vulnerability",
     "CVE"
    ],
    "title": "Shodan",
@@ -16132,6 +16121,12 @@
    "form_section": "SubdomainDiscoverySection",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
+   "produces": [
+    "Subdomain",
+    "IP",
+    "DNSRecord",
+    "ExternalDomain"
+   ],
    "title": "Subdomain discovery",
    "traffic": "passive"
   },
@@ -16142,9 +16137,6 @@
    "module": "recon.main_recon_modules.domain_recon",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
-   "produces": [
-    "Subdomain"
-   ],
    "title": "subfinder",
    "traffic": "passive"
   },
@@ -16155,19 +16147,12 @@
    "module": "recon.main_recon_modules.subdomain_takeover",
    "partial_recon_module": "vulnerability_scanning",
    "phase": "vuln_scan",
-   "produces": [
-    "Vulnerability"
-   ],
    "title": "subjack",
    "traffic": "active"
   },
   "supply_chain": {
    "form_section": "SupplyChainScanSection",
    "phase": "standalone",
-   "produces": [
-    "Package",
-    "MalPackageFinding"
-   ],
    "title": "Supply chain scan",
    "traffic": "passive"
   },
@@ -16211,7 +16196,7 @@
    "phase": "http_probe",
    "produces": [
     "Certificate",
-    "Service"
+    "Subdomain"
    ],
    "title": "tlsx",
    "traffic": "active"
@@ -16219,11 +16204,6 @@
   "trufflehog": {
    "form_section": "TrufflehogSection",
    "phase": "standalone",
-   "produces": [
-    "MultiscannerScan",
-    "MultiscannerFinding",
-    "Secret"
-   ],
    "title": "TruffleHog",
    "traffic": "passive"
   },
@@ -16237,7 +16217,9 @@
    "phase": "domain_discovery",
    "produces": [
     "IP",
-    "Port"
+    "Subdomain",
+    "Port",
+    "Endpoint"
    ],
    "title": "uncover",
    "traffic": "passive"
@@ -16249,8 +16231,10 @@
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
    "produces": [
+    "Subdomain",
+    "ExternalDomain",
     "Endpoint",
-    "ExternalDomain"
+    "Parameter"
    ],
    "title": "urlscan.io",
    "traffic": "passive"
@@ -16263,8 +16247,9 @@
    "partial_recon_module": "vulnerability_scanning",
    "phase": "http_probe",
    "produces": [
-    "Subdomain",
-    "Certificate"
+    "Vulnerability",
+    "BaseURL",
+    "Subdomain"
    ],
    "title": "Vhost / SNI enumeration",
    "traffic": "active"
@@ -16277,10 +16262,6 @@
    "module": "recon.main_recon_modules.virustotal_enrich",
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
-   "produces": [
-    "Malware",
-    "ExternalDomain"
-   ],
    "title": "VirusTotal",
    "traffic": "passive"
   },
@@ -16296,9 +16277,6 @@
    "module": "recon.main_recon_modules.http_probe",
    "partial_recon_module": "http_probing",
    "phase": "http_probe",
-   "produces": [
-    "Technology"
-   ],
    "title": "Wappalyzer",
    "traffic": "active"
   },
@@ -16320,9 +16298,6 @@
    "module": "recon.main_recon_modules.domain_recon",
    "partial_recon_module": "subdomain_discovery",
    "phase": "domain_discovery",
-   "produces": [
-    "Domain"
-   ],
    "title": "WHOIS",
    "traffic": "passive"
   },
@@ -16335,7 +16310,9 @@
    "phase": "resource_enum",
    "produces": [
     "Endpoint",
-    "Parameter"
+    "Parameter",
+    "BaseURL",
+    "ExternalDomain"
    ],
    "title": "ZAP Ajax Spider",
    "traffic": "active"
@@ -16348,10 +16325,6 @@
    "module": "recon.main_recon_modules.zoomeye_enrich",
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
-   "produces": [
-    "IP",
-    "Port"
-   ],
    "title": "ZoomEye",
    "traffic": "passive"
   }

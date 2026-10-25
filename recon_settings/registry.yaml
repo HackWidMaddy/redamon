@@ -13,7 +13,6 @@ tools:
     phase: standalone
     traffic: active
     form_section: "AgentBehaviourSection"
-    produces: ["AttackChain", "ChainStep", "ChainFinding", "ChainDecision", "ChainFailure"]
   ai_surface_recon:
     title: "AI attack-surface recon"
     phase: http_probe
@@ -31,7 +30,6 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
-    produces: ["Subdomain"]
   arjun:
     title: "Arjun"
     phase: resource_enum
@@ -40,7 +38,6 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "parameter_discovery"
     form_section: "ArjunSection"
-    produces: ["Parameter"]
   auth_profile:
     title: "Authenticated session"
     phase: http_probe
@@ -55,7 +52,6 @@ tools:
     module: "recon.main_recon_modules.subdomain_takeover"
     partial_recon_module: "vulnerability_scanning"
     form_section: "TakeoverSection"
-    produces: ["Vulnerability"]
   banner_grab:
     title: "Banner grab"
     phase: port_scan
@@ -64,7 +60,6 @@ tools:
     module: "recon.main_recon_modules.port_scan"
     partial_recon_module: "port_scanning"
     form_section: "NaabuSection"
-    produces: ["Service"]
   capture_proxy:
     title: "Capture proxy"
     phase: standalone
@@ -81,7 +76,6 @@ tools:
     graph_writer: "update_graph_from_censys"
     partial_recon_module: "osint_enrichment"
     form_section: "OsintEnrichmentSection"
-    produces: ["IP", "Port", "Certificate"]
   criminalip:
     title: "CriminalIP"
     phase: domain_discovery
@@ -92,7 +86,6 @@ tools:
     graph_writer: "update_graph_from_criminalip"
     partial_recon_module: "osint_enrichment"
     form_section: "OsintEnrichmentSection"
-    produces: ["IP", "Port"]
   crtsh:
     title: "crt.sh"
     phase: domain_discovery
@@ -101,7 +94,6 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
-    produces: ["Subdomain", "Certificate"]
   cve_lookup:
     title: "CVE lookup"
     phase: vuln_scan
@@ -109,7 +101,6 @@ tools:
     enabled_key: "CVE_LOOKUP_ENABLED"
     partial_recon_module: "vulnerability_scanning"
     form_section: "CveLookupSection"
-    produces: ["CVE"]
   cypherfix:
     title: "CypherFix"
     phase: standalone
@@ -128,7 +119,6 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
-    produces: ["DNSRecord", "Subdomain", "IP"]
   domain_recon_ai:
     title: "Domain recon AI hints"
     phase: domain_discovery
@@ -152,7 +142,6 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "web_crawling"
     form_section: "FfufSection"
-    produces: ["Endpoint"]
   fireteam:
     title: "Fireteam"
     phase: standalone
@@ -168,7 +157,6 @@ tools:
     graph_writer: "update_graph_from_fofa"
     partial_recon_module: "osint_enrichment"
     form_section: "OsintEnrichmentSection"
-    produces: ["IP", "Port", "Technology"]
   gau:
     title: "gau"
     phase: resource_enum
@@ -178,13 +166,11 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "web_crawling"
     form_section: "GauSection"
-    produces: ["Endpoint", "Parameter"]
   github:
     title: "GitHub secret hunt"
     phase: standalone
     traffic: passive
     form_section: "GithubSection"
-    produces: ["GithubHunt", "GithubRepository", "GithubSecret", "GithubSensitiveFile", "GithubPath"]
   graphql:
     title: "GraphQL security"
     phase: vuln_scan
@@ -194,7 +180,6 @@ tools:
     isolated_fn: "run_graphql_scan_isolated"
     partial_recon_module: "graphql_scanning"
     form_section: "GraphqlScanSection"
-    produces: ["Endpoint", "Vulnerability"]
   graphql_cop:
     title: "GraphQL Cop"
     phase: vuln_scan
@@ -203,13 +188,11 @@ tools:
     image: "dolevf/graphql-cop:1.14"
     partial_recon_module: "graphql_scanning"
     form_section: "GraphqlScanSection"
-    produces: ["Vulnerability"]
   gvm:
     title: "GVM vulnerability scan"
     phase: standalone
     traffic: active
     form_section: "GvmScanSection"
-    produces: ["ExploitGvm", "Vulnerability"]
   hackertarget:
     title: "HackerTarget"
     phase: domain_discovery
@@ -218,7 +201,6 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
-    produces: ["Subdomain"]
   hakrawler:
     title: "hakrawler"
     phase: resource_enum
@@ -228,7 +210,6 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "web_crawling"
     form_section: "HakrawlerSection"
-    produces: ["Endpoint"]
   http_probe_ai:
     title: "HTTP probe AI hints"
     phase: http_probe
@@ -243,7 +224,6 @@ tools:
     module: "recon.main_recon_modules.http_probe"
     partial_recon_module: "http_probing"
     form_section: "HttpxSection"
-    produces: ["BaseURL", "Technology", "Header", "Certificate"]
   hydra:
     title: "Hydra"
     phase: standalone
@@ -257,7 +237,6 @@ tools:
     module: "recon.main_recon_modules.js_recon"
     partial_recon_module: "js_analysis"
     form_section: "JsReconSection"
-    produces: ["JsReconFinding", "Endpoint", "Secret"]
   jsluice:
     title: "jsluice"
     phase: js_recon
@@ -266,7 +245,6 @@ tools:
     module: "recon.main_recon_modules.js_recon"
     partial_recon_module: "web_crawling"
     form_section: "JsluiceSection"
-    produces: ["JsReconFinding", "Endpoint", "Secret"]
   katana:
     title: "Katana"
     phase: resource_enum
@@ -276,7 +254,6 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "web_crawling"
     form_section: "KatanaSection"
-    produces: ["Endpoint", "Parameter"]
   kiterunner:
     title: "Kiterunner"
     phase: resource_enum
@@ -285,7 +262,6 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "parameter_discovery"
     form_section: "KiterunnerSection"
-    produces: ["Endpoint"]
   knockpy:
     title: "knockpy"
     phase: domain_discovery
@@ -294,7 +270,6 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
-    produces: ["Subdomain"]
   masscan:
     title: "masscan"
     phase: port_scan
@@ -304,7 +279,6 @@ tools:
     isolated_fn: "run_masscan_scan_isolated"
     partial_recon_module: "port_scanning"
     form_section: "MasscanSection"
-    produces: ["Port", "Service"]
   mitre:
     title: "MITRE ATT&CK enrichment"
     phase: vuln_scan
@@ -313,7 +287,6 @@ tools:
     module: "recon.main_recon_modules.add_mitre"
     partial_recon_module: "vulnerability_scanning"
     form_section: "MitreSection"
-    produces: ["MitreData", "Capec"]
   naabu:
     title: "naabu"
     phase: port_scan
@@ -324,7 +297,6 @@ tools:
     isolated_fn: "run_port_scan_isolated"
     partial_recon_module: "port_scanning"
     form_section: "NaabuSection"
-    produces: ["Port"]
   netlas:
     title: "Netlas"
     phase: domain_discovery
@@ -335,7 +307,6 @@ tools:
     graph_writer: "update_graph_from_netlas"
     partial_recon_module: "osint_enrichment"
     form_section: "OsintEnrichmentSection"
-    produces: ["IP", "Port"]
   nmap:
     title: "Nmap"
     phase: port_scan
@@ -344,7 +315,6 @@ tools:
     module: "recon.main_recon_modules.nmap_scan"
     partial_recon_module: "port_scanning"
     form_section: "NmapSection"
-    produces: ["Service", "Vulnerability"]
   nuclei:
     title: "Nuclei"
     phase: vuln_scan
@@ -354,7 +324,6 @@ tools:
     module: "recon.main_recon_modules.vuln_scan"
     partial_recon_module: "vulnerability_scanning"
     form_section: "NucleiSection"
-    produces: ["Vulnerability"]
   origin_discovery:
     title: "Origin discovery"
     phase: http_probe
@@ -364,7 +333,6 @@ tools:
     isolated_fn: "run_origin_discovery_enrichment_isolated"
     partial_recon_module: "origin_enrichment"
     form_section: "OriginDiscoverySection"
-    produces: ["IP"]
   openapi_recon:
     title: "OpenAPI ingestion"
     phase: resource_enum
@@ -373,7 +341,6 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "openapi_recon"
     form_section: "OpenApiSection"
-    produces: ["Endpoint", "Parameter", "BaseURL"]
   osint_enrichment:
     title: "OSINT enrichment"
     phase: domain_discovery
@@ -391,7 +358,6 @@ tools:
     graph_writer: "update_graph_from_otx"
     partial_recon_module: "osint_enrichment"
     form_section: "OsintEnrichmentSection"
-    produces: ["ThreatPulse", "Malware"]
   paramspider:
     title: "ParamSpider"
     phase: resource_enum
@@ -400,7 +366,6 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "parameter_discovery"
     form_section: "ParamSpiderSection"
-    produces: ["Parameter"]
   path_traversal:
     title: "Path traversal"
     phase: standalone
@@ -440,7 +405,6 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
-    produces: ["Subdomain", "IP"]
   rce:
     title: "Remote code execution"
     phase: standalone
@@ -464,7 +428,6 @@ tools:
     enabled_key: "SECURITY_CHECK_ENABLED"
     partial_recon_module: "vulnerability_scanning"
     form_section: "SecurityChecksSection"
-    produces: ["Vulnerability"]
   serialized_scan:
     title: "Serialized object scan"
     phase: js_recon
@@ -475,7 +438,6 @@ tools:
     graph_writer: "update_graph_from_serialized_scan"
     partial_recon_module: "serialized_scanning"
     form_section: "SerializedScanSection"
-    produces: ["Vulnerability"]
   shodan:
     title: "Shodan"
     phase: domain_discovery
@@ -485,7 +447,6 @@ tools:
     isolated_fn: "run_shodan_enrichment_isolated"
     partial_recon_module: "osint_enrichment"
     form_section: "ShodanSection"
-    produces: ["IP", "Port", "Service", "CVE"]
   sqli:
     title: "SQL injection"
     phase: standalone
@@ -512,7 +473,6 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
-    produces: ["Subdomain"]
   subjack:
     title: "subjack"
     phase: vuln_scan
@@ -522,13 +482,11 @@ tools:
     isolated_fn: "run_subdomain_takeover_isolated"
     partial_recon_module: "vulnerability_scanning"
     form_section: "TakeoverSection"
-    produces: ["Vulnerability"]
   supply_chain:
     title: "Supply chain scan"
     phase: standalone
     traffic: passive
     form_section: "SupplyChainScanSection"
-    produces: ["Package", "MalPackageFinding"]
   supply_chain_recon:
     title: "Supply chain recon"
     phase: standalone
@@ -536,7 +494,6 @@ tools:
     enabled_key: "SUPPLY_CHAIN_RECON_ENABLED"
     partial_recon_module: "supply_chain"
     form_section: "SupplyChainReconSection"
-    produces: ["Package", "MalPackageFinding"]
   takeover:
     title: "Subdomain takeover"
     phase: vuln_scan
@@ -546,7 +503,6 @@ tools:
     isolated_fn: "run_subdomain_takeover_isolated"
     partial_recon_module: "vulnerability_scanning"
     form_section: "TakeoverSection"
-    produces: ["Vulnerability"]
   targeting:
     title: "Targeting and scope"
     phase: standalone
@@ -561,13 +517,11 @@ tools:
     module: "recon.main_recon_modules.tls_scan"
     partial_recon_module: "tlsx_scanning"
     form_section: "TlsxSection"
-    produces: ["Certificate", "Service"]
   trufflehog:
     title: "TruffleHog"
     phase: standalone
     traffic: passive
     form_section: "TrufflehogSection"
-    produces: ["MultiscannerScan", "MultiscannerFinding", "Secret"]
   uncover:
     title: "uncover"
     phase: domain_discovery
@@ -578,7 +532,6 @@ tools:
     isolated_fn: "run_uncover_expansion_isolated"
     partial_recon_module: "osint_enrichment"
     form_section: "OsintEnrichmentSection"
-    produces: ["IP", "Port"]
   urlscan:
     title: "urlscan.io"
     phase: domain_discovery
@@ -587,7 +540,6 @@ tools:
     module: "recon.main_recon_modules.urlscan_enrich"
     partial_recon_module: "osint_enrichment"
     form_section: "UrlscanSection"
-    produces: ["Endpoint", "ExternalDomain"]
   vhost_sni:
     title: "Vhost / SNI enumeration"
     phase: http_probe
@@ -597,7 +549,6 @@ tools:
     isolated_fn: "run_vhost_sni_enrichment_isolated"
     partial_recon_module: "vulnerability_scanning"
     form_section: "VhostSniSection"
-    produces: ["Subdomain", "Certificate"]
   virustotal:
     title: "VirusTotal"
     phase: domain_discovery
@@ -608,7 +559,6 @@ tools:
     graph_writer: "update_graph_from_virustotal"
     partial_recon_module: "osint_enrichment"
     form_section: "OsintEnrichmentSection"
-    produces: ["Malware", "ExternalDomain"]
   waf:
     title: "WAF detection"
     phase: http_probe
@@ -622,7 +572,6 @@ tools:
     module: "recon.main_recon_modules.http_probe"
     partial_recon_module: "http_probing"
     form_section: "HttpxSection"
-    produces: ["Technology"]
   web_cache_poison:
     title: "Web cache poisoning"
     phase: standalone
@@ -631,7 +580,6 @@ tools:
     image: "redamon-wcvs:latest"
     partial_recon_module: "cache_scanning"
     form_section: "WebCachePoisonSection"
-    produces: ["Vulnerability"]
   whois:
     title: "WHOIS"
     phase: domain_discovery
@@ -640,7 +588,6 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
-    produces: ["Domain"]
   zap:
     title: "ZAP Ajax Spider"
     phase: resource_enum
@@ -650,7 +597,6 @@ tools:
     module: "recon.main_recon_modules.resource_enum"
     partial_recon_module: "web_crawling"
     form_section: "ZapAjaxSpiderSection"
-    produces: ["Endpoint", "Parameter"]
   zoomeye:
     title: "ZoomEye"
     phase: domain_discovery
@@ -661,7 +607,6 @@ tools:
     graph_writer: "update_graph_from_zoomeye"
     partial_recon_module: "osint_enrichment"
     form_section: "OsintEnrichmentSection"
-    produces: ["IP", "Port"]
 
 fields:
   openapiEnabled:
