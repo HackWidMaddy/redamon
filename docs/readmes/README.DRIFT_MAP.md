@@ -10,10 +10,11 @@ that will (or will not) catch you, and the command that refreshes it.
 > **Last audit: 2026-10-25. Last re-map: 2026-10-25. Last fix pass: 2026-10-25.**
 > Branch `fix_multiple_recon_bugs_23_oct`. The audit ran six parallel read-only
 > audits, one per area, and every claim was re-verified against the source. The
-> fix pass the same day fixed items #1-#64 (except the decisions still listed in
-> section 2), added the guards of section 6 that are now in section 3, and
-> recorded the staleness it found as #65-#86 (numbers are never reused). `git log --grep 'drift-map #N'` finds the
-> commit that fixed item N.
+> fix pass the same day fixed items #1-#64, then the staleness it found on the
+> way (#65-#86; the numbers in that range that were not staleness left the page),
+> and the guards it added moved from section 6 to section 3. Section 2 is empty.
+> Numbers are never reused: the next audit starts at #89.
+> `git log --grep 'drift-map #N'` finds the commit that fixed item N.
 
 ## Contents
 
@@ -69,8 +70,8 @@ that will (or will not) catch you, and the command that refreshes it.
 > There is **no CI** (`.github/` holds only issue and PR templates) and the
 > pre-commit hook is advisory only. Every guard below fires only when someone
 > runs `./redamon.sh test unit` (or the webapp suite). "Guarded" means "caught at
-> the next gate run", not "cannot be merged". Section 2.2 lists guards that look
-> like guards and are not.
+> the next gate run", not "cannot be merged". A guard that looks like one and
+> is not goes in section 2.2.
 
 ### How this page is kept current
 
@@ -84,7 +85,7 @@ maintainer's prompt library, outside this repository.
 | **Re-map** | monthly, after a structural refactor, or when audits keep finding drift outside this page | Six read-only agents, one per discovery lens (declared mirrors, enumerations next to a source, build plumbing, external data and pins, prose, stored data), sweep the whole repository from `git log --since=<last re-map>`. | every section of this page: new and obsolete section-4 rows, new patterns, a re-ranked section 6, the "last re-map" date |
 
 Run them locally in the main checkout, never as a cloud routine: a fresh clone
-has an empty `redamon.wiki` (it is a gitlink with no `.gitmodules`), no Docker
+has an empty `redamon.wiki` (a submodule a plain clone leaves empty), no Docker
 gate and no site project, so most doc checks would skip. Every guard from
 section 6 that becomes a real test moves a check out of the audit into the gate.
 
@@ -98,17 +99,7 @@ reasoned from the code and not reproduced.
 
 ### 2.1 Behaviour: wrong results at runtime
 
-| # | What | Evidence | Effect |
-|---|---|---|---|
-| 65 | **The memory-governor knobs stop at the orchestrator** | `REDAMON_MEM_GOVERNOR`, `MEM_SCALE_HIGH`/`LOW`/`FLOOR`, `MEM_READ_TTL_S` and `MEM_BUDGET_FRACTION` reach `recon-orchestrator` through compose, but the recon container it spawns gets none of them (the `environment=` of `start_recon` in `recon_orchestrator/container_manager.py`), and that is where the ratio model runs (`rg.scaled`, `recon/project_settings.py:2299`). `pressure()` has no runtime caller. | Setting them changes nothing for recon's parallelism. Found while fixing the old #23. |
-| 67 | **The classifier still sends gadget chains to `rce`** | `agentic/prompts/classification.py:100,130,227` route deserialization gadget chains to `rce`; the same file's `deserialization` section says a named sink, format or gadget tool means `deserialization`. The old #15 fixed only the unclassified table. | A deserialization request can be classified `rce` (inferred). |
-| 68 | **Recon progress has two totals** | `ReconState.total_phases = 6` (`recon_orchestrator/models.py:71`, matching `PHASE_PATTERNS` numbered 1-6 with a 4.5); the webapp recon status fallback and the drawer default say 7. | The total shown depends on which side answers. Verify intent. |
-| 70 | **`execute_masscan` is reserved on neither side** | `mcp/servers/network_recon_server.py` exposes it and `SYSTEM_MCP_TOOL_NAMES` (`agentic/tools.py`) lists it, but it is not in `TOOL_REGISTRY`, so neither `mcp_registry._builtin_tool_names()` nor `BUILTIN_RESERVED_TOOL_NAMES` reserves it. | A user MCP server can declare a tool named like a live system tool. Needs a decision: reserve it, or retire it from the server. |
-| 71 | **`cache_purge_exposed` has no network-initial-access category** | An IP-level finding type `recon/helpers/security_checks.py` emits that `NET_VULN_TYPES` (`webapp/src/app/api/analytics/redzone/netInitAccess/route.ts`) does not list; allowlisted in `recon/tests/test_net_init_access_parity.py`. | Absent from the Red Zone table. Needs a decision. |
-| 77 | **The agent is told to run CLIs the Kali image lacks** | Read against `mcp/kali-sandbox/Dockerfile` and checked with `command -v` in the built image. The `kali_shell` description (`agentic/prompts/tool_registry.py`) names `ngrok` (its install ends in `\|\| echo WARNING`, so a failed download is swallowed) and `/usr/share/hashcat/rules/best64.rule` (hashcat 7 ships `best66.rule`; `best64` is only under `/usr/share/john/rules/`). Skill prompts name `gopherus` (`rce_prompts.py:446,449`), bare `ntlmrelayx` (`ad_cs_esc.md`; only `impacket-ntlmrelayx` exists), `aws`, `gh`, `heroku`, `fastly`, `certbot` (`subdomain_takeover.md`, `information_disclosure.md`), `mysql`, `redis-cli`, `mongosh` (`brute_force_credential_guess_prompts.py:271-276`), `ldapsearch`, `nmap-parse-output`, `http`, `xxd`, `whois`, `showmount`. `certipy-ad` exists only because an apt dependency of netexec ships it. | The agent spends turns on "command not found". |
-| 78 | **The triage tier boundary differs between Python and the UI** | A tier's score at risk 1.0 equals the next tier's minimum (T2 at 1.0 scores 75, T1 at 0 scores 75); `tierForScore` (`webapp/src/app/graph/components/Triage/triageLayers.ts`) names the higher tier there, `score_model.py` the lower. Allowlisted in `triageScore.vectors.json`. | A row with no stored tier shows the next tier up at T2, T3 and T4 boundary scores. |
-| 80 | **Two broker images nothing runs through the broker** | `sxcurity/gau:arm64` is named nowhere else; `redamon-supply-chain:latest` is started by the orchestrator on the real socket. Allowlisted in `services/docker_broker/test_image_parity.py`. | A wider broker allowlist than recon needs. |
-| 81 | **A triage prompt module looks dead** | `TRIAGE_QUERIES` and `SCORING_QUERIES` in `agentic/cypherfix_triage/prompts/cypher_queries.py` are imported only by `agentic/tests/test_triage_security_hardening.py`; the file holds a prose copy of the finding-label set no guard reads. | A stale copy that looks authoritative. |
+None open.
 
 ### 2.2 Guards that do not guard
 
@@ -116,25 +107,15 @@ None open.
 
 ### 2.3 Agent-facing and developer text (produces wrong code)
 
-| # | What | Evidence |
-|---|---|---|
-| 85 | **CONTRIBUTING promises a README Wall of Fame** | `README.md` has had no Wall of Fame since `1d5b3863`, but `CONTRIBUTING.md` still promises it in four places (`:407` calls it "the living leaderboard"), and its Step 5 says the first merged PR earns Scout while the rank table needs five. The dead links were removed; the promise needs the maintainer's decision. |
-| 86 | **Subsystem docs whose function sections are stale** | `README.PORT_SCAN.md`, `README.VULN_SCAN.md` and `README.HTTP_PROBE.md` cite the right modules now, but their function-by-function sections still describe old code; `README.KBASE.md`'s step table cites `tools.py` line numbers that moved. |
+None open.
 
 ### 2.4 Counts and links in docs
 
-| # | What | Evidence |
-|---|---|---|
-| 58 | **The wiki sidebar omits one page** | `redamon.wiki/_Sidebar.md` lists every top-level page but the generated `Project-Settings-Registry`. Maybe intended (Home links it); needs a decision. |
-| 82 | **Three RAM minimums** | `README.md:146` says 4 GB without OpenVAS, `redamon.wiki/Deploying-to-a-Server.md` calls 8 GB a hard floor, and `preflight_ram_gate` (`redamon.sh`) checks a profile-aware `allocate_memory` budget, so neither flat number is what the code enforces. |
-| 83 | **An empty link** | `redamon.wiki/CVE-Intel.md:276` `[README.md -> Rollout](#)`; the docs test skips an empty anchor. |
-| 84 | **"Five tabs" in Red-Zone** | `redamon.wiki/Red-Zone.md:134` says five tabs; the view also has Recon Delta, Scans, Priority Board and Mute Rules. |
+None open.
 
 ### 2.5 Dead or diverging data
 
-| # | What | Evidence |
-|---|---|---|
-| 63 | **Registry `produces` metadata nobody reads is wrong** | `tools.*.produces` in `recon_settings/registry.yaml` disagrees with `SECTION_NODE_MAP` (`nodeMapping.ts:39`) on 24 of 32 tools; the two are keyed differently (registry tool vs partial-recon section). Dormant until something reads it. Needs a decision: delete the field or derive it. (`partial_recon_module`, the other half, was fixed in wave 1.) |
+None open.
 
 ---
 
@@ -144,7 +125,7 @@ None open.
 
 | Source | Command | Outputs | Gate check |
 |---|---|---|---|
-| `recon_settings/registry.yaml` (+ Prisma join) | `python3 recon_settings/build.py` | `recon_settings/registry.json`, `webapp/src/lib/reconSettings/registry.json` (byte-identical), `webapp/src/lib/reconSettings/registryDigest.generated.ts`, `recon_settings/roe_parse_prompt.py` | GEN: `tests/test_registry_build_check.py` runs `build.py --check`; the gate also compares the two JSON copies, the prompt against the JSON, and the JSON against Prisma |
+| `recon_settings/registry.yaml` (+ Prisma join; each tool's `produces` from `SECTION_NODE_MAP` in `nodeMapping.ts`) | `python3 recon_settings/build.py` | `recon_settings/registry.json`, `webapp/src/lib/reconSettings/registry.json` (byte-identical), `webapp/src/lib/reconSettings/registryDigest.generated.ts`, `recon_settings/roe_parse_prompt.py` | GEN: `tests/test_registry_build_check.py` runs `build.py --check`; the gate also compares the two JSON copies, the prompt against the JSON, and the JSON against Prisma |
 | `registry.json` | `cd webapp && npm run docs:settings` | `redamon.wiki/Project-Settings-Registry.md` | `settingsReference.test.ts` byte-compare, **only when the wiki checkout is present** |
 | Prisma columns with no registry entry | `python3 tooling/scripts/extract_recon_registry.py` | draft entries in `registry.yaml` (top-up, never overwrites) | `registry.prisma.test.ts` fails on a column with no entry |
 | `graph_db/node_filters/catalog.yaml` | `python3 graph_db/node_filters/build.py` | `graph_db/node_filters/catalog.json`, `webapp/src/lib/nodeFilters/catalog.json`, and the 31 `fixtures/*.json` mirrored into `webapp/src/lib/nodeFilters/fixtures/` | GEN: `build.py --check` via `tests/test_node_filters_engine.py:63-66`; also fails on a setting the registry lacks or a form tab `ProjectForm.tsx` lacks |
@@ -186,14 +167,14 @@ ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 | one RoE + recon-budget gate (`roe_gate.check_tool_call`) asked by the single-tool node, the plan wave and every fireteam member; every `CATEGORY_TOOL_MAP` and discovery-list name is a `TOOL_REGISTRY` key | `agentic/tests/test_roe_gate.py` |
 | the fireteam mutex validator rejects any two members sharing a `TOOL_MUTEX_GROUPS` tool; every group tool is a registry key | `agentic/tests/test_fireteam_mutex_groups.py` |
 | the unclassified routing table names every `KNOWN_ATTACK_PATHS` id once | `agentic/tests/test_unclassified_routing_table.py` |
-| `BUILTIN_RESERVED_TOOL_NAMES` (TS) == `mcp_registry._builtin_tool_names()`, both ways | `agentic/tests/test_reserved_tool_names_parity.py` |
+| `BUILTIN_RESERVED_TOOL_NAMES` (TS) == `mcp_registry._builtin_tool_names()` (registry keys, `tradecraft_lookup` and `SYSTEM_MCP_TOOL_NAMES`), both ways | `agentic/tests/test_reserved_tool_names_parity.py` |
 | server tools -> `SYSTEM_MCP_TOOL_NAMES` (one direction: a stale allowlist name passes) | `agentic/tests/test_system_mcp_tool_coverage.py` |
 | fs_ tools <-> registry both ways; job_ tools one way plus a count lock of 29 | `agentic/tests/test_tool_registry_completeness.py` |
 | every timeout in `mcp/servers/*_server.py` has a larger `TOOL_DEADLINES_S` entry | `agentic/tests/test_tool_deadline.py` |
 | skill-part ids == `KNOWN_ATTACK_PATHS`; `skill_parts.py` <-> drawer `phaseConfig` | `agentic/tests/test_skill_parts_registry.py`, `webapp/src/lib/plugins/skillDisplayName.test.ts` |
 | `ExploitTree.to_view()` <-> its `websocket-types.ts` shape, both ways | `agentic/tests/test_lats_view_contract.py` |
 | WebSocket `MessageType` values equal on both sides; each handled or ignored with a reason | `webapp/src/lib/websocket-types.parity.test.ts` |
-| phase lists: the TS GVM, GitHub-hunt and TruffleHog lists <-> `*_PHASE_PATTERNS`; each `*State.total_phases` == the last phase number | `webapp/src/lib/recon-types.phases.test.ts`, `recon_orchestrator/tests/test_phase_totals.py` |
+| phase lists: the TS GVM, GitHub-hunt and TruffleHog lists <-> `*_PHASE_PATTERNS`; each `*State.total_phases` and the webapp's `RECON_TOTAL_PHASES` == the last phase number | `webapp/src/lib/recon-types.phases.test.ts`, `recon_orchestrator/tests/test_phase_totals.py` |
 | triage proof Cypher <-> `score_model.is_proven`; GuardDog field names agent -> webapp -> orchestrator; Jev items | `tests/test_fix_triage_proof_mirror.py`, `tests/test_guarddog_contract.py`, `agentic/tests/test_jev_item_contract.py` |
 | MCP onboarding pack covers every advertised tool | `webapp/src/lib/mcp/onboarding.test.ts` |
 | agent-facing strings name only live MCP tools | `webapp/src/lib/mcp/toolNameDrift.test.ts` |
@@ -218,11 +199,15 @@ ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 | GVM data containers count | `tests/redamon_gvm_compose_test.sh:216-217` |
 | fireteam timeout UI fallbacks == `FIRETEAM_TIMEOUT_SEC` | `webapp/src/components/projects/ProjectForm/sections/AgentBehaviourSection.test.tsx` |
 | the preset-generation no-temperature rules (TS) == `llm_setup.py`'s | `webapp/src/lib/llmTemperature.test.ts` |
-| the triage score and tiers, Python and TS, answer one vector file | `webapp/src/app/graph/components/Triage/triageScore.vectors.json` (`triageLayers.parity.test.ts`, `agentic/tests/test_triage_score_vectors.py`) |
+| the triage score and tiers, Python and TS, answer one vector file; a score-only fallback at a tier boundary is an accepted, listed difference | `webapp/src/app/graph/components/Triage/triageScore.vectors.json` (`triageLayers.parity.test.ts`, `agentic/tests/test_triage_score_vectors.py`) |
 | every preset decides each default-on active toggle, and passive or stealth presets run none (allowlist with reasons) | `webapp/src/lib/recon-presets/traffic-decisions.test.ts` |
 | every webapp route Python calls with the internal or scanner key matches the middleware allowlists, computed from the callers | `webapp/src/middleware.internalCallers.test.ts` |
 | one version per pinned tool (TruffleHog, osv-scanner, guarddog, retire.js) across Dockerfiles, prose, the licence file and fixtures | `tests/test_tool_version_pins.py` |
-| wiki links, anchors, images and doc counts | `tests/test_docs_not_stale.py` (P21; `tests/fixtures/docs_drift_*.json` are empty after wave 3) |
+| wiki links, anchors, images and doc counts; an empty `(#)` link fails | `tests/test_docs_not_stale.py` (P21; `tests/fixtures/docs_drift_*.json` are empty after wave 3) |
+| the `README.md` version badge names the release in `VERSION` | `tests/test_readme_version_badge.py` |
+| no `SKILL.md` or `AGENTS.md` links a `file#L<n>` line number | `tests/test_ruleset_line_anchors.py` |
+| every memory-governor knob compose hands the orchestrator reaches both recon spawn sites, and every knob the governor reads is forwarded | `recon_orchestrator/tests/test_governor_env_forwarding.py` |
+| every graph label is produced by a tool (from `SECTION_NODE_MAP`) or named with its writer in `WRITTEN_OUTSIDE_A_SECTION` | `tests/test_registry_tool_wiring.py` |
 | `testing/guinea_pigs/README.md` lists every tracked lab, and only those | `tests/test_guinea_pigs_index.py` |
 | `redamon.wiki` is a declared submodule; an empty checkout fails the wiki tests unless allowed | `tests/test_wiki_submodule.py`, `tooling/scripts/wiki_checkout.py`, `webapp/src/lib/wikiCheckout.testUtils.ts` |
 | the pre-commit hook blocks a commit that leaves a generated artifact stale | `tests/pre_commit_hook_test.sh` |
@@ -280,10 +265,10 @@ overlay) plus tools injected from MCP manifests at runtime.
 | Recon-budget discovery tools | `RECON_DISCOVERY_TOOLS` (`roe_gate.py`), a hand list: no registry field marks a discovery tool | PART (`test_roe_gate.py`: every name is a registry key) | A new discovery tool left out is not budgeted |
 | Dangerous tools (confirmation gate) | `DANGEROUS_TOOLS` `agentic/project_settings.py:42` | PART (`test_tool_confirmation.py:181-194` pins the 19 by equality) | A new traffic-emitting tool left out runs **without confirmation** |
 | Fireteam mutex groups | `TOOL_MUTEX_GROUPS` (`agentic/project_settings.py:61`), read by `_validate_mutex_groups` (`fireteam_deploy_node.py`) | TEST (`agentic/tests/test_fireteam_mutex_groups.py`) | `state.py:568` is the LLM-filled `tools` field the check reads, not a stored list |
-| Reserved names for user MCP tools (TS) | `BUILTIN_RESERVED_TOOL_NAMES` `webapp/src/lib/mcp/schema.ts:18` | TEST (`agentic/tests/test_reserved_tool_names_parity.py`, both ways) | `execute_masscan` is reserved on neither side (#70) |
+| Reserved names for user MCP tools (TS) | `BUILTIN_RESERVED_TOOL_NAMES` `webapp/src/lib/mcp/schema.ts:18` | TEST (`agentic/tests/test_reserved_tool_names_parity.py`, both ways) | A new system MCP tool must be added to the TS list too; the parity test fails until it is |
 | System server ids and ports, 5 copies | `SYSTEM_SERVER_IDS` (`agentic/mcp_registry.py:33`, `webapp/src/lib/mcp/schema.ts`), `_build_system_mcp_servers` (`agentic/tools.py:266`), `SERVERS` (`mcp/servers/run_servers.py:56`), the smoke-test module list (`mcp/kali-sandbox/Dockerfile:542`) | NONE | Agree today (5) |
 | Names the Kali MCP servers expose | `SYSTEM_MCP_TOOL_NAMES` `agentic/tools.py:341` | PART (one direction) | Its comment records the failure: `execute_osv_scanner` was missing, so every call returned "Tool not found". Matches the 23 server tools today |
-| CLIs the agent is told exist in Kali | the `kali_shell` description, skill prompts, `mcp/servers/proxy_brain_manual.md` | NONE (the Kali build smoke-tests only MCP imports and HTTP/2); a one-off report is #77 | The agent runs a command that is not installed; a Kali rolling update can drop a package |
+| CLIs the agent is told exist in Kali | the `kali_shell` description, skill prompts, `mcp/servers/proxy_brain_manual.md` | NONE (the Kali build smoke-tests only MCP imports and HTTP/2); every name was checked against the built image on 2026-10-25 | The agent runs a command that is not installed; a Kali rolling update can drop a package |
 | Capture-routed HTTP tools | `_CAPTURE_ROUTED_TOOLS` `agentic/tools.py:123` | PART (per-tool integration tests) | Equals the 8 server tools that take `_redamon_ctx` today; a new HTTP tool left out bypasses the capture proxy |
 | Per-tool deadlines | `TOOL_DEADLINES_S` `agentic/tools.py:2096` | PART (`test_tool_deadline.py:89` parses the servers' timeouts) | An unknown tool gets `TOOL_DEADLINE_DEFAULT_S = 1860` s, so a lost answer waits 31 minutes |
 | Output offload policy | `OFFLOAD_POLICY` `agentic/tool_offload_policy.py:15` | NONE | An unlisted tool gets `"auto"`, which still offloads anything over 20,000 chars: low risk |
@@ -316,7 +301,7 @@ names all 14, and the Prisma default's values equal Python's
 | UI toggle + badge | `AttackSkillsSection.tsx`, `AIAssistantDrawer/phaseConfig.ts` | PART |
 | Drawer tooltip | `BUILT_IN_SKILLS` in `webapp/src/app/api/users/[id]/attack-skills/available/route.ts` | PART |
 | Example prompts | `AIAssistantDrawer/suggestionData.ts` (7 skills have their own group id) | PART |
-| Unclassified routing table | `agentic/prompts/unclassified_prompts.py:25-34` | TEST (`agentic/tests/test_unclassified_routing_table.py`); the classifier text is #67 |
+| Unclassified routing table | `agentic/prompts/unclassified_prompts.py:25-34` | TEST (`agentic/tests/test_unclassified_routing_table.py`); the classifier text in `classification.py` is prose |
 | Plugin-overridable parts | `agentic/prompts/skill_parts.py` `_SPECS`; the webapp fetches them at runtime from `GET /plugins/skill-parts` (`skillPartsRegistry.ts`, not a copy) | TEST (`test_skill_parts_registry.py:131-132`, `skillDisplayName.test.ts`) |
 | Golden prompt hashes | `agentic/tests/fixtures/skill_workflow_golden.json` | GEN-like: fails until re-recorded with `record_skill_golden.py` |
 | Wiki | `redamon.wiki/Agent-Skills.md` and per-skill pages | links and anchors: TEST (`tests/test_docs_not_stale.py` P21) |
@@ -473,17 +458,17 @@ model reads.
 |---|---|---|---|
 | Partial-recon tool ids (32) | dispatch `recon/partial_recon.py:389-452`; `SECTION_INPUT_MAP` (`nodeMapping.ts`, + 4 non-partial keys); `TOOL_QUERIES` (graph-inputs `route.ts:188`); `PARTIAL_RECON_SUPPORTED_TOOLS` and `PARTIAL_RECON_PHASE_MAP` (`recon-types.ts:239-274`); `workflowDefinition.ts`; `PartialReconModal.tsx` | PART (per-tool wiring tests) | All 32 agree today |
 | Graph-input queries | `TOOL_QUERIES` in the graph-inputs route (the live implementation since the Python one moved here) | TEST (`recon/tests/test_graph_writes_documented.py` reads webapp Cypher) | |
-| Phase strings | `GVM_PHASES`, `GITHUB_HUNT_PHASES`, `TRUFFLEHOG_PHASES` (`recon-types.ts`); `*_PHASE_PATTERNS` (`container_manager.py`); `*State.total_phases` (`models.py`) | TEST (`recon-types.phases.test.ts`, `test_phase_totals.py`) | The recon total is 6 on one side and 7 on the other (#68) |
+| Phase strings | `GVM_PHASES`, `GITHUB_HUNT_PHASES`, `TRUFFLEHOG_PHASES` (`recon-types.ts`); `*_PHASE_PATTERNS` (`container_manager.py`); `*State.total_phases` (`models.py`) | TEST (`recon-types.phases.test.ts`, `test_phase_totals.py`) | Agree today: recon has 6 (`RECON_TOTAL_PHASES` in `recon-types.ts`) |
 | Execution groups and their order | `recon/main.py` (GROUP 1..6) | `recon/tests` per group | Docs (`Recon-Pipeline-Workflow.md`, `Running-Reconnaissance.md`, `README.RECON.md`) describe the old order; a renamed heading breaks wiki anchors until the gate's docs test runs |
 | Per-tool explanations in the UI | `WorkflowView/inputLogicTooltips.tsx`, `PartialReconModal.tsx`; `workflowDefinition.ts` traffic badges (5 differ from the registry, 3 of them "both", which the registry cannot express) | NONE | Hand prose on dedup keys, sources, limits |
-| Tool image lists, 5 copies | `*_DOCKER_IMAGE` defaults (`recon/project_settings.py`), `IMAGES` (`recon/entrypoint.sh`), `_DEFAULT_ALLOWED_IMAGES` (broker), `SUB_CONTAINER_IMAGES` (`container_manager.py`), `remove_redamon_images` (reads `IMAGES`); plus `settings.get(...)` fallbacks in modules | TEST (`test_image_parity.py` both ways, `test_sub_container_images.py`, `redamon_runtime_images_test.sh`) | Two broker images have no broker caller (#80) |
-| Red Zone "network initial access" | `PORT_CATEGORY`, `NET_VULN_TYPES` (`netInitAccess/route.ts`) vs `security_checks.py` | TEST (`recon/tests/test_net_init_access_parity.py`) | `cache_purge_exposed` has no category (#71) |
+| Tool image lists, 5 copies | `*_DOCKER_IMAGE` defaults (`recon/project_settings.py`), `IMAGES` (`recon/entrypoint.sh`), `_DEFAULT_ALLOWED_IMAGES` (broker), `SUB_CONTAINER_IMAGES` (`container_manager.py`), `remove_redamon_images` (reads `IMAGES`); plus `settings.get(...)` fallbacks in modules | TEST (`test_image_parity.py` both ways, `test_sub_container_images.py`, `redamon_runtime_images_test.sh`) | Agree today; every broker image beyond recon's names its caller (`BROKER_IMAGES_BEYOND_RECON`) |
+| Red Zone "network initial access" | `PORT_CATEGORY`, `NET_VULN_TYPES` (`netInitAccess/route.ts`) vs `security_checks.py` | TEST (`recon/tests/test_net_init_access_parity.py`) | `cache_purge_exposed` is excluded on purpose (a cache-DoS finding, not an access vector) |
 | Every Red Zone / Insights query | `webapp/src/app/api/analytics/**/route.ts` | PART (route tests with mocked results; `insightsDeclared.test.ts` covers one predicate) | Hard-coded labels, properties and `type` strings |
 | AI hook catalogues | `recon/helpers/ai_signal_catalog.py`, port-scan / JS-SDK / AI-surface catalogues | TEST (`test_ai_*_catalog*.py`) | |
 | Jev extension catalogue vs recon `EXT_REGEX` | `recon/helpers/ai_planner/ffuf_extensions.py` | TEST (`test_jev_catalog_contract.py`) | |
 | Partial-recon setting overrides | `ALLOWED_SETTINGS_OVERRIDES` `recon/partial_recon.py` <-> `recon_orchestrator/batch_scope.py:54`; `PARTIAL_RECON_OVERRIDE_KEYS` in `recon-types.ts` | TEST (`test_partial_recon_multi_root.py:490`, `test_partial_recon_roots.py:166`) | |
 | Partial-run CIDR bounds (`/24-/32`, `/120-/128`); batch ceiling 50 | `PartialReconModal.tsx:269,274` <-> `batch_scope.py:305`; `MAX_REQUESTED_ROOTS` (`batch_scope.py:61`) <-> `MAX_BATCH_GROUPS` (`webapp/src/lib/domainBatch.ts:41`) | NONE | Agree today |
-| Registry tool metadata | `tools.*.partial_recon_module`, `tools.*.produces` in `registry.yaml` | `partial_recon_module`: TEST (`test_registry_partial_recon_module.py`); `produces`: NONE | `produces` is wrong and unread (#63) |
+| Registry tool metadata | `tools.*.partial_recon_module` in `registry.yaml`; `produces` derived by `build.py` from `SECTION_NODE_MAP` (`SECTION_ALIASES` maps the five section names that differ) | `partial_recon_module`: TEST (`test_registry_partial_recon_module.py`); `produces`: GEN (`build.py` refuses a hand-written one) | A tool with no partial-recon section has no `produces` |
 
 ### 4.7 Graph schema
 
@@ -499,7 +484,7 @@ relationships) and `graph_db/schema_keys.py` (uniqueness keys, 45 labels).
 | Relationships read by Python code | all `*.py` | TEST (`test_graph_writes_documented.py`, every member of `A\|B`) | |
 | Relationships read by **webapp** Cypher | `webapp/src/**/*.ts(x)` | TEST (the same test; the legacy `HAS_BASEURL` alias is allowlisted) | |
 | Legacy alias reads | `HAS_BASE_URL\|HAS_BASEURL` in `agentic/cypherfix_triage/fact_queries.py:54,226`, `recon/partial_recon_modules/origin_enrichment.py:53,55`, the graph-inputs route `:315,334,365`, `clusterNodes.ts:44`, and the agent's prompt Cypher `agentic/prompts/base.py:2045` (teaches the old spelling) | intentional until `tooling/scripts/triage_graph_migrate.py` has run everywhere | |
-| **The finding-label set (8 labels)** | `MUTEABLE_LABELS` (`graph_db/mixins/recon/triage_mixin.py:47`, the source), `graph_db/node_filters/catalog.py`, `FINDING_LABELS` (`base_mixin.py`), `_FINDING_LABELS` (`agentic/api.py`), `_CONFIRMABLE_LABELS` (`chain_graph_writer.py`), `fact_queries.py`, `FINDING_LABELS` (`webapp/src/lib/triage/actions.ts`), `MUTEABLE_FINDING_LABELS` (`webapp/src/lib/mcp/findingLabels.ts`), `reportData.ts`, prompt prose (`cypherfix_triage/prompts/cypher_queries.py`, #81), and test/tooling copies | TEST (`tests/test_finding_labels_mirrors.py`, 11 copies, plus the three older Python tests) | A new finding label must be added everywhere or it cannot be muted, triaged, confirmed or counted |
+| **The finding-label set (8 labels)** | `MUTEABLE_LABELS` (`graph_db/mixins/recon/triage_mixin.py:47`, the source), `graph_db/node_filters/catalog.py`, `FINDING_LABELS` (`base_mixin.py`), `_FINDING_LABELS` (`agentic/api.py`), `_CONFIRMABLE_LABELS` (`chain_graph_writer.py`), `fact_queries.py`, `FINDING_LABELS` (`webapp/src/lib/triage/actions.ts`), `MUTEABLE_FINDING_LABELS` (`webapp/src/lib/mcp/findingLabels.ts`), `reportData.ts`, and test/tooling copies | TEST (`tests/test_finding_labels_mirrors.py`, 11 copies, plus the three older Python tests) | A new finding label must be added everywhere or it cannot be muted, triaged, confirmed or counted |
 | Global reference labels (5 copies) | `GLOBAL_REFERENCE_LABELS` (`graph_db/tenant_filter.py:236`), read by `graph_db/schema.py`; `GLOBAL_LABELS` (`webapp/src/app/api/graph-views/execute/injectProjectFilter.ts`), `graphRestore.ts`, `webapp/src/lib/mcp/graphGuard.ts` | TEST (`tests/test_reference_labels_mirrors.py`) | Exempting a per-tenant label is a cross-tenant read; the test also fails an exempt label with a per-project key |
 | Saved-view function namespaces (8) | `tenant_filter.py:108` <-> `injectProjectFilter.ts:189` | PART (mirrored cases) | |
 | Node colours / sizes | `NODE_COLORS` (`webapp/src/app/graph/config/colors.ts`), `NODE_SIZES` (`sizes.ts`, 30 keys; 16 keyed labels use `Default`) | NONE | New labels render grey and default-sized |
@@ -570,7 +555,7 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | Supply-chain three-layer gate | `agentic/supply_chain_tools.py:43` + webapp + orchestrator | PART |
 | TruffleHog sources / registry / digest / result filenames | `scanners/trufflehog_scan/sources.py` <-> `webapp/src/lib/trufflehogSources.ts`; `recon_orchestrator/trufflehog_registry.py`; filenames in `webapp/src/app/api/trufflehog/[projectId]/download/route.ts:15`, `scanners/trufflehog_scan/job_config.py:51`, `container_manager.py:3749` | TEST (filenames: NONE) |
 | Resource governor profile | `recon_orchestrator/resource_profile.default.json` <-> both `resource_governor.py` <-> `redamon.sh:503,704` weights; per-kind envelope bytes `SCAN_JOB_ENVELOPE_BYTES` (`webapp/src/lib/jobQueue.ts:37`, lacks `partial_recon:SupplyChainRecon` and `codefix`) | TEST (JSON <-> governors); NONE for `redamon.sh` and the TS envelopes |
-| Triage score formula | `score_model.py` <-> `Triage/triageLayers.ts` | TEST (`triageScore.vectors.json`, both sides); the tier boundary differs (#78) |
+| Triage score formula | `score_model.py` <-> `Triage/triageLayers.ts` | TEST (`triageScore.vectors.json`, both sides); with no stored tier, the UI names the higher tier at a boundary score (accepted, in `KNOWN_DIFFERENCES`) |
 | Triage vocabulary | `TRIAGE_PROPERTIES` (`webapp/src/lib/triage/properties.ts:10`) <-> the mixin; `DECIDED_BY`, `REVIEWED_VIA`, `REVIEW_CURRENT`, `VERDICT_STATUSES` (`actions.ts:49-294`), `RESOLVED_TRIAGE_STATES` (`reportable.ts:27`), `_TRIAGE_FILTERS` (`agentic/api.py:3738`) | TEST for properties (`properties.test.ts` reads the mixin); PART for the vocabularies |
 | Proof types / proof bar 70-80; passive CVE sources | `triage_mixin.py:308-319`, `fact_queries.py:125-128`, `score_model.py:1135-1141`; `recon/helpers/finding_sources.py:22`, `score_model.py:616`, `osint_mixin.py:81` | types NONE, bar TEST; sources TEST (skips without `recon/`) |
 | Mute selector / severity rank | `agentic/multi_mute/{kind,pool}.py` <-> Cypher in the triage mixin | TEST (contract JSON) |
@@ -610,7 +595,7 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | Paths tied to a base image | `scanners/supply_chain_analyzer/Dockerfile:56` hard-codes `python3.11/site-packages` (base at `:23`), hidden by `\|\| true` | breaks silently when the base moves |
 | Python base images | 3.11: agent, recon, orchestrator, supply chain, plugin runner; 3.12: the others; kali: whatever `kali-rolling` ships | the root `AGENTS.md` and `TECH_STACK.md` state each image's |
 | Licences | `THIRD-PARTY-LICENSES.md` (hand-maintained) | the pinned versions it names: TEST (`test_tool_version_pins.py`); the rest by hand |
-| Release version | `VERSION` -> `redamon.sh`; `README.md` badge (hand); `CHANGELOG.md`; `REDAMON_VERSION` (`webapp/Dockerfile:31`); `webapp/src/lib/disclaimerVersion.ts` | NONE for the badge (guard 25) |
+| Release version | `VERSION` -> `redamon.sh`; `README.md` badge (hand); `CHANGELOG.md`; `REDAMON_VERSION` (`webapp/Dockerfile:31`); `webapp/src/lib/disclaimerVersion.ts` | TEST for the badge (`tests/test_readme_version_badge.py`) |
 
 ### 4.13 Control plane, compose, env and the test runner
 
@@ -619,7 +604,7 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | **What `update` rebuilds** | `cmd_update`, `_map_core_changes`, `_map_tool_changes` and `_map_baked_graph_db` (`redamon.sh`): one hand-written rule per folder | TEST (`tests/redamon_update_map_test.sh`, derived from every built image's COPY sources) | Cross-folder COPYs: recon, gvm, github-hunt -> `graph_db`; recon and the agent -> `recon_settings`; the agent and kb-refresh -> `graph_db`, `services/knowledge_base`; capture-proxy and traffic-ingest -> `recon_orchestrator/{hard_guardrail,ip_denylist}.py` |
 | Image and service name lists | `TOOL_IMAGES` (`redamon.sh:24`, 10 = the tools-profile services), compose `image:` tags, the orchestrator `*_IMAGE` env (`docker-compose.yml:505-511`); `CORE_BUILD_SERVICES` (`redamon.sh:29`) typed again at `:3680` | NONE | Agree today |
 | Memory specs | `_MEM_SPECS_*` (`redamon.sh:508-542`, 16) vs compose `mem_limit` variables; `_status_expected_mb` (`:4604-4613`) maps only 10 containers; `_GVM_DATA_CONTAINERS=8` | NONE / NONE / TEST (`redamon_gvm_compose_test.sh:216-217`) | `status` never flags the GVM and kb-refresh caps |
-| Env vars | `.env.example` vs what compose forwards | TEST (`tests/test_env_example_keys.py`: every key is forwarded or a `HOST_ONLY_ENV_KEYS` entry `redamon.sh` reads) | The governor knobs stop at the orchestrator (#65) |
+| Env vars | `.env.example` vs what compose forwards | TEST (`tests/test_env_example_keys.py`: every key is forwarded or a `HOST_ONLY_ENV_KEYS` entry `redamon.sh` reads) | A knob a spawned container reads must also be forwarded by `container_manager.py` (the governor knobs are, through `_governor_overrides`) |
 | Env var reference | `README.DEV.md` §8 | NONE | marked as a selection; `.env.example` is the reference |
 | Service table | `README.DEV.md` §2 | NONE | every compose service, as of the fix pass |
 | Hot-reload table | `README.DEV.md` §5.3 | NONE | matches the images, mounts and update map as of the fix pass |
@@ -648,7 +633,7 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | Item | Guard |
 |---|---|
 | `docs/readmes/coding_agent_prompts/*.md` | crude checks in `tests/test_docs_not_stale.py` (retired names, deny reasons, generated files); cited paths: TEST (`tests/docs_cited_paths_test.sh`) |
-| `skills/*/SKILL.md` layer tables and file lists | `drift-audit.sh` (a link resolves from the file's folder) and `--docs` in the gate; `#L<n>` anchors are unguarded (guard 26) |
+| `skills/*/SKILL.md` layer tables and file lists | `drift-audit.sh` (a link resolves from the file's folder) and `--docs` in the gate; `#L<n>` anchors: TEST (`tests/test_ruleset_line_anchors.py`) |
 | `AGENTS.md` per component (`CLAUDE.md` is a symlink to it in the root and in six component folders), incl. QA checklists | `drift-audit.sh` |
 | `AGENTS.md` SKILLS CATALOGUE (by hand) | none; 16 = 16 today |
 | `drift-audit.sh` `ROOTS` and `sync.sh` scope map | none; cover every `AGENTS.md` today |
@@ -658,8 +643,8 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | Item | Risk |
 |---|---|
 | Count claims in README and wiki | four kinds checked against the code (P21); any other count is prose |
-| `README.md` (107 KB): features, tool tables, screenshots, wiki links, badge | links, anchors and counts: P21; the badge is unguarded (guard 25) |
-| Subsystem docs (37 tracked, this page included) | cited paths: TEST; function-by-function sections age (#86); `README.DEV.md` §9 indexes all |
+| `README.md` (107 KB): features, tool tables, screenshots, wiki links, badge | links, anchors and counts: P21; the badge: TEST (`tests/test_readme_version_badge.py`) |
+| Subsystem docs (37 tracked, this page included) | cited paths: TEST; function-by-function sections are prose, unguarded (the recon and KB ones were rewritten from the code on 2026-10-25); `README.DEV.md` §9 indexes all |
 | Anchors | TEST (P21, GitHub's slug rules, combining marks kept); a heading rename still breaks every incoming `Page#anchor` until someone runs the gate |
 | Wiki file links and images | TEST (P21 for images and repo URLs, `docs_cited_paths_test.sh` for paths); screenshots age with every UI change |
 | Doc screenshots generated by Playwright | `testing/e2e/tests/capture{Auth,Jev,McpServer,Tlsx}DocsShots.spec.ts`; every other screenshot is manual |
@@ -736,12 +721,9 @@ NONE in section 4.
 
 | # | Guard | Closes |
 |---|---|---|
-| 22 | A Kali tool-presence smoke step: `command -v` every CLI the `kali_shell` description and the skill prompts name (a read-only report is in #77) | #77, 4.1 |
+| 22 | A Kali tool-presence smoke step: `command -v` every CLI the `kali_shell` description and the skill prompts name (checked by hand on 2026-10-25) | 4.1 |
 | 23 | Decide whether runtime caches (`mitre_db/resources`, `wappalyzer_cache`) belong in git (the dead data is deleted and `cpe_resolver.py` reads the refreshed cache) | 4.11 |
 | 24 | Derive `_ROOT_RECON_TESTS` from imports; one default model id constant per language | 4.3, 4.13 |
-| 25 | A test that the `README.md` version badge equals `VERSION` | 4.12 |
-| 26 | Ban `file#L<n>` anchors in `SKILL.md` and `AGENTS.md` (19 pointed at unrelated lines; they now name the symbol) | 4.14 |
-| 27 | Let the docs test fail an empty `(#)` link | #83 |
 
 ---
 
