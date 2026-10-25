@@ -2,58 +2,10 @@
  "_comment": "Docs drift wave 3 must fix; read by tests/test_docs_not_stale.py (P21). Remove an entry in the same commit as its fix.",
  "entries": [
   {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/AI-Agent-Guide.md",
-   "target": "Agent-Skills#phishing--social-engineering",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "anchor",
-   "file": "redamon.wiki/AI-Gauntlet.md",
-   "target": "#screenshots-to-capture",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "anchor",
-   "file": "redamon.wiki/Agent-Skills.md",
-   "target": "#path-traversal-lfi-rfi",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/Agent-Workspace.md",
-   "target": "Creating-a-Project#switching-between-projects",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/CVE-Intel.md",
-   "target": "Project-Settings-Reference#tool-matrix",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "anchor",
-   "file": "redamon.wiki/Deploying-to-a-Server.md",
-   "target": "#the-env-reference-every-variable",
-   "item": "drift-map #53"
-  },
-  {
    "kind": "image",
    "file": "redamon.wiki/EvoGraph-Attack-Chain-Evolution.md",
    "target": "images/evograph-bridges.png",
    "item": "drift-map #55"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/GVM-Vulnerability-Scanning.md",
-   "target": "Creating-a-Project#tab-8-gvm-scan",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/GVM-Vulnerability-Scanning.md",
-   "target": "Deploying-to-a-Server#1-a-linux-server",
-   "item": "drift-map #53"
   },
   {
    "kind": "image",
@@ -62,64 +14,10 @@
    "item": "drift-map #55"
   },
   {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/Global-Settings.md",
-   "target": "Project-Settings-Reference#agent-settings",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/GraphQL-Security-Testing.md",
-   "target": "Running-Reconnaissance#group-6-phase-a-nuclei--graphql-security-parallel",
-   "item": "drift-map #53"
-  },
-  {
    "kind": "image",
    "file": "redamon.wiki/MCP-Tool-Plugins.md",
    "target": "images/mcp-tool-plugins-overview.png",
    "item": "drift-map #55"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/Project-Settings-Reference.md",
-   "target": "AI-Agent-Guide#tunnel-providers",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/Project-Settings-Reference.md",
-   "target": "Agent-Skills#phishing--social-engineering",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/Subdomain-Takeover-Detection.md",
-   "target": "Running-Reconnaissance#group-6-phase-a-nuclei--graphql-security-parallel",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/Tradecraft-Lookup.md",
-   "target": "Project-Settings-Reference#agent-settings",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/Troubleshooting.md",
-   "target": "Getting-Started#minimum-system-requirements",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "wiki-link",
-   "file": "redamon.wiki/VHost-and-SNI-Enumeration.md",
-   "target": "Running-Reconnaissance#group-6-phase-a-nuclei--graphql-security--subdomain-takeover--vhost--sni-parallel",
-   "item": "drift-map #53"
-  },
-  {
-   "kind": "anchor",
-   "file": "redamon.wiki/XBOW-Validation-Benchmark.md",
-   "target": "#35-score",
-   "item": "drift-map #53"
   }
  ]
 }
