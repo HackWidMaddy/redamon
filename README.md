@@ -444,7 +444,7 @@ The platform is built around six pillars:
 | **Attack Surface Graph** | A Neo4j knowledge graph (every node type and relationship is declared once, in [graph_db/schema_sections.md](graph_db/schema_sections.md)) that serves as the single source of truth for every finding, and the primary data source the AI agent queries before every decision. |
 | **EvoGraph** | A persistent, evolutionary attack chain graph in Neo4j that tracks every step, finding, decision, and failure across the attack lifecycle, bridging the recon graph and enabling cross-session intelligence accumulation. |
 | **CypherFix** | Automated vulnerability remediation pipeline: one triage run scores every finding from the graph with a fixed risk model, groups the ones that share a fix, has an LLM check the evidence behind each, and writes one fix item per group. A CodeFix agent then clones the target repository, implements a fix using a ReAct loop with 11 code tools, and opens a GitHub pull request. |
-| **Project Settings Engine** | 500+ per-project parameters (exposed through the webapp UI) that control every tool's behavior, from Naabu thread counts to Nuclei severity filters to agent approval gates. |
+| **Project Settings Engine** | Hundreds of per-project parameters (exposed through the webapp UI, each one listed in the generated [Project Settings Registry](https://github.com/samugit83/redamon/wiki/Project-Settings-Registry)) that control every tool's behavior, from Naabu thread counts to Nuclei severity filters to agent approval gates. |
 
 ---
 
@@ -454,7 +454,7 @@ RedAmon is engineered to drop into a real security organization, not just a rese
 
 - **Secure by design, STRIDE threat-modeled.** The whole platform is assessed end to end under STRIDE and hardened in independently verified waves: code-level privilege separation, a filtering Docker broker in front of the host socket, fail-closed auth, SSRF egress guards, secret redaction, append-only audit trails, and a non-disableable guardrail that blocks government, military, and intergovernmental targets. See the [Security Posture](docs/readmes/README.SECURITY_POSTURE.md) and [Threat Model](docs/readmes/README.TM.SYSTEM_OVERVIEW.md).
 - **Fully isolated and containerized.** Every tool, scanner, and agent runs in its own container with no host-level execution. Scan jobs are spawned as ephemeral sibling containers with their own filesystem and network namespace, then torn down on completion, keeping the host clean and containing the blast radius of any exploit.
-- **Governed and multi-tenant.** Multi-user / multi-project tenancy with admin and standard roles, DB-level `user_id + project_id` scoping on every node, Rules-of-Engagement enforcement, human-in-the-loop approval gates, and 500+ per-project settings give teams the control an enterprise engagement requires.
+- **Governed and multi-tenant.** Multi-user / multi-project tenancy with admin and standard roles, DB-level `user_id + project_id` scoping on every node, Rules-of-Engagement enforcement, human-in-the-loop approval gates, and hundreds of per-project settings give teams the control an enterprise engagement requires.
 
 **Deploy to a server in one command.** Beyond local `localhost`, RedAmon ships a hardened [single-host deploy](tooling/deploy/single-host/) that stands up a shared, internet-reachable instance and wraps the stack in nginx + TLS (Let's Encrypt), a host firewall, SSH hardening, and fail2ban, exposing a single public HTTPS origin:
 
@@ -800,7 +800,7 @@ Detects known-malicious (`MAL-`) and known-vulnerable (`CVE`/`GHSA`) packages **
 
 ### Project Settings
 
-**500+ configurable parameters** across 16 tabs controlling every tool's behavior, from scan modules to agent approval gates. Managed through the webapp UI.
+**Hundreds of configurable parameters** across 16 tabs controlling every tool's behavior, from scan modules to agent approval gates. Managed through the webapp UI; the generated **[Project Settings Registry](https://github.com/samugit83/redamon/wiki/Project-Settings-Registry)** lists every one with its meaning and the values it accepts.
 
 > **[Wiki: Project Settings Reference](https://github.com/samugit83/redamon/wiki/Project-Settings-Reference)**
 

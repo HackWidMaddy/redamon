@@ -26,12 +26,6 @@
    "item": "drift-map #53"
   },
   {
-   "kind": "count",
-   "file": "README.md",
-   "target": "settings:500+",
-   "item": "drift-map #49"
-  },
-  {
    "kind": "wiki-link",
    "file": "README.md",
    "target": "https://github.com/samugit83/redamon/wiki/Pentest-Agent#tool-confirmation-gate",
