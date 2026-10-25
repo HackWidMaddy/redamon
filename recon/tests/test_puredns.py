@@ -373,14 +373,19 @@ def test_roe_rate_limit_includes_puredns():
 # ---------------------------------------------------------------------------
 def test_defaults_match_prisma():
     """DEFAULT_SETTINGS values should match Prisma @default() values."""
+    import json
     from recon.project_settings import DEFAULT_SETTINGS
 
-    assert DEFAULT_SETTINGS['PUREDNS_ENABLED'] is True
-    assert DEFAULT_SETTINGS['PUREDNS_DOCKER_IMAGE'] == 'frost19k/puredns:latest'
-    assert DEFAULT_SETTINGS['PUREDNS_THREADS'] == 0
-    assert DEFAULT_SETTINGS['PUREDNS_RATE_LIMIT'] == 0
-    assert DEFAULT_SETTINGS['PUREDNS_WILDCARD_BATCH'] == 0
-    assert DEFAULT_SETTINGS['PUREDNS_SKIP_VALIDATION'] is False
+    puredns_keys = {k for k in DEFAULT_SETTINGS if k.startswith('PUREDNS_')}
+    # The registry's default is the Prisma @default (registry.prisma.test.ts).
+    registry = Path(__file__).resolve().parents[2] / 'recon_settings' / 'registry.json'
+    fields = json.loads(registry.read_text(encoding='utf-8'))['fields']
+    prisma = {spec['runtime_key']: spec.get('default') for spec in fields.values()
+              if spec.get('runtime_key') in puredns_keys}
+    assert set(prisma) == puredns_keys, f"keys with no column: {puredns_keys - set(prisma)}"
+    for key in sorted(puredns_keys):
+        assert DEFAULT_SETTINGS[key] == prisma[key], \
+            f"{key}: Python {DEFAULT_SETTINGS[key]!r} != Prisma {prisma[key]!r}"
     print("PASS: test_defaults_match_prisma")
 
 

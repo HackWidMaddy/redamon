@@ -24,9 +24,7 @@ import project_settings as ps  # noqa: E402
 _REGISTRY = os.path.join(os.path.dirname(_AGENTIC), "recon_settings", "registry.json")
 
 # Columns whose Prisma default differs from Python on purpose, with the reason.
-_KNOWN_DIFFERENCES: dict[str, str] = {
-    "fireteamTimeoutSec": "drift-map #12: Prisma follows Python (7200) in the #12 step",
-}
+_KNOWN_DIFFERENCES: dict[str, str] = {}
 
 
 def _prisma_default(spec: dict):

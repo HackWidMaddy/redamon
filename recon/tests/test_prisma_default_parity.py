@@ -23,13 +23,6 @@ _REGISTRY = os.path.join(os.path.dirname(_RECON), "recon_settings", "registry.js
 _KNOWN_DIFFERENCES: dict[str, str] = {
     "userId": "no @default: every creating path sets the owner",
     "domainBatchGroups": "no @default: every creating path sets the scope",
-    **{
-        column: "drift-map #12: Prisma follows Python in the #12 step"
-        for column in (
-            "masscanEnabled", "gauBlacklistExtensions", "httpxCustomHeaders",
-            "katanaCustomHeaders", "katanaExcludePatterns", "jsluiceExcludePatterns",
-        )
-    },
 }
 
 
