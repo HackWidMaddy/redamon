@@ -28,12 +28,6 @@
   {
    "kind": "count",
    "file": "README.md",
-   "target": "MCP presets:39",
-   "item": "drift-map #47"
-  },
-  {
-   "kind": "count",
-   "file": "README.md",
    "target": "node types:17",
    "item": "drift-map #48"
   },
