@@ -5042,6 +5042,8 @@ _test_run_section() {
         -e COVERAGE_FILE=/tmp/redamon.coverage \
         -e HOME=/tmp \
         -e REDAMON_TEST_PARALLEL="${REDAMON_TEST_PARALLEL:-8}" \
+        `# the wiki-dependent tests read it to decide whether an empty wiki may skip` \
+        -e REDAMON_TEST_ALLOW_MISSING="${REDAMON_TEST_ALLOW_MISSING:-}" \
         `# recon_orchestrator/api.py resolves host paths at import; satisfy the` \
         `# *_PATH lookups so its tests import outside docker-compose (harmless elsewhere).` \
         -e RECON_PATH=/repo/recon \
@@ -5064,6 +5066,16 @@ cmd_test() {
         *) error "Unknown test tier: $tier (use unit|integration|live|all|coverage)"; return 2 ;;
     esac
     local failed=0 spec
+    # redamon.wiki is a submodule: an empty checkout fails every wiki-dependent
+    # test (Python and vitest) unless REDAMON_TEST_ALLOW_MISSING names `wiki`.
+    if [[ ! -f "$SCRIPT_DIR/redamon.wiki/Home.md" ]]; then
+        if _test_section_may_skip wiki; then
+            error "SKIPPED the wiki checks (redamon.wiki is empty) — allowed by REDAMON_TEST_ALLOW_MISSING"
+        else
+            error "redamon.wiki is empty, so the wiki-dependent tests will fail."
+            error "  Fix: git submodule update --init redamon.wiki   (or REDAMON_TEST_ALLOW_MISSING=wiki)"
+        fi
+    fi
     for spec in "${_TEST_SECTIONS[@]}"; do
         IFS='|' read -r name image workdir pypath testpaths covpkg exclude <<< "$spec"
         if ! _test_run_section "$name" "$image" "$workdir" "$pypath" "$testpaths" "$covpkg" "$exclude" "$tier"; then

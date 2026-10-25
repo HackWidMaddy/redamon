@@ -19,6 +19,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import sys
+
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +28,11 @@ WIKI = REPO_ROOT / "redamon.wiki"
 PROMPTS = REPO_ROOT / "docs" / "readmes" / "coding_agent_prompts"
 SKILLS = REPO_ROOT / "skills"
 
-pytestmark = pytest.mark.skipif(not WIKI.is_dir(), reason="the wiki checkout is not present")
+sys.path.insert(0, str(REPO_ROOT / "tooling" / "scripts"))
+from wiki_checkout import SKIP_REASON, wiki_checkout_present  # noqa: E402
+
+# An empty checkout fails the whole file here, at collection, unless allowed.
+pytestmark = pytest.mark.skipif(not wiki_checkout_present(WIKI), reason=SKIP_REASON)
 
 
 def _wiki_pages() -> list[Path]:
