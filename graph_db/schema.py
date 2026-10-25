@@ -158,17 +158,22 @@ def build_constraints() -> list:
 
 
 def __getattr__(name):
-    """Defer CONSTRAINTS until first use (PEP 562).
+    """Defer CONSTRAINTS and GLOBAL_REFERENCE_LABELS until first use (PEP 562).
 
-    Building it at module level would run the schema_keys import during the
-    circular-import window described above. Every consumer reads it inside
-    init_schema or a test, long after the package has finished loading.
+    Building either at module level would run a sibling import during the
+    circular-import window described above, and in the tests that load this
+    file by path it would import the real package mid-setup. Every consumer
+    reads them inside init_schema, a test, or base_mixin's own import, after
+    this module has finished loading.
     """
     if name == "CONSTRAINTS":
         value = build_constraints()
-        globals()["CONSTRAINTS"] = value
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    elif name == "GLOBAL_REFERENCE_LABELS":
+        value = _global_reference_labels()
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
 
 # Tenant composite indexes (one per node type for efficient per-project queries)
 TENANT_INDEXES = [
@@ -552,7 +557,17 @@ NON_RECON_SOURCES = (
 )
 
 REFERENCE_TENANT_STRIP_MARKER = "strip-reference-node-tenant-v1"
-GLOBAL_REFERENCE_LABELS = ("CVE", "MitreData", "Capec")
+
+
+def _global_reference_labels() -> tuple:
+    """The tenant filter's GLOBAL_REFERENCE_LABELS, as a sorted tuple.
+
+    Read from tenant_filter, never copied, so the labels this module strips and
+    the recon clears preserve are exactly the ones a query may leave unscoped.
+    Sorted because a frozenset iterates in per-process hash order, and the clears
+    build Cypher from this.
+    """
+    return tuple(sorted(_sibling("tenant_filter").GLOBAL_REFERENCE_LABELS))
 
 
 def strip_reference_node_tenant(session):
@@ -562,7 +577,7 @@ def strip_reference_node_tenant(session):
 
     ok = True
     total = 0
-    for label in GLOBAL_REFERENCE_LABELS:
+    for label in _global_reference_labels():
         try:
             stripped = _run_batched(
                 session,
