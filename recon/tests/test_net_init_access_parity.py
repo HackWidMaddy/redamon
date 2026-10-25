@@ -31,8 +31,8 @@ UNCATEGORISED_PORTS = {
 #: IP-level finding types the table deliberately leaves out.
 NOT_INITIAL_ACCESS_TYPES = {
     "cache_purge_exposed": (
-        "drift-map: found in wave 1, netInitAccess/route.ts: a cache-DoS "
-        "misconfiguration, not an access vector; left out pending a decision"),
+        "a cache-DoS misconfiguration, not an access vector: it is a finding of "
+        "the Vulnerabilities tables, not of network initial access (drift-map #71)"),
 }
 
 #: The run_* entry points of the IP-level checks whose findings the table shows.
