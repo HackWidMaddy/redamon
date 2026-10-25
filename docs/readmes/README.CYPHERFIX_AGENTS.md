@@ -189,8 +189,7 @@ agentic/cypherfix_triage/
 └── prompts/
     ├── __init__.py
     ├── review.py              # the evidence-review prompt AND its output validation
-    ├── remediation_prose.py   # the only thing a model writes about a fix item
-    └── cypher_queries.py      # the mute-enforcing collection queries
+    └── remediation_prose.py   # the only thing a model writes about a fix item
 ```
 
 ### The run steps, and why only the publish writes
