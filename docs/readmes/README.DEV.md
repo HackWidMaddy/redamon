@@ -76,7 +76,7 @@ Every technology used in RedAmon, organized by layer. Each entry links to its **
 
 | Technology | Role | Official Docs |
 |-----------|------|---------------|
-| **Python** (3.11) | Core language for all backend services | [docs.python.org/3.11](https://docs.python.org/3.11/) |
+| **Python** (3.11, 3.12) | Core language for all backend services; each image's version is its Dockerfile's `FROM` (see [TECH_STACK.md](TECH_STACK.md)) | [docs.python.org/3.11](https://docs.python.org/3.11/) |
 | **FastAPI** | Async Python web framework (agent + recon orchestrator) | [fastapi.tiangolo.com](https://fastapi.tiangolo.com) |
 | **Uvicorn** | ASGI server for FastAPI services | [uvicorn.org](https://www.uvicorn.org) |
 | **Pydantic** | Data validation and settings management | [docs.pydantic.dev](https://docs.pydantic.dev) |
