@@ -9,6 +9,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
+from graph_db.coverage_stamps import stamp_base_url_coverage
 from graph_db.cpe_resolver import _is_ip_address
 from graph_db.mixins.recon.scope import build_host_scope, host_in_scope, org_for_scan_root
 
@@ -1336,6 +1337,14 @@ class VulnMixin:
                     stats["relationships_created"] += apex_linked
             except Exception as e:
                 stats["errors"].append(f"Apex BaseURL cleanup failed: {e}")
+
+            coverage = scan_metadata.get("coverage")
+            if coverage:
+                try:
+                    stats["coverage_stamped"] = stamp_base_url_coverage(
+                        session, "nuclei", coverage, user_id, project_id, in_scope=is_in_scope)
+                except Exception as e:
+                    stats["errors"].append(f"Nuclei coverage stamp failed: {e}")
 
             print(f"[+][graph-db] Created {stats['endpoints_created']} Endpoint nodes")
             print(f"[+][graph-db] Created {stats['parameters_created']} Parameter nodes")

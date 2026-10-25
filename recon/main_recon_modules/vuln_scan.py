@@ -126,6 +126,60 @@ def _keep_nuclei_findings(reason: str) -> None:
         pass
 
 
+def _nuclei_pass_outcome(returncode, duration, runtime_cap, parsed) -> tuple:
+    """``(status, reason)`` for every host one pass targeted. A pass stopped at
+    NUCLEI_MAX_RUNTIME never says which targets it reached, so all are partial;
+    the watchdog fires at the cap, so the pass lasted at least that long."""
+    if not returncode:
+        return "complete", None
+    if runtime_cap and duration >= runtime_cap:
+        return "partial", "runtime cap"
+    return ("partial" if parsed else "failed"), f"nuclei exited {returncode}"
+
+
+def _nuclei_coverage(at: str, passes, findings=()) -> dict:
+    """``{"at", "hosts"}`` from ``passes = [(urls, status, reason, ran)]``.
+
+    A host's inputs are the URLs the passes that ran sent it; it is complete
+    only when every pass that targeted it completed, failed only when every
+    one failed, partial otherwise.
+    """
+    from collections import Counter, defaultdict
+    from recon.helpers.coverage_stamps import base_url_key, coverage_row
+
+    inputs, statuses, reasons = Counter(), defaultdict(set), defaultdict(list)
+    for urls, status, reason, ran in passes:
+        for url in urls:
+            key = base_url_key(url)
+            if not key:
+                continue
+            inputs[key] += 1 if ran else 0
+            statuses[key].add(status)
+            if reason and reason not in reasons[key]:
+                reasons[key].append(reason)
+    found = Counter(base_url_key(f.get("matched_at") or f.get("target")) for f in findings)
+
+    hosts = {}
+    for key, seen in sorted(statuses.items()):
+        status = next(iter(seen)) if len(seen) == 1 else "partial"
+        hosts[key] = coverage_row(status, inputs[key], found[key], ", ".join(reasons[key]))
+    return {"at": at, "hosts": hosts}
+
+
+def _record_unrun_nuclei(recon_data: dict, coverage: dict) -> None:
+    """Carry the coverage of a Nuclei that never ran to the graph writer; a
+    record naming no host has nothing to stamp."""
+    if coverage["hosts"]:
+        recon_data["vuln_scan"] = {"scan_metadata": {"coverage": coverage}}
+
+
+def _live_web_urls(recon_data: dict) -> list:
+    """The URLs http_probe got an answer under 500 from: the hosts a Nuclei
+    that could not start would have scanned."""
+    from recon.helpers.target_helpers import build_target_urls_from_httpx
+    return build_target_urls_from_httpx(recon_data.get("http_probe"))
+
+
 def _nuclei_kill_container(container_name: str) -> None:
     """`docker kill` a named nuclei container. The daemon owns it, so killing the
     docker CLI (process.terminate) would leave it running; mirror _run_baddns."""
@@ -366,6 +420,9 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
     # Check if Nuclei scanner is enabled
     NUCLEI_ENABLED = settings.get('NUCLEI_ENABLED', True)
 
+    from recon.helpers.coverage_stamps import run_started_at
+    coverage_at = run_started_at()
+
     if not NUCLEI_ENABLED:
         print("[*][Nuclei] Vulnerability scanner disabled -- skipping")
         # Initialize empty vuln_scan structure so downstream code doesn't break
@@ -486,6 +543,8 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                 nuclei_unavailable = "nuclei templates unavailable"
         if nuclei_unavailable:
             _keep_nuclei_findings(nuclei_unavailable)
+            _record_unrun_nuclei(recon_data, _nuclei_coverage(
+                coverage_at, [(_live_web_urls(recon_data), "failed", nuclei_unavailable, False)]))
 
     # Cleared by the two checks below that leave the Nuclei passes nothing to
     # run; the CVE lookup and the security checks after them still run.
@@ -667,6 +726,8 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                 # run, so none of its findings was re-checked: keep them.
                 _keep_nuclei_findings("no Nuclei templates selected")
                 run_nuclei = False
+                _record_unrun_nuclei(recon_data, _nuclei_coverage(
+                    coverage_at, [(target_urls, "failed", "no Nuclei templates selected", False)]))
             # Mark detection as skipped; downstream merge handles empty findings.
             skip_detection_pass = True
         else:
@@ -714,9 +775,11 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
             # ---- Pass A: DETECTION ----
             start_time = datetime.now()
             d_duration = 0
+            coverage_passes = []
             if skip_detection_pass:
                 print("[*][Nuclei] DETECTION pass skipped (no tags + no custom templates)")
                 d_findings, d_fps = [], []
+                coverage_passes.append((target_urls, "failed", "no Nuclei templates selected", False))
             else:
                 detection_container = f"redamon-nuclei-detection-{uuid.uuid4().hex[:12]}"
                 detection_cmd = build_nuclei_command(
@@ -746,10 +809,12 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     container_name=detection_container,
                     max_host_error=NUCLEI_MAX_HOST_ERROR,
                 )
-                d_findings, d_fps, d_duration, _ = _execute_nuclei_pass(
+                d_findings, d_fps, d_duration, d_rc = _execute_nuclei_pass(
                     detection_cmd, detection_output_file, label="DETECTION",
                     runtime_cap=NUCLEI_MAX_RUNTIME, container_name=detection_container,
                 )
+                coverage_passes.append((target_urls, *_nuclei_pass_outcome(
+                    d_rc, d_duration, NUCLEI_MAX_RUNTIME, d_findings or d_fps), True))
             findings.extend(d_findings)
             false_positives_filtered.extend(d_fps)
 
@@ -777,10 +842,12 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     container_name=dast_container,
                     max_host_error=NUCLEI_MAX_HOST_ERROR,
                 )
-                b_findings, b_fps, b_duration, _ = _execute_nuclei_pass(
+                b_findings, b_fps, b_duration, b_rc = _execute_nuclei_pass(
                     dast_cmd, dast_output_file, label="DAST",
                     runtime_cap=NUCLEI_MAX_RUNTIME, container_name=dast_container,
                 )
+                coverage_passes.append((dast_urls, *_nuclei_pass_outcome(
+                    b_rc, b_duration, NUCLEI_MAX_RUNTIME, b_findings or b_fps), True))
                 findings.extend(b_findings)
                 false_positives_filtered.extend(b_fps)
                 dast_duration = b_duration
@@ -818,6 +885,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     "total_hostnames": len(hostnames),
                     "total_ips": len(ips),
                     "false_positives_filtered": len(false_positives_filtered),
+                    "coverage": _nuclei_coverage(coverage_at, coverage_passes, findings),
                 },
                 "discovered_urls": {
                     "base_urls": sorted(target_urls),

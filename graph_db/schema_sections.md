@@ -210,6 +210,17 @@ Additional properties present on this node type, not yet described:
 - scheme (string): "http" or "https"
 - host (string): hostname or IP
 - url (string): "https://api.example.com:443"
+Coverage stamp properties (what js_recon and nuclei did on this host in their last run; a BaseURL a module never considered has none of that module's five):
+- js_recon_status (string): "complete" (every JS file it had was read), "partial" (some were cut: see js_recon_reason), "no_input" (a live host serving no JavaScript), "failed" (none could be read). ABSENT means JS Recon never looked at this host when other BaseURLs of the project carry it ("not scanned"), and "coverage not recorded" when none does (scanned before stamps existed, or JS Recon never ran). Never read a missing JS finding on an unstamped BaseURL as "clean"
+- js_recon_at (datetime): when that JS Recon run started
+- js_recon_inputs (integer): JS files read for this host
+- js_recon_outputs (integer): JS Recon findings reported for this host
+- js_recon_reason (string): why the status is not "complete": "file cap", "host unreachable", "analyzer failed or timed out" or "fatal: <error>", comma-separated when several; absent when complete
+- nuclei_status (string): "complete", "partial", "failed", read like js_recon_status; absent likewise means "not scanned" or "coverage not recorded"
+- nuclei_at (datetime): when that Nuclei run started
+- nuclei_inputs (integer): URLs on this host sent to Nuclei
+- nuclei_outputs (integer): Nuclei findings reported for this host
+- nuclei_reason (string): why the status is not "complete": "runtime cap", "nuclei exited <code>", "Docker not found", "Docker daemon not running", "nuclei templates unavailable" or "no Nuclei templates selected"; absent when complete
 Additional properties present on this node type, not yet described:
 - urlscan_enriched (boolean)
 - urlscan_screenshot_url (string)

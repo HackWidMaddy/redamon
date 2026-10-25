@@ -3772,7 +3772,8 @@ class TestRunJsRecon(unittest.TestCase):
     """Tests for run_jsrecon using module-level mocks."""
 
     def _run_with_mocks(self, config, neo4j_connected=True, graph_endpoints=None, graph_baseurls=None,
-                        graph_subdomains=None, settings_override=None, graph_js_files=()):
+                        graph_subdomains=None, settings_override=None, graph_js_files=(),
+                        js_recon_output=None):
         """Helper that sets up all mocks and runs run_jsrecon."""
         mock_settings = MagicMock()
         mock_settings.return_value = {
@@ -3785,6 +3786,9 @@ class TestRunJsRecon(unittest.TestCase):
 
         # Mock run_js_recon: mutates combined_result by adding 'js_recon' key
         def mock_js_recon_fn(combined_result, settings=None):
+            if js_recon_output is not None:
+                combined_result['js_recon'] = js_recon_output
+                return combined_result
             combined_result['js_recon'] = {
                 'scan_metadata': {'mode': 'post_recon', 'js_files_analyzed': 3, 'duration_seconds': 5.0},
                 'secrets': [
@@ -3921,6 +3925,24 @@ class TestRunJsRecon(unittest.TestCase):
         mocks = self._run_with_mocks({"domain": "example.com", "user_inputs": []})
         mocks["run_js_recon"].assert_called_once()
         mocks["neo4j_client"].update_graph_from_js_recon.assert_called_once()
+
+    def test_a_run_that_found_nothing_still_stamps_its_coverage(self):
+        """Plan 09.1: "analyzed, no findings" is the answer the BaseURL stamp
+        records, so the writer runs whenever the run covered a host."""
+        coverage = {"at": "2026-10-25T08:00:00+00:00", "hosts": {"https://example.com:443": {
+            "status": "complete", "inputs": 2, "outputs": 0, "reason": None}}}
+        mocks = self._run_with_mocks({"domain": "example.com", "user_inputs": []}, js_recon_output={
+            "scan_metadata": {"js_files_analyzed": 2, "coverage": coverage},
+            "secrets": [], "endpoints": [], "summary": {}})
+        mocks["neo4j_client"].update_graph_from_js_recon.assert_called_once()
+        written = mocks["neo4j_client"].update_graph_from_js_recon.call_args.kwargs["recon_data"]
+        self.assertEqual(written["js_recon"]["scan_metadata"]["coverage"], coverage)
+
+    def test_a_run_that_covered_no_host_and_found_nothing_writes_nothing(self):
+        mocks = self._run_with_mocks({"domain": "example.com", "user_inputs": []}, js_recon_output={
+            "scan_metadata": {"js_files_analyzed": 0, "coverage": {"at": "x", "hosts": {}}},
+            "secrets": [], "endpoints": [], "summary": {}})
+        mocks["neo4j_client"].update_graph_from_js_recon.assert_not_called()
 
     def test_js_files_a_full_run_analyzed_are_read_again(self):
         """Plan 06.1: a bundle under /static/ never became an Endpoint (the

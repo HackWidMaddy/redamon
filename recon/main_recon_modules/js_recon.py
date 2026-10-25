@@ -621,21 +621,27 @@ def _download_js_files(
     max_files: int,
     concurrency: int,
     timeout: int,
+    unreachable: Optional[list] = None,
 ) -> list:
     """
     Download JS files to local temp directory.
 
-    Returns list of dicts with: url, filepath, content, headers, size
+    Returns list of dicts with: url, filepath, content, headers, size.
+    `unreachable` collects the URLs never fetched: a host already known down,
+    or a request that raised.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     downloaded = []
     urls_to_fetch = js_urls[:max_files]
+    if unreachable is None:
+        unreachable = []
 
     print(f"[*][JsRecon] Downloading {len(urls_to_fetch)} JS files (max {max_files})...")
 
     def fetch_one(idx_url):
         idx, url = idx_url
         if _js_skip(url):
+            unreachable.append(url)
             return None
         try:
             # STRIDE I14: JS URLs are target-derived; validate every redirect hop
@@ -678,6 +684,7 @@ def _download_js_files(
             }
         except Exception as e:
             _js_failed(url, e)
+            unreachable.append(url)
             print(f"[!][JsRecon] {url} -- {type(e).__name__}: {e}")
             return None
 
@@ -1446,6 +1453,96 @@ def _note_file_cap(skipped: int, max_files: int) -> None:
         pass
 
 
+# Every list the graph writer turns into a finding node; endpoints are assets.
+_COVERAGE_FINDING_KEYS = (
+    'secrets', 'dependencies', 'source_maps', 'dom_sinks', 'dev_comments', 'frameworks',
+    'emails', 'ip_addresses', 'object_references', 'dev_references', 'cloud_assets',
+    'ai_sdk_findings',
+)
+
+
+def _considered_base_urls(combined_result: dict, settings: dict, js_urls) -> set:
+    """The web hosts this run looked at, as base_url_key: each one http_probe
+    got a live answer from (the _has_live_urls test), each one it was handed a
+    page on, and each one serving a JS candidate. A host the Rules of
+    Engagement exclude was never looked at."""
+    from recon.helpers.coverage_stamps import base_url_key
+    urls = list(js_urls or [])
+    http_probe = combined_result.get('http_probe') or {}
+    for url, info in ((http_probe.get('by_url') or {}) if isinstance(http_probe, dict) else {}).items():
+        status = info.get('status_code') if isinstance(info, dict) else None
+        if status is None or (isinstance(status, int) and status < 500):
+            urls.append(url)
+    resource_enum = combined_result.get('resource_enum') or {}
+    if isinstance(resource_enum, dict):
+        urls += list(resource_enum.get('discovered_urls') or []) + list(resource_enum.get('js_urls') or [])
+
+    settings = settings or {}
+    excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
+    excluded = [e for e in (excluded or []) if isinstance(e, str) and e.strip()]
+    keys = set()
+    for url in urls:
+        if not isinstance(url, str) or (excluded and _is_roe_excluded(_host_of(url), excluded)):
+            continue
+        key = base_url_key(url)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _js_coverage(combined_result: dict, settings: dict, at: str, *, js_urls=(), selected=(),
+                 downloaded=(), unreachable=(), unanalyzed=(), results=None, error=None) -> dict:
+    """``{"at", "hosts": {base_url_key: row}}``, one row per considered host.
+
+    A host with no JS candidate, or whose candidates all turned out not to be
+    JavaScript, is ``no_input``. One whose files were all lost to an
+    unreachable host or a failed analyzer is ``failed``; one that lost some,
+    or had files cut by JS_RECON_MAX_FILES, is ``partial``, with the reasons.
+    A fatal error fails every host, since none of its findings reached output.
+    """
+    from collections import Counter
+    from recon.helpers.coverage_stamps import base_url_key, coverage_row
+
+    def by_host(urls):
+        counts = Counter()
+        for url in urls:
+            key = base_url_key(url)
+            if key:
+                counts[key] += 1
+        return counts
+
+    candidates = by_host(set(js_urls))
+    chosen = by_host(selected)
+    read = by_host(f.get('url') for f in downloaded)
+    lost = by_host(unreachable)
+    dropped = by_host(u for u in unanalyzed if u)
+    found = by_host(
+        f.get('source_url') or f.get('js_url')
+        for key in _COVERAGE_FINDING_KEYS for f in (results or {}).get(key) or [] if isinstance(f, dict)
+    )
+
+    hosts = {}
+    for key in sorted(_considered_base_urls(combined_result, settings, js_urls)):
+        if error:
+            hosts[key] = coverage_row('failed', reason=error)
+            continue
+        reasons = [reason for reason, hit in (
+            ('file cap', candidates[key] > chosen[key]),
+            ('host unreachable', lost[key]),
+            ('analyzer failed or timed out', dropped[key]),
+        ) if hit]
+        if not candidates[key] or (not read[key] and not reasons):
+            status = 'no_input'
+        elif not reasons:
+            status = 'complete'
+        elif not read[key] and 'file cap' not in reasons:
+            status = 'failed'
+        else:
+            status = 'partial'
+        hosts[key] = coverage_row(status, read[key], found[key], ', '.join(reasons))
+    return {'at': at, 'hosts': hosts}
+
+
 def run_js_recon(combined_result: dict, settings: dict) -> dict:
     """
     Run JS Recon analysis on JS files from the recon pipeline.
@@ -1505,6 +1602,9 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         ],
     )
 
+    from recon.helpers.coverage_stamps import run_started_at
+    coverage_at = run_started_at()
+    js_urls, selected_urls, downloaded, unreachable = [], [], [], []
     try:
         # 1. Load uploaded JS files (manual uploads from UI)
         project_id = combined_result.get('metadata', {}).get('project_id', '')
@@ -1533,7 +1633,9 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
                 max_files=max_files,
                 concurrency=settings.get('JS_RECON_CONCURRENCY', 10),
                 timeout=settings.get('JS_RECON_TIMEOUT', 900),
+                unreachable=unreachable,
             )
+        downloaded = list(js_files)
         if file_budget['cut']:
             chosen = set(selected_urls)
             _note_unchecked("file cap", [u for u in js_urls if u not in chosen])
@@ -1549,8 +1651,11 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         if not js_files:
             print("[-][JsRecon] No JS files found (pipeline or uploaded)")
             combined_result['js_recon'] = {
-                'scan_metadata': {'mode': 'post_recon', 'js_files_analyzed': 0,
-                                  'file_budget': file_budget},
+                'scan_metadata': {
+                    'mode': 'post_recon', 'js_files_analyzed': 0, 'file_budget': file_budget,
+                    'coverage': _js_coverage(combined_result, settings, coverage_at, js_urls=js_urls,
+                                             selected=selected_urls, unreachable=unreachable),
+                },
                 'secrets': [], 'endpoints': [], 'summary': {},
             }
             return combined_result
@@ -1681,6 +1786,10 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
                 'js_files_total_size_bytes': total_size,
                 'duration_seconds': round(duration, 1),
                 'file_budget': file_budget,
+                'coverage': _js_coverage(
+                    combined_result, settings, coverage_at, js_urls=js_urls, selected=selected_urls,
+                    downloaded=downloaded, unreachable=unreachable, unanalyzed=unanalyzed or (),
+                    results=results),
             },
             # Where the downloaded JS lives. GROUP 5.5 (supply-chain recon)
             # hands this path to the DIRTY analyzer so retire.js can read the
@@ -1713,7 +1822,11 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         traceback.print_exc()
         _note_unchecked(f"fatal: {type(e).__name__}")
         combined_result.setdefault('js_recon', {
-            'scan_metadata': {'mode': 'post_recon', 'js_files_analyzed': 0, 'error': str(e)},
+            'scan_metadata': {
+                'mode': 'post_recon', 'js_files_analyzed': 0, 'error': str(e),
+                'coverage': _js_coverage(combined_result, settings, coverage_at, js_urls=js_urls,
+                                         error=f"fatal: {type(e).__name__}"),
+            },
             'secrets': [], 'endpoints': [], 'summary': {},
         })
     finally:
