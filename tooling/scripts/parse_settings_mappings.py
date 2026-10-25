@@ -3,8 +3,9 @@ Parse the column mappings out of a project_settings.py: the recon pipeline's
 `settings[...] = project.get(...)` block, and the agent's AGENT_SETTING_COLUMNS
 map, which fetch_agent_settings reads every column through.
 
-525 of these mappings are byte-identical in form, which is what makes generating
-them feasible. The handful that are not carry semantics a naive generator would
+Almost all of these mappings are byte-identical in form, which is what makes
+generating them feasible (`python3 tooling/scripts/parse_settings_mappings.py`
+prints the recon count and the exceptions). The handful that are not carry semantics a naive generator would
 erase, so this parser records the SHAPE of each mapping rather than assuming the
 canonical one:
 
