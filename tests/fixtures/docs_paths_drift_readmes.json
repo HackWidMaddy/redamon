@@ -2,11 +2,6 @@
  "_comment": "Repo paths cited by a doc under docs/readmes/ that do not exist at the path shown, found by skills/skill-sync/assets/drift-audit.sh --docs; read by tests/docs_cited_paths_test.sh. Remove an entry in the same commit as its fix. An item starting 'not a path:' is a token the audit cannot tell from a path; it stays until the prose changes.",
  "entries": [
   {
-   "file": "docs/readmes/README.MCP.md",
-   "path": "_local/internal/stride/README.TM.STRIDE.md",
-   "item": "drift-map 4.14: links into _local/"
-  },
-  {
    "file": "docs/readmes/README.PLUGIN_SDK.md",
    "path": "tests/conftest.py",
    "item": "not a path: a file inside each plugin's own folder"
@@ -15,16 +10,6 @@
    "file": "docs/readmes/README.PLUGIN_SDK.md",
    "path": "tests/test_main.py",
    "item": "not a path: a file inside each plugin's own folder"
-  },
-  {
-   "file": "docs/readmes/README.TRAFFIC.md",
-   "path": "../../_local/internal/mitmproxy_integration_plan.md",
-   "item": "drift-map 4.14: links into _local/"
-  },
-  {
-   "file": "docs/readmes/README.TRAFFIC.md",
-   "path": "../../_local/internal/stride/README.TM.STRIDE.md",
-   "item": "drift-map 4.14: links into _local/"
   }
  ]
 }

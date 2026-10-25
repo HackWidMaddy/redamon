@@ -1205,7 +1205,6 @@ LLM.
 
 ## See also
 
-- Full design rationale and phase plan: [`internal/mitmproxy_integration_plan.md`](../../_local/internal/mitmproxy_integration_plan.md)
-- Threat model context: [`internal/stride/README.TM.STRIDE.md`](../../_local/internal/stride/README.TM.STRIDE.md)
+- Threat model context: [README.TM.SYSTEM_OVERVIEW.md](README.TM.SYSTEM_OVERVIEW.md) and the control catalog [README.SECURITY_POSTURE.md](README.SECURITY_POSTURE.md)
 - Proxy image and addon: [`scanners/capture_proxy/`](../../scanners/capture_proxy/)
 - Agent tools: [`agentic/traffic_tools.py`](../../agentic/traffic_tools.py)

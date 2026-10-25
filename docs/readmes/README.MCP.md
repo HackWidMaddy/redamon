@@ -487,7 +487,8 @@ default:
   stack at all, set `MCP_AUTH_TOKEN` in `.env` (or just run `redamon.sh`).
 
 This closes the unauthenticated-RCE surface tracked as STRIDE **S10 / E1 / I9**
-in `_local/internal/stride/README.TM.STRIDE.md`.
+in the maintainers' threat model; the public control catalog is
+[README.SECURITY_POSTURE.md](README.SECURITY_POSTURE.md).
 
 ## Troubleshooting
 
