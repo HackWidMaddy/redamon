@@ -265,8 +265,8 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
       ${q.domains}
       ${q.subPath('-[:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)')}
       OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)-[:HAS_PORT]->(dp:Port)
-      OPTIONAL MATCH (p)-[:HAS_SERVICE]->(:Service)-[:SERVES_URL]->(bu:BaseURL)
-      OPTIONAL MATCH (dp)-[:HAS_SERVICE]->(:Service)-[:SERVES_URL]->(dbu:BaseURL)
+      OPTIONAL MATCH (p)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->(bu:BaseURL)
+      OPTIONAL MATCH (dp)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->(dbu:BaseURL)
       WITH subdomains,
            count(DISTINCT i) + count(DISTINCT di) AS ipCount,
            count(DISTINCT p) + count(DISTINCT dp) AS portCount,
