@@ -941,7 +941,7 @@ TOOL_REGISTRY = {
             '   - Persistent msfconsole — module context and sessions survive between calls\n'
             '   - **SINGLETON**: one shared msfconsole process backs every call. NEVER include more '
             'than one `metasploit_console` step in a single `plan_tools` wave, and NEVER deploy two '
-            'fireteam members both claiming the `metasploit` skill — concurrent calls interleave '
+            'fireteam members that both name `metasploit_console` in their `tools` — concurrent calls interleave '
             'stdin/stdout and corrupt module/session state. Serialize msfconsole work in one member '
             'or across sequential iterations instead.\n'
             '   - **Chain commands with `;`** (semicolons). Do NOT use `&&` or `||`\n'
