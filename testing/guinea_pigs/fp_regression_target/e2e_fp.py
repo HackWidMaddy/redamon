@@ -16,6 +16,8 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --js-coverage         # the plan-06 JS-coverage project (.20 + the bulk host .29)
     python3 e2e_fp.py --rerun <id> --no-triage --set '{"jsReconMaxFiles": 60}' --spa-state 'hide=/js/app.min.js'
     python3 e2e_fp.py --vhost-origin        # the plan-07 vhost-naming / tlsx CDN-tag project (.31, .32)
+    python3 e2e_fp.py --coverage --no-triage        # plan 09: per-host coverage (.10 .13 .20 .22 .33)
+    python3 e2e_fp.py --coverage-clean --no-triage  # plan 09: JS Recon finds nothing (.34)
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
 never prints it.
@@ -143,6 +145,30 @@ VHOST_ORIGIN_SETTINGS = {
 }
 
 
+# Per-host coverage (plan 09) runs as its own project: JS Recon and Nuclei both
+# stamp the BaseURLs they looked at. .20 serves JavaScript, .22 none, .10 and
+# .13 carry the Shodan stub's CVEs (the export/import links), and .33 answers
+# 503, so no stamping module ever looks at it. Nuclei runs the info-only "tech"
+# templates from the local volume: the case is that it ran, not what it found.
+COVERAGE_TARGETS = [f"{NET}.{n}" for n in (10, 13, 20, 22, 33)]
+COVERAGE_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "resource_enum", "vuln_scan"],
+    "naabuCustomPorts": "80",
+    "nucleiEnabled": True, "nucleiTags": ["tech"], "nucleiAutoUpdateTemplates": False,
+    "vhostSniEnabled": False, "webCachePoisonEnabled": False,
+}
+# ... and a second project where JS Recon reads a host's script and finds
+# nothing, for the report's "analyzed, no findings" line and the graph-loss check.
+COVERAGE_CLEAN_TARGETS = [f"{NET}.34"]
+COVERAGE_CLEAN_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "resource_enum"],
+    "naabuCustomPorts": "80",
+    "vhostSniEnabled": False, "shodanEnabled": False, "webCachePoisonEnabled": False,
+}
+
+
 def spa_state(query=""):
     """Which .20 paths answer with the SPA shell for the next run ('' resets it)."""
     with urllib.request.urlopen(f"{SPA_STATE}?{query}", timeout=10) as resp:
@@ -228,6 +254,10 @@ def main():
                     help="SPA (.20) state for this run, e.g. 'hide=/js/app.min.js'")
     ap.add_argument("--vhost-origin", action="store_true",
                     help="create the plan-07 vhost-naming / tlsx CDN-tag project instead of the main one")
+    ap.add_argument("--coverage", action="store_true",
+                    help="create the plan-09 per-host coverage project instead of the main one")
+    ap.add_argument("--coverage-clean", action="store_true",
+                    help="create the plan-09 project where JS Recon finds nothing")
     args = ap.parse_args()
 
     mcp.init()
@@ -236,13 +266,17 @@ def main():
         project_id = args.rerun
     else:
         kind = (" (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else
-                " (JS coverage)" if args.js_coverage else " (vhost and CDN tag)" if args.vhost_origin else "")
+                " (JS coverage)" if args.js_coverage else " (vhost and CDN tag)" if args.vhost_origin else
+                " (host coverage)" if args.coverage else " (host coverage, clean)" if args.coverage_clean
+                else "")
         targets, settings = ((HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
                              (PASSIVE_TARGETS, PASSIVE_SETTINGS) if args.passive_cves else
                              (JS_COVERAGE_TARGETS, {**JS_COVERAGE_SETTINGS,
                                                     "katanaExcludePatterns": _default_katana_excludes()})
                              if args.js_coverage else
                              (VHOST_ORIGIN_TARGETS, VHOST_ORIGIN_SETTINGS) if args.vhost_origin else
+                             (COVERAGE_TARGETS, COVERAGE_SETTINGS) if args.coverage else
+                             (COVERAGE_CLEAN_TARGETS, COVERAGE_CLEAN_SETTINGS) if args.coverage_clean else
                              (TARGETS, SETTINGS))
         name = f"FP regression lab{kind} {time.strftime('%Y-%m-%d %H:%M:%S')}"
         out = call("create_project", {"name": name, "engagementKind": "internal",

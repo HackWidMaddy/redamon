@@ -143,6 +143,20 @@ services:
       TLS_SUBJECT: "/CN=Cloudflare Inc ECC CA-3/O=Cloudflare, Inc./C=US"
     networks: { fp_lab: { ipv4_address: 192.88.94.32 } }
 
+  # Per-host coverage (plan 09): a host no stamping module looks at.
+  fp-down:
+    <<: *lab
+    container_name: redamon-fp-down
+    environment: { ROLE: down, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.33 } }
+
+  # ... and a host JS Recon reads and finds nothing on.
+  fp-plainjs:
+    <<: *lab
+    container_name: redamon-fp-plainjs
+    environment: { ROLE: plainjs, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.34 } }
+
 networks:
   fp_lab:
     name: redamon_fp_lab

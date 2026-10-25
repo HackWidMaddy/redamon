@@ -27,6 +27,9 @@ real finding that must survive. Stdlib only. See README.md for the case table.
                     when the SNI also names it; every other name the default page
     ROLE=cdncert    an HTTPS host whose self-signed certificate names Cloudflare as
                     issuer (TLS_SUBJECT): tlsx attributes it a CDN from that alone
+    ROLE=down       503 "under maintenance" on every path, no links: http_probe records
+                    it, and neither JS Recon nor Nuclei takes a 5xx host as a target
+    ROLE=plainjs    a page and one script with nothing in it JS Recon reports
 """
 
 import base64
@@ -431,6 +434,27 @@ class Deny(Base):
         return self.send(403, DENY_PAGE)
 
 
+class Down(Base):
+    def do_GET(self):
+        return self.send(503, "<html><body><h1>Service under maintenance</h1></body></html>")
+
+
+# Nothing in it matches a JS Recon detector: no key, URL, email, sink, comment
+# or framework banner, so the host is analyzed and yields no finding.
+PLAIN_JS = "function greet(name){return 'Hello, '+name;}\ndocument.title=greet('lab');\n"
+
+
+class PlainJs(Base):
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/js/app.js":
+            return self.send(200, PLAIN_JS, "application/javascript")
+        if path == "/":
+            return self.send(200, '<html><head><title>Plain</title><script src="/js/app.js"></script>'
+                                  '</head><body><h1>Plain</h1></body></html>')
+        return self.send(404, "<h1>Not found</h1>")
+
+
 # --------------------------------------------------------------------------- Shodan stub
 NET = "192.88.94"
 SHODAN_HOSTS = {
@@ -537,7 +561,7 @@ class CdnCert(Base):
 ROLES = {"fastly": Fastly, "cloudflare": Cloudflare, "redirect": Redirect, "akamai": Akamai,
          "ratelimit": RateLimit, "cache": Cache, "spa": Spa, "vendor": Vendor, "shodan": Shodan,
          "api": Api, "jsonall": JsonAll, "sso": Sso, "loginwall": LoginWall, "deny": Deny, "bulk": Bulk,
-         "tlsvhost": TlsVhost, "cdncert": CdnCert}
+         "tlsvhost": TlsVhost, "cdncert": CdnCert, "down": Down, "plainjs": PlainJs}
 
 # A self-signed certificate's issuer is its subject, so TLS_SUBJECT also sets
 # the issuer tlsx reads.

@@ -6,7 +6,7 @@ Every case that must stay silent sits next to one that must still fire, so a
 green run proves both halves.
 
 ```bash
-docker compose up -d --build        # nineteen hosts on 192.88.94.0/24, no host ports
+docker compose up -d --build        # twenty-one hosts on 192.88.94.0/24, no host ports
 docker compose down
 ```
 
@@ -121,6 +121,24 @@ the host.
      /repo/testing/guinea_pigs/fp_regression_target/vhost_wordlist_edge.py
    ```
 
+9. **Per-host coverage (plan 09).** With the Shodan stub forwarded (step 1):
+
+   ```bash
+   python3 e2e_fp.py --coverage --no-triage        # .10 .13 .20 .22 .33: JS Recon + Nuclei ("tech") + Shodan
+   python3 validate_e2e.py <id> --coverage stamps  # writes coverage_cve_snapshot.json
+   python3 e2e_fp.py --coverage-clean --no-triage  # .34 alone, JS Recon only
+   python3 validate_e2e.py <cleanId> --coverage clean
+   ```
+
+   Then, by hand: the node drawer of `.20`'s BaseURL shows a Coverage section
+   (JS analysis and Nuclei lines) and `.33`'s reads "not scanned by this
+   module" (also at 390 px wide); the clean project's report has a JavaScript
+   section saying "1 host analyzed, no findings". Export the `--coverage`
+   project from the UI, import the archive, and run `python3 validate_e2e.py
+   <importedId> --coverage import <id>`. Last, delete only the clean project's
+   graph nodes (`MATCH (n {user_id: $uid, project_id: $pid}) DETACH DELETE n`)
+   and run `python3 validate_e2e.py <cleanId> --coverage lost`.
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -173,6 +191,9 @@ the host.
 | `.31` | an HTTPS proxy routing on the Host header: `portal` gets the same app with or without the SNI, `split` gets one app by Host and another when the SNI names it too (vhost project) | V-11/V-12/V-13 | `portal` is "Hidden Virtual Host" (`hidden_vhost`, layer `both`, medium), not a routing inconsistency; `split` is "Routing Inconsistency (L7 vs L4)" (`host_header_bypass`, high); no other name |
 | `.32`, `.31` | `.32` presents a self-signed certificate whose issuer is "Cloudflare Inc ECC CA-3"; `.31` the lab's own | T-01/T-02 | after the run `.32` has `is_cdn` true, `cdn_name` cloudflare, `cdn_source` tlsx; `.31` no CDN tag |
 | `.32`, `.31` | the real vhost module in a domain-mode shape, default wordlist on, `.32` carrying tlsx's tag (`vhost_wordlist_edge.py`) | V-14 | no wordlist name is tried on `.32`, all of them on `.31` (`portal` and `split` found); one `vhost_sni_wordlist` coverage note, "shared CDN edge", 1 IP |
+| `.20`, `.22`, `.33` | a host serving JavaScript, a JSON API serving none, and one that answers 503 on every path (coverage project) | CV-01..CV-05 | `.20`'s BaseURL `js_recon_status` complete or partial with files read and findings, `.22`'s `no_input`; `.20` and `.22` carry a Nuclei stamp with URLs sent; `.33`'s BaseURL carries neither; `graph_summary`'s `coverage` has both modules recorded, `.33` among `not_scanned` |
+| `.10`, `.13` | the Shodan stub's CVEs, exported and imported (coverage project) | CV-06, EX-01/02 | the imported copy has the same `INCLUDES_CVE` links as the original, and the CVE nodes' properties are those before the export |
+| `.34` | one page and one script with nothing a detector reports (clean project) | CC-01..CC-03, GL-01 | `js_recon_status` complete, 1 file, 0 findings, and no js_recon finding; once its graph nodes are deleted, `graph_summary` warns `graph_data_missing` |
 
 ## Not covered here
 

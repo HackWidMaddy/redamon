@@ -16,6 +16,12 @@ jsReconMaxFiles and .20's /js/app.min.js hidden, and `--js-coverage capped <n>`.
 The vhost-naming / tlsx CDN-tag project (e2e_fp.py --vhost-origin):
 `--vhost-origin`.
 
+The plan-09 per-host coverage projects: `--coverage stamps` on the
+e2e_fp.py --coverage project (writes the linked CVEs to
+coverage_cve_snapshot.json), `--coverage import <thatProjectId>` on its
+exported-then-imported copy, `--coverage clean` on the --coverage-clean
+project, and `--coverage lost` on it once its graph nodes are deleted.
+
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
 when every assertion holds. Case ids match README.md.
@@ -30,7 +36,7 @@ import mcp_client as mcp  # noqa: E402
 
 USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer"
          " | --passive-cves baseline|partial|unscanned|off | --js-coverage first | --js-coverage capped <n>"
-         " | --vhost-origin]")
+         " | --vhost-origin | --coverage stamps|clean|lost | --coverage import <originalProjectId>]")
 if len(sys.argv) not in (2, 3, 4, 5):
     sys.exit(USAGE)
 P = sys.argv[1]
@@ -277,6 +283,86 @@ def vhost_origin_checks():
           f".31 with the lab's own certificate: {plain} (expect no CDN tag)")
 
 
+CVE_SNAPSHOT = os.environ.get("COVERAGE_CVE_SNAPSHOT", "coverage_cve_snapshot.json")
+
+
+def _summary(project_id=None):
+    out, err = mcp.call("graph_summary", {"projectId": project_id or P})
+    if err or not isinstance(out, dict):
+        raise RuntimeError(f"graph_summary failed: {json.dumps(out)[:500]}")
+    return out
+
+
+def _stamps():
+    """Each BaseURL's stamps, by the lab host it serves."""
+    rows = q("""MATCH (b:BaseURL) RETURN b.url AS url, b.js_recon_status AS js, b.js_recon_inputs AS ji,
+                       b.js_recon_outputs AS jo, b.js_recon_reason AS jr, b.nuclei_status AS nu,
+                       b.nuclei_inputs AS ni, b.nuclei_reason AS nr""")
+    return {r["url"].split("://", 1)[1].split(":")[0]: r for r in rows if "://" in (r["url"] or "")}
+
+
+def _cve_links(project_id=None):
+    global P
+    saved, P = P, project_id or P
+    try:
+        return q("""MATCH (v:Vulnerability)-[r:INCLUDES_CVE]->(c:CVE)
+                    RETURN c.id AS id, properties(c) AS props, count(r) AS links ORDER BY id""")
+    finally:
+        P = saved
+
+
+def coverage_checks(stage, other=None):
+    """Plan 09 cases, on the projects e2e_fp.py --coverage / --coverage-clean create."""
+    if stage == "stamps":
+        hosts = _stamps()
+        spa, api, down = hosts.get(f"{NET}.20") or {}, hosts.get(f"{NET}.22") or {}, hosts.get(f"{NET}.33")
+        check("CV-01", spa.get("js") in ("complete", "partial") and (spa.get("ji") or 0) > 0 and (spa.get("jo") or 0) > 0,
+              f".20 (serves JavaScript): {spa} (expect js_recon complete or partial, files read, findings)")
+        check("CV-02", (api.get("js"), api.get("ji")) == ("no_input", 0),
+              f".22 (a JSON API, no JavaScript): {api} (expect js_recon no_input)")
+        check("CV-03", down is not None and down.get("js") is None and down.get("nu") is None,
+              f".33 (answers 503): {down} (expect a BaseURL with no stamp from either module)")
+        scanned = {h: r for h, r in hosts.items() if r.get("nu")}
+        check("CV-04", {f"{NET}.20", f"{NET}.22"} <= set(scanned)
+              and all(r["nu"] in ("complete", "partial") and (r["ni"] or 0) > 0 for r in scanned.values()),
+              f"nuclei stamps: { {h: (r['nu'], r['ni'], r['nr']) for h, r in scanned.items()} }")
+        cov = _summary().get("coverage") or {}
+        js, nu = cov.get("js_recon") or {}, cov.get("nuclei") or {}
+        check("CV-05", js.get("recorded") and nu.get("recorded") and js.get("not_scanned", 0) >= 1
+              and nu.get("not_scanned", 0) >= 1 and js.get("no_input", 0) >= 1,
+              f"graph_summary coverage: {cov} (expect both recorded, .33 not_scanned, .22 no_input)")
+        links = _cve_links()
+        check("CV-06", links, f"INCLUDES_CVE links: {[(r['id'], r['links']) for r in links]} (expect some)")
+        with open(CVE_SNAPSHOT, "w") as fh:
+            json.dump(links, fh, sort_keys=True, default=str)
+        print(f"CVE_LINKS={sum(r['links'] for r in links)} (snapshot in {CVE_SNAPSHOT})")
+    elif stage == "clean":
+        plain = _stamps().get(f"{NET}.34") or {}
+        check("CC-01", (plain.get("js"), plain.get("ji"), plain.get("jo")) == ("complete", 1, 0),
+              f".34 (one script, nothing in it): {plain} (expect js_recon complete, 1 file, 0 findings)")
+        check("CC-02", js_recon_count() == 0, "js_recon findings: expect none")
+        js = (_summary().get("coverage") or {}).get("js_recon") or {}
+        check("CC-03", js.get("recorded") and js.get("complete") == 1,
+              f"graph_summary coverage.js_recon: {js} (expect one complete host)")
+    elif stage == "lost":
+        out = _summary()
+        check("GL-01", out.get("warning") == "graph_data_missing" and out.get("liveGraphState") == "stable",
+              f"graph_summary after the project's nodes were deleted: warning={out.get('warning')!r}, "
+              f"graphDataMissing={out.get('graphDataMissing')}")
+    elif stage == "import":
+        with open(CVE_SNAPSHOT) as fh:
+            before = json.load(fh)
+        original, imported = _cve_links(other), _cve_links()
+        count = lambda rows: sorted((r["id"], r["links"]) for r in rows)  # noqa: E731
+        check("EX-01", original and count(imported) == count(original),
+              f"INCLUDES_CVE links, imported {count(imported)} vs original {count(original)}")
+        same = json.loads(json.dumps(imported, sort_keys=True, default=str))
+        check("EX-02", [r["props"] for r in same] == [r["props"] for r in before],
+              "linked CVE nodes' properties after the import equal the snapshot taken before the export")
+    else:
+        sys.exit(USAGE)
+
+
 def js_recon_count():
     """JsReconFinding + Secret written by js_recon: what a run with no JS input must keep."""
     findings = q("MATCH (f:JsReconFinding) WHERE f.source = 'js_recon' RETURN count(f) AS n")
@@ -307,6 +393,9 @@ if len(sys.argv) > 2:
         sys.exit(report())
     if sys.argv[2] == "--passive-cves" and len(sys.argv) == 4:
         passive_cves(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--coverage" and len(sys.argv) in (4, 5):
+        coverage_checks(sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None)
         sys.exit(report())
     sys.exit(USAGE)
 
