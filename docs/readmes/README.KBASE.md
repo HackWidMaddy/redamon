@@ -1007,8 +1007,8 @@ flowchart TD
 
 | # | Step | Component | Code location | Latency |
 |---|---|---|---|---|
-| 1 | User sends chat message | Webapp | `webapp/src/app/api/chat/` | -- |
-| 2 | Webapp forwards to agent API | Agent HTTP | `orchestrator.py` | ~ms |
+| 1 | User sends chat message over the browser's WebSocket to the agent | Webapp | `webapp/src/hooks/agentWsUrl.ts` (`/ws/agent`) | -- |
+| 2 | The agent's WebSocket handler passes it to the orchestrator | Agent | `websocket_api.py` -> `orchestrator.py` | ~ms |
 | 3 | LLM decides to call `web_search` | LLM inference | (external API) | ~1-3s |
 | 4 | Tool invocation enters `WebSearchToolManager` | Agent | `tools.py:570-580` | -- |
 | 5 | Check if KB is attached | Agent | `tools.py:588` | -- |

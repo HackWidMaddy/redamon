@@ -2,34 +2,14 @@
  "_comment": "Repo paths cited by a doc under docs/readmes/ that do not exist at the path shown, found by skills/skill-sync/assets/drift-audit.sh --docs; read by tests/docs_cited_paths_test.sh. Remove an entry in the same commit as its fix. An item starting 'not a path:' is a token the audit cannot tell from a path; it stays until the prose changes.",
  "entries": [
   {
-   "file": "docs/readmes/README.AGENTIC_SYSTEM.md",
-   "path": "agentic/hard_guardrail.py",
-   "item": "drift-map #39"
-  },
-  {
-   "file": "docs/readmes/README.AGENTIC_SYSTEM.md",
-   "path": "agentic/kb_config.yaml",
-   "item": "drift-map #39"
-  },
-  {
    "file": "docs/readmes/README.CYPHERFIX_AGENTS.md",
    "path": "prompts/review.py",
    "item": "drift-map: found in wave 2"
   },
   {
-   "file": "docs/readmes/README.HTTP_PROBE.md",
-   "path": "recon/httpx_scan.py",
-   "item": "drift-map #39"
-  },
-  {
    "file": "docs/readmes/README.KBASE.md",
    "path": "data/cache/.manifest.json",
    "item": "drift-map: found in wave 2"
-  },
-  {
-   "file": "docs/readmes/README.KBASE.md",
-   "path": "webapp/src/app/api/chat/",
-   "item": "drift-map #39"
   },
   {
    "file": "docs/readmes/README.MCP.md",
@@ -42,16 +22,6 @@
    "item": "drift-map: found in wave 2"
   },
   {
-   "file": "docs/readmes/README.MITRE.md",
-   "path": "recon/add_mitre.py",
-   "item": "drift-map #39"
-  },
-  {
-   "file": "docs/readmes/README.MITRE.md",
-   "path": "recon/data/mitre_db",
-   "item": "drift-map #39"
-  },
-  {
    "file": "docs/readmes/README.PLUGIN_SDK.md",
    "path": "tests/conftest.py",
    "item": "not a path: a file inside each plugin's own folder"
@@ -62,24 +32,9 @@
    "item": "not a path: a file inside each plugin's own folder"
   },
   {
-   "file": "docs/readmes/README.PORT_SCAN.md",
-   "path": "recon/masscan_scan.py",
-   "item": "drift-map #39"
-  },
-  {
-   "file": "docs/readmes/README.PORT_SCAN.md",
-   "path": "recon/port_scan.py",
-   "item": "drift-map #39"
-  },
-  {
    "file": "docs/readmes/README.RECON.md",
    "path": "recon/helpers/passive_cve_coverage.note_cve_coverage",
    "item": "drift-map: found in wave 2"
-  },
-  {
-   "file": "docs/readmes/README.RESOURCE_ENUM.md",
-   "path": "recon/resource_enum.py",
-   "item": "drift-map #39"
   },
   {
    "file": "docs/readmes/README.TRAFFIC.md",
@@ -90,16 +45,6 @@
    "file": "docs/readmes/README.TRAFFIC.md",
    "path": "../../_local/internal/stride/README.TM.STRIDE.md",
    "item": "drift-map 4.14: links into _local/"
-  },
-  {
-   "file": "docs/readmes/README.TRAFFIC.md",
-   "path": "../webapp/src/components/projects/ProjectForm/sections/TrafficCaptureSection.tsx",
-   "item": "drift-map #39"
-  },
-  {
-   "file": "docs/readmes/README.VULN_SCAN.md",
-   "path": "recon/nuclei_scan.py",
-   "item": "drift-map #39"
   },
   {
    "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",

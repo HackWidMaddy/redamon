@@ -2,7 +2,7 @@
 
 ## Complete Technical Documentation
 
-> **Module:** `recon/httpx_scan.py`  
+> **Module:** `recon/main_recon_modules/http_probe.py`  
 > **Purpose:** HTTP probing, technology detection, and non-HTTP service detection  
 > **Author:** RedAmon Security Suite
 
@@ -24,7 +24,7 @@
 
 ## Overview
 
-The `httpx_scan.py` module integrates ProjectDiscovery's httpx toolkit into RedAmon's reconnaissance pipeline. httpx is a multi-purpose HTTP toolkit designed for probing, technology detection, and web service analysis.
+The `http_probe.py` module integrates ProjectDiscovery's httpx toolkit into RedAmon's reconnaissance pipeline. httpx is a multi-purpose HTTP toolkit designed for probing, technology detection, and web service analysis.
 
 **This module also includes integrated banner grabbing** for non-HTTP services (SSH, FTP, SMTP, MySQL, etc.) to provide complete service detection across all open ports.
 
@@ -45,7 +45,7 @@ The `httpx_scan.py` module integrates ProjectDiscovery's httpx toolkit into RedA
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Naabu Results  │────▶│  httpx_scan.py   │────▶│  Enriched JSON  │
+│  Naabu Results  │────▶│  http_probe.py   │────▶│  Enriched JSON  │
 │  (open ports,   │     │                  │     │  with live URLs,│
 │   hostnames)    │     │  1. Build URLs   │     │  technologies,  │
 └─────────────────┘     │  2. HTTP probe   │     │  TLS info,      │
@@ -485,7 +485,7 @@ HTTPX_INCLUDE_RESPONSE = True      # Full response capture
 
 ## Banner Grabbing
 
-Banner grabbing is **integrated into httpx_scan.py** and runs automatically after HTTP probing. It detects service versions on non-HTTP ports that httpx cannot probe.
+Banner grabbing is **integrated into http_probe.py** and runs automatically after HTTP probing. It detects service versions on non-HTTP ports that httpx cannot probe.
 
 ### Configuration
 
@@ -584,7 +584,7 @@ For comprehensive service detection (1000+ services), consider using nmap with `
 
 ## Wappalyzer Technology Enhancement
 
-Wappalyzer enhancement is **integrated into httpx_scan.py** and runs automatically after httpx parsing. It uses existing HTML from httpx (no additional HTTP requests) to detect 1000+ technologies, including CMS plugins, analytics tools, security tools, and frameworks that httpx might miss.
+Wappalyzer enhancement is **integrated into http_probe.py** and runs automatically after httpx parsing. It uses existing HTML from httpx (no additional HTTP requests) to detect 1000+ technologies, including CMS plugins, analytics tools, security tools, and frameworks that httpx might miss.
 
 ### How It Works
 
@@ -1065,17 +1065,10 @@ python3 recon/main.py
 ### Standalone Enrichment
 
 ```python
-from httpx_scan import enrich_recon_file
+from recon.main_recon_modules.http_probe import enrich_recon_file
 from pathlib import Path
 
 enriched = enrich_recon_file(Path("output/recon_example.com.json"))
-```
-
-### Command Line
-
-```bash
-# Enrich an existing recon file
-python3 recon/httpx_scan.py output/recon_example.com.json
 ```
 
 ### Configuration Profiles

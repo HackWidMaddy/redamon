@@ -2,7 +2,7 @@
 
 ## Complete Technical Documentation
 
-> **Module:** `recon/resource_enum.py`
+> **Module:** `recon/main_recon_modules/resource_enum.py`
 > **Purpose:** Endpoint discovery, classification, and parameter extraction
 > **Author:** RedAmon Security Suite
 
@@ -1261,7 +1261,7 @@ python3 recon/main.py
 ### Standalone Enrichment
 
 ```python
-from resource_enum import run_resource_enum
+from recon.main_recon_modules.resource_enum import run_resource_enum
 from pathlib import Path
 import json
 
@@ -1277,7 +1277,7 @@ enriched = run_resource_enum(recon_data, output_file=Path("output/recon_example.
 
 ```bash
 # Enrich an existing recon file
-python3 recon/resource_enum.py output/recon_example.com.json
+python3 recon/main_recon_modules/resource_enum.py output/recon_example.com.json
 ```
 
 ### Using Results in vuln_scan

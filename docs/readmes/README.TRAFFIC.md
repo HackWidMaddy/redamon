@@ -144,9 +144,11 @@ Capture is **off by default** and controlled by a **two-level gate**
 1. **Global capability switch** `UserSettings.captureProxyEnabled` (operator-level).
    Flipping this is what actually spawns or stops the proxy + ingest containers
    via the orchestrator. If it is off, no capture container runs at all.
-2. **Per-project routing gate** `Project.captureProxyEnabled` (the "HTTP Traffic
-   Capture" toggle in the project form,
-   [`TrafficCaptureSection.tsx`](../webapp/src/components/projects/ProjectForm/sections/TrafficCaptureSection.tsx)).
+2. **Per-project routing gate** `Project.captureProxyEnabled` (the "Traffic
+   capture" toggle in the project form's scan modules,
+   [`ScanModulesSection.tsx`](../../webapp/src/components/projects/ProjectForm/sections/ScanModulesSection.tsx),
+   and the per-project switch in the TrafficMind settings,
+   [`TrafficCaptureToggle.tsx`](../../webapp/src/components/traffic/TrafficCaptureToggle.tsx)).
    This decides whether *that project's* traffic is routed through the running
    proxy.
 

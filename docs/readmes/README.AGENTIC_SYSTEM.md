@@ -950,7 +950,7 @@ Each block is a Python string template with placeholders that `prompts/__init__.
 
 ### Plugin Overrides of Built-In Skill Text
 
-Through the plugin platform (see [README.PLUGINS.md](README.PLUGINS.md)), a person can approve a plugin's rewrite of a built-in skill's static workflow parts. The webapp delivers the approved versions in the project settings payload (`skillTextOverrides`, only to the agent's master-key settings fetch), and `fetch_agent_settings` maps them to `SKILL_TEXT_OVERRIDES`. Every static part listed in [prompts/skill_parts.py](../../agentic/prompts/skill_parts.py) (47 parts across the 14 skills; blocks built from operator data are not listed) is appended through `resolve_skill_part` in [prompts/skill_part_seam.py](../../agentic/prompts/skill_part_seam.py), which renders the approved text only when every part of that skill's version still matches the factory text's SHA-256 and passes validation, and the factory text otherwise; the skill's gates still decide whether a part is rendered at all. It reads the session's own settings only and never raises, so without an approved override the prompt is byte-for-byte the factory prompt (pinned by `tests/test_skill_workflow_golden.py`). Each `phase_update` event carries `skill_workflow: {skillId, revision, changeSetId}` (revision 1 and `changeSetId` `null` = factory text; the whole record `null` when the turn rendered no skill text). Revision numbers restart per scope, so `changeSetId` is what identifies a version. A turn that rendered a user attack skill records `{skillId: "user_skill:<id>", kind: "user", contentSha256}` instead: the first 16 hex characters of the SHA-256 of the skill's UTF-8 content, and no `revision` key (a new version of a user skill is a new skill), so readers take `revision` with a default. `skillId` names the skill actually rendered: when the label's skill is off and an enabled version `supersedes` it, that version's text is rendered and recorded, while the label, the chain graph and the phase stay as they are. The validator judges what the model will read: invisible and control characters, and the headings of the sections placed after the skill text (also when split around a placeholder or disguised with look-alike letters), are refused, and the seam checks the rendered text again. The webapp reads the parts and validates proposals through the master-key endpoints `GET /plugins/skill-parts` and `POST /plugins/skill-parts/validate` ([plugin_api.py](../../agentic/plugin_api.py)).
+Through the plugin platform (see [README.PLUGINS.md](README.PLUGINS.md)), a person can approve a plugin's rewrite of a built-in skill's static workflow parts. The webapp delivers the approved versions in the project settings payload (`skillTextOverrides`, only to the agent's master-key settings fetch), and `fetch_agent_settings` maps them to `SKILL_TEXT_OVERRIDES`. Every static part listed in [prompts/skill_parts.py](../../agentic/prompts/skill_parts.py) (47 parts across the 14 skills; blocks built from operator data are not listed) is appended through `resolve_skill_part` in [prompts/skill_part_seam.py](../../agentic/prompts/skill_part_seam.py), which renders the approved text only when every part of that skill's version still matches the factory text's SHA-256 and passes validation, and the factory text otherwise; the skill's gates still decide whether a part is rendered at all. It reads the session's own settings only and never raises, so without an approved override the prompt is byte-for-byte the factory prompt (pinned by `agentic/tests/test_skill_workflow_golden.py`). Each `phase_update` event carries `skill_workflow: {skillId, revision, changeSetId}` (revision 1 and `changeSetId` `null` = factory text; the whole record `null` when the turn rendered no skill text). Revision numbers restart per scope, so `changeSetId` is what identifies a version. A turn that rendered a user attack skill records `{skillId: "user_skill:<id>", kind: "user", contentSha256}` instead: the first 16 hex characters of the SHA-256 of the skill's UTF-8 content, and no `revision` key (a new version of a user skill is a new skill), so readers take `revision` with a default. `skillId` names the skill actually rendered: when the label's skill is off and an enabled version `supersedes` it, that version's text is rendered and recorded, while the label, the chain graph and the phase stay as they are. The validator judges what the model will read: invisible and control characters, and the headings of the sections placed after the skill text (also when split around a placeholder or disguised with look-alike letters), are refused, and the seam checks the rendered text again. The webapp reads the parts and validates proposals through the master-key endpoints `GET /plugins/skill-parts` and `POST /plugins/skill-parts/validate` ([plugin_api.py](../../agentic/plugin_api.py)).
 
 ### Skill Settings
 
@@ -1538,7 +1538,7 @@ sequenceDiagram
 Independent of the configurable tool confirmation, a **deterministic hard guardrail** permanently blocks government, military, educational, and international organization domains. This guardrail:
 
 - **Cannot be toggled off**, it runs regardless of project settings
-- Is implemented identically in Python (`agentic/hard_guardrail.py`) and TypeScript (`webapp/src/lib/hard-guardrail.ts`)
+- Is implemented identically in Python (`agentic/orchestrator_helpers/hard_guardrail.py`) and TypeScript (`webapp/src/lib/hard-guardrail.ts`)
 - Blocks by TLD suffix patterns (`.gov`, `.mil`, `.edu`, `.int`, and country-code variants like `.gov.uk`, `.ac.jp`)
 - Blocks by exact domain match for 300+ intergovernmental organizations on generic TLDs (e.g., `un.org`, `nato.int`, `europa.eu`, `worldbank.org`)
 - Provides defense-in-depth alongside the soft LLM-based guardrail
@@ -3172,8 +3172,8 @@ The agent enforces three layered guardrails on every target it might touch. Each
 
 | Layer | File | Mechanism | Toggleable? | When evaluated |
 |---|---|---|---|---|
-| **Hard** | [agentic/hard_guardrail.py](../../agentic/orchestrator_helpers/hard_guardrail.py) | Pure regex/string match against TLD patterns + ~200-domain exact set | **No**, non-disableable | At `initialize_node`; also re-checked in `think_node` when injecting the scope reminder |
-| **Soft** | [agentic/guardrail.py](../../agentic/orchestrator_helpers/guardrail.py) | LLM-based "is this safe to scan" classifier with retry | Yes, `AGENT_GUARDRAIL_ENABLED` | At `initialize_node` after hard guardrail passes |
+| **Hard** | [agentic/orchestrator_helpers/hard_guardrail.py](../../agentic/orchestrator_helpers/hard_guardrail.py) | Pure regex/string match against TLD patterns + ~200-domain exact set | **No**, non-disableable | At `initialize_node`; also re-checked in `think_node` when injecting the scope reminder |
+| **Soft** | [agentic/orchestrator_helpers/guardrail.py](../../agentic/orchestrator_helpers/guardrail.py) | LLM-based "is this safe to scan" classifier with retry | Yes, `AGENT_GUARDRAIL_ENABLED` | At `initialize_node` after hard guardrail passes |
 | **Scope reminder** | [agentic/orchestrator_helpers/nodes/think_node.py](../../agentic/orchestrator_helpers/nodes/think_node.py) (lines ~289-305) | Prompt-level injection: "you must only operate against the project's configured target" | Implicit (depends on hard-block status + `AGENT_GUARDRAIL_ENABLED`) | Every think iteration |
 
 ### Hard Guardrail, The Floor
@@ -4280,7 +4280,7 @@ When a Deep Think pre-step runs, its `usage_metadata` is added to `_dt_in` / `_d
 
 ## Knowledge Base Integration
 
-When the agent calls `web_search` (or any retrieval tool), the request is routed through a federated KB-first pipeline: **knowledge base** (curated infosec corpus) → **web search fallback**. Configured per-project via the webapp; defaults inherited from `agentic/kb_config.yaml`.
+When the agent calls `web_search` (or any retrieval tool), the request is routed through a federated KB-first pipeline: **knowledge base** (curated infosec corpus) → **web search fallback**. Configured per-project via the webapp; defaults inherited from `services/knowledge_base/kb_config.yaml` (baked into the agent image as the `knowledge_base` package).
 
 | Setting | Default | Purpose |
 |---|---|---|
@@ -4294,7 +4294,7 @@ When the agent calls `web_search` (or any retrieval tool), the request is routed
 | `KB_OVERFETCH_FACTOR` | inherits yaml | How many extra chunks to fetch before MMR truncates |
 | `KB_SOURCE_BOOSTS` | inherits yaml | Per-source ranking multipliers (e.g. boost CISA KEV for known-exploited CVEs) |
 
-When `KB_ENABLED=null`, the project inherits the top-level `KB_ENABLED` flag from `agentic/kb_config.yaml`. This lets ops disable KB system-wide for testing without touching every project.
+When `KB_ENABLED=null`, the project inherits the top-level `KB_ENABLED` flag from `services/knowledge_base/kb_config.yaml`. This lets ops disable KB system-wide for testing without touching every project.
 
 ---
 
@@ -4472,15 +4472,15 @@ This section is a **map of the source tree** for engineers who need to find a sp
 | `api.py` | REST API endpoints |
 | `websocket_api.py` | WebSocket streaming API |
 | `utils.py` | Utility functions |
-| `hard_guardrail.py` | Deterministic non-disableable target blocking (TLD patterns + ~200 IGO domains) |
-| `guardrail.py` | LLM-based soft guardrail (well-known commercial sites, IP-mode reverse DNS) |
-| `skill_loader.py` | Markdown skill discovery and YAML frontmatter parsing |
+| `orchestrator_helpers/hard_guardrail.py` | Deterministic non-disableable target blocking (TLD patterns + ~200 IGO domains) |
+| `orchestrator_helpers/guardrail.py` | LLM-based soft guardrail (well-known commercial sites, IP-mode reverse DNS) |
+| `orchestrator_helpers/skill_loader.py` | Markdown skill discovery and YAML frontmatter parsing |
 | `skills/` | User attack skills (markdown files, classified as `user_skill:<id>`) |
 | `community-skills/` | Chat skills (on-demand reference docs injected via `/skill`) |
-| `report_summarizer.py` | Post-engagement narrative synthesis (6 report sections) |
-| `chat_persistence.py` | Async Postgres helpers for `ChatMessage` and conversation rows |
-| `key_rotation.py` | Round-robin API key rotator for rate-limit avoidance |
-| `model_providers.py` | LLM provider factory (Anthropic / OpenAI / etc.) |
+| `orchestrator_helpers/report_summarizer.py` | Post-engagement narrative synthesis (6 report sections) |
+| `orchestrator_helpers/chat_persistence.py` | Async Postgres helpers for `ChatMessage` and conversation rows |
+| `orchestrator_helpers/key_rotation.py` | Round-robin API key rotator for rate-limit avoidance |
+| `orchestrator_helpers/model_providers.py` | LLM provider factory (Anthropic / OpenAI / etc.) |
 | `logging_config.py` | Structured logging with rotation |
 | `prompts/` | System prompts package (phase-aware, attack-path-specific) |
 | `prompts/base.py` | Core ReAct, analysis, Deep Think, and report prompts |
@@ -4511,6 +4511,7 @@ This section is a **map of the source tree** for engineers who need to find a sp
 | `orchestrator_helpers/nodes/think_node.py` | ReAct think + Deep Think pre-step + LATS hook + RoE/stealth/scope-guardrail injection |
 | `orchestrator_helpers/nodes/execute_tool_node.py` | Sequential tool execution with progress streaming |
 | `orchestrator_helpers/nodes/execute_plan_node.py` | Wave execution, parallel tool plan runner via `asyncio.gather()` |
+| `orchestrator_helpers/roe_gate.py` | `check_tool_call()`: the RoE and recon-budget gate the single-tool node, the plan wave and every fireteam member ask before dispatch |
 | `orchestrator_helpers/nodes/approval_nodes.py` | `await_approval` / `process_approval` / `await_question` / `process_answer` |
 | `orchestrator_helpers/nodes/tool_confirmation_nodes.py` | `await_tool_confirmation` / `process_tool_confirmation` |
 | `orchestrator_helpers/nodes/generate_response_node.py` | Final-report synthesis when task completes or aborts |

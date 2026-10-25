@@ -2,7 +2,7 @@
 
 ## Complete Technical Documentation
 
-> **Modules:** `recon/masscan_scan.py`, `recon/port_scan.py`
+> **Modules:** `recon/main_recon_modules/masscan_scan.py`, `recon/main_recon_modules/port_scan.py`
 > **Purpose:** High-speed port scanning using Masscan and Naabu in parallel
 > **Author:** RedAmon Security Suite
 
@@ -23,7 +23,7 @@
 
 ## Overview
 
-The `naabu_scan.py` module integrates ProjectDiscovery's Naabu scanner into RedAmon's reconnaissance pipeline. Naabu is optimized for fast, reliable port scanning at scale.
+The `port_scan.py` module integrates ProjectDiscovery's Naabu scanner into RedAmon's reconnaissance pipeline. Naabu is optimized for fast, reliable port scanning at scale.
 
 **⚠️ Important:** Naabu runs exclusively via Docker. No native installation is supported.
 
@@ -41,7 +41,7 @@ The `naabu_scan.py` module integrates ProjectDiscovery's Naabu scanner into RedA
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Recon Data     │────▶│  naabu_scan.py   │────▶│  Enriched JSON  │
+│  Recon Data     │────▶│  port_scan.py    │────▶│  Enriched JSON  │
 │  (hostnames,    │     │                  │     │  with ports,    │
 │   IPs from DNS) │     │  1. Extract IPs  │     │  services, CDN  │
 └─────────────────┘     │  2. Build targets│     └─────────────────┘
@@ -597,17 +597,10 @@ python3 recon/main.py
 ### Standalone Enrichment
 
 ```python
-from naabu_scan import enrich_recon_file
+from recon.main_recon_modules.port_scan import enrich_recon_file
 from pathlib import Path
 
 enriched = enrich_recon_file(Path("output/recon_example.com.json"))
-```
-
-### Command Line
-
-```bash
-# Enrich an existing recon file
-python3 recon/naabu_scan.py output/recon_example.com.json
 ```
 
 ### Configuration Profiles

@@ -2,7 +2,7 @@
 
 ## Complete Technical Documentation
 
-> **Module:** `recon/nuclei_scan.py`  
+> **Module:** `recon/main_recon_modules/vuln_scan.py`  
 > **Purpose:** Template-based web application vulnerability scanning using ProjectDiscovery's Nuclei  
 > **Author:** RedAmon Security Suite
 
@@ -28,7 +28,7 @@
 
 ## Overview
 
-The `nuclei_scan.py` module integrates ProjectDiscovery's Nuclei scanner into RedAmon's reconnaissance pipeline. Nuclei is a fast, template-based vulnerability scanner that excels at web application security testing.
+The `vuln_scan.py` module integrates ProjectDiscovery's Nuclei scanner into RedAmon's reconnaissance pipeline. Nuclei is a fast, template-based vulnerability scanner that excels at web application security testing.
 
 **⚠️ Important:** Nuclei runs exclusively via Docker. No native installation is supported.
 
@@ -46,7 +46,7 @@ The `nuclei_scan.py` module integrates ProjectDiscovery's Nuclei scanner into Re
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Recon Data     │────▶│  nuclei_scan.py  │────▶│  Enriched JSON  │
+│  Recon Data     │────▶│  vuln_scan.py    │────▶│  Enriched JSON  │
 │  (hostnames,    │     │                  │     │  with web vulns,│
 │   IPs, ports)   │     │  1. Build URLs   │     │  CVEs, exposed  │
 └─────────────────┘     │  2. Run Katana   │     │  panels, etc.   │
@@ -583,7 +583,7 @@ docker run --rm \
                                   │
                                   ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                          nuclei_scan.py                                   │
+│                          vuln_scan.py                                    │
 │                                                                          │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐  │
 │  │ extract_targets │───▶│ build_target    │───▶│ build_nuclei        │  │
@@ -592,7 +592,7 @@ docker run --rm \
 │           │                     │                        │               │
 │           ▼                     ▼                        ▼               │
 │  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                    run_nuclei_scan()                             │    │
+│  │                    run_vuln_scan()                               │    │
 │  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────────┐   │    │
 │  │  │ Docker        │─▶│ parse_nuclei  │─▶│ aggregate         │   │    │
 │  │  │ (nuclei CLI)  │  │ _finding()    │  │ results           │   │    │
@@ -763,7 +763,7 @@ Mute Rules CVE fields (`has_cve`, `cve_year`, `cve_ids`) read. Regression tests:
 
 ---
 
-### `run_nuclei_scan(recon_data: dict, output_file: Path = None) -> dict`
+### `run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = None) -> dict`
 
 **Purpose:** Main orchestrator function for nuclei scanning.
 
@@ -1339,17 +1339,10 @@ python3 recon/main.py
 ### Standalone Enrichment
 
 ```python
-from nuclei_scan import enrich_recon_file
+from recon.main_recon_modules.vuln_scan import enrich_recon_file
 from pathlib import Path
 
 enriched = enrich_recon_file(Path("output/recon_example.com.json"))
-```
-
-### Command Line
-
-```bash
-# Enrich an existing recon file
-python3 recon/nuclei_scan.py output/recon_example.com.json
 ```
 
 ### Custom Configuration Profiles
