@@ -72,6 +72,21 @@ def _shodan_base_overrides() -> dict:
             if (os.environ.get(k) or "").strip()}
 
 
+#: The memory-governor knobs graph_db/resource_governor.py reads inside the recon
+#: container, where the ratio model scales recon's parallelism (rg.scaled in
+#: recon/project_settings.py). compose forwards them to this service only.
+GOVERNOR_KNOBS = (
+    "REDAMON_MEM_GOVERNOR", "MEM_SCALE_HIGH", "MEM_SCALE_LOW", "MEM_SCALE_FLOOR",
+    "MEM_READ_TTL_S", "MEM_BUDGET_FRACTION", "PER_CONTAINER_MAX", "CONTAINER_CAP_HEADROOM",
+)
+
+
+def _governor_overrides() -> dict:
+    """The governor knobs an operator set, forwarded to a recon container; an
+    unset knob stays unset there, so the code default applies."""
+    return {k: os.environ[k] for k in GOVERNOR_KNOBS if (os.environ.get(k) or "").strip()}
+
+
 def sibling_host_path(host_path: str, name: str) -> str:
     """Return the sibling ``name`` of ``host_path`` on the DOCKER HOST filesystem.
 
@@ -1029,6 +1044,7 @@ class ContainerManager:
                     # the exact value "off" disables them (compose defaults "on").
                     "RECON_CIRCUIT_BREAKERS": os.environ.get("RECON_CIRCUIT_BREAKERS", "on"),
                     **_shodan_base_overrides(),
+                    **_governor_overrides(),
                     "RECON_RUN_ID": recon_run_id,
                     # Scan Timeline telemetry only (see start_recon docstring).
                     "SCAN_MODE": scan_mode or "",
@@ -2070,6 +2086,7 @@ class ContainerManager:
                     "PARTIAL_RECON_RUN_ID": run_id,
                     "RECON_CIRCUIT_BREAKERS": os.environ.get("RECON_CIRCUIT_BREAKERS", "on"),
                     **_shodan_base_overrides(),
+                    **_governor_overrides(),
                     "UPDATE_GRAPH_DB": "true",
                     "HOST_RECON_OUTPUT_PATH": f"{recon_path}/output",
                     # Required for nuclei custom-template support: build_nuclei_command
