@@ -80,8 +80,12 @@ whether a bound is right.
 
 ## Three keys that exist because uniformity is a lie
 
-520 of the 525 settings mappings are byte-identical in form, which is what makes
-this tractable. The other five carry semantics a naive generator would erase.
+All but three of the 541 settings mappings in `recon/project_settings.py` are
+byte-identical in form (`python3 tooling/scripts/parse_settings_mappings.py`
+counts them and prints the others), which is what makes this tractable. The
+other three, `JS_RECON_ENDPOINT_ACCEPT_STATUS`, `FOFA_MAX_RESULTS` and
+`UNCOVER_MAX_RESULTS`, replace a falsy stored value with the default: semantics
+a naive generator would erase.
 
 **`zero_means: unlimited`.** Five rate fields treat `0` as unlimited, which is
 the FASTEST value available rather than the slowest: `ffufRate`,
@@ -114,9 +118,10 @@ proves it did not.
 
 ## The golden master
 
-`recon/tests/test_golden_master.py` resolves twenty-two synthetic projects
-through the full settings path and compares every key and value against a
-committed baseline. Comparing generated FILES catches almost nothing: a
+`recon/tests/test_golden_master.py` resolves the synthetic projects that `cases()`
+in `recon/tests/golden_settings.py` defines (eighteen today) through the full
+settings path and compares every key and value against each one's committed
+baseline in `recon/tests/fixtures/golden_settings/`. Comparing generated FILES catches almost nothing: a
 generator can emit a perfectly plausible mapping that is byte-different in a way
 no diff flags, and every risk here shows up only in the VALUE a scan runs with.
 
