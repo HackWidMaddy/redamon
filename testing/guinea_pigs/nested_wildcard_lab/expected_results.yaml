@@ -2,7 +2,9 @@
 # wildcards ship (scan roots below the org, one Domain per org). Asserted by
 # validate_nested_wildcards.py through the inbound MCP server (query_graph).
 #
-# Every check is one read-only Cypher returning a column `v`, and one assertion:
+# Every check is one read-only Cypher returning a column `v` (or, with
+# `recon_json: <dotted.path>`, the keys or items at that path of the run's recon
+# JSON), and one assertion:
 #   equals    the set of v equals the list
 #   superset  the set of v contains every item
 #   disjoint  the set of v contains none of the items
@@ -225,4 +227,81 @@ scenarios:
       - id: only_the_hidden_name_is_injected
         cypher: "MATCH (b:BaseURL) WHERE b.discovery_source = 'vhost_sni_enum' RETURN b.host AS v"
         equals: ["vhost-only.nwlab.test"]
+    common: true
+
+  WC:
+    title: >-
+      Wildcard DNS under a scan root (plan 08.3): *.wild.nwlab.test answers every
+      name with web1, real.wild.nwlab.test has its own record on web2. The lab has
+      no brute force, so the names arrive the way the lab discovers: the
+      certificate web1 serves for wild.nwlab.test names four hosts that exist only
+      through the wildcard, and real.wild. RedAmon's wildcard control (puredns is
+      off here, as in every lab project) keeps real.wild and drops the other four.
+    create:
+      domainBatchHosts:
+        - "*.wild.nwlab.test"
+        - wild.nwlab.test
+      settings: *lab
+    checks:
+      - id: the_zone_is_stamped_as_a_wildcard
+        cypher: "MATCH (s:Subdomain {name:'wild.nwlab.test'}) RETURN s.is_wildcard_zone AS v"
+        "true": true
+      - id: the_wildcard_answers_with_web1
+        cypher: "MATCH (s:Subdomain {name:'wild.nwlab.test'}) UNWIND coalesce(s.wildcard_ips, []) AS ip RETURN ip AS v"
+        equals: [192.88.99.60]
+      - id: wildcard_only_names_are_no_subdomain
+        cypher: "MATCH (s:Subdomain) RETURN s.name AS v"
+        disjoint: [admin.wild.nwlab.test, dev.wild.nwlab.test, vpn.wild.nwlab.test, staging.wild.nwlab.test]
+      - id: wildcard_only_names_are_never_scanned
+        cypher: "MATCH (b:BaseURL) RETURN DISTINCT b.host AS v"
+        disjoint: [admin.wild.nwlab.test, dev.wild.nwlab.test, vpn.wild.nwlab.test, staging.wild.nwlab.test]
+      # A certificate name merged after httpx becomes a scan target, not a
+      # Subdomain node, unless tlsx or vhost/SNI writes it (neither runs here).
+      # So the two checks above hold even without the control; these two, on
+      # the run's own target list, are the ones that tell kept from dropped.
+      - id: the_name_with_its_own_record_is_a_target
+        recon_json: dns.subdomains
+        superset: [wild.nwlab.test, real.wild.nwlab.test]
+      - id: wildcard_only_names_are_no_target
+        recon_json: dns.subdomains
+        disjoint: [admin.wild.nwlab.test, dev.wild.nwlab.test, vpn.wild.nwlab.test, staging.wild.nwlab.test]
+      - id: a_checked_zone_is_no_coverage_gap
+        cypher: "MATCH (d:Domain {name:'nwlab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'wildcard_control' AS v"
+        equals: [false]
+    common: true
+
+  WC-DNSOFF:
+    title: >-
+      The WC hosts with DNS resolution off (plan 08.1 and 08.3): nothing is
+      resolved, so nothing reads as resolved, and the wildcard control does not
+      run, so no zone is stamped. In this lab nothing is probed either (httpx
+      gets no target without DNS), so no certificate name reaches the control
+      unchecked and no wildcard_control coverage gap is due; that note is
+      unit-tested (recon/tests/test_wildcard_control.py).
+    create:
+      domainBatchHosts:
+        - "*.wild.nwlab.test"
+        - wild.nwlab.test
+      settings:
+        <<: *lab
+        dnsEnabled: false
+    checks:
+      - id: no_domain_is_a_checked_zone
+        cypher: "MATCH (d:Domain) WHERE d.is_wildcard_zone IS NOT NULL RETURN d.name AS v"
+        count: 0
+      - id: no_subdomain_is_a_checked_zone
+        cypher: "MATCH (s:Subdomain) WHERE s.is_wildcard_zone IS NOT NULL RETURN s.name AS v"
+        count: 0
+      - id: no_subdomain_reads_as_resolved
+        cypher: "MATCH (s:Subdomain) WHERE s.status = 'resolved' RETURN s.name AS v"
+        count: 0
+      - id: no_subdomain_resolves_to_an_ip
+        cypher: "MATCH (s:Subdomain)-[:RESOLVES_TO]->(i:IP) RETURN s.name AS v"
+        count: 0
+      - id: nothing_went_in_unchecked
+        recon_json: dns.subdomains
+        count: 0
+      - id: so_no_wildcard_gap_is_due
+        cypher: "MATCH (d:Domain {name:'nwlab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'wildcard_control' AS v"
+        equals: [false]
     common: true
