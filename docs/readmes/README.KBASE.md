@@ -187,7 +187,7 @@ The pipeline uses a two-layer caching system to avoid redundant work:
 
 **Layer 1 -- File-level cache** (tarball sources only): Each downloaded file is hashed. On the next run, only files with changed hashes are re-parsed. Stored in `data/cache/<source>/.file_hashes.json`.
 
-**Layer 2 -- Chunk content-hash filter**: After chunking, each chunk's content is SHA-256 hashed. If a chunk's hash matches the previous run's manifest (`data/cache/.manifest.json`), it is skipped entirely -- no re-embedding, no re-upserting. This catches cases where files changed but the extracted chunks did not.
+**Layer 2 -- Chunk content-hash filter**: After chunking, each chunk's content is SHA-256 hashed. If a chunk's hash matches the previous run's manifest (`services/knowledge_base/data/cache/.manifest.json`, gitignored runtime data), it is skipped entirely -- no re-embedding, no re-upserting. This catches cases where files changed but the extracted chunks did not.
 
 ### NVD-specific behavior
 

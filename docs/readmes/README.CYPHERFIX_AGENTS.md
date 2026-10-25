@@ -403,7 +403,7 @@ v3.0.0 on a graph nobody has clicked. Tests:
   carries, the fix-list route re-points the orphaned row that shares at least
   half of the group's findings (largest overlap, then protected, then newest;
   once per run) instead of creating a duplicate, and reports it as `repointed`.
-- **Review** (`cypherfix_triage/evidence.py`, `prompts/review.py`): the LLM
+- **Review** (`cypherfix_triage/evidence.py`, `cypherfix_triage/prompts/review.py`): the LLM
   corrects FACTORS against quoted evidence and never produces a score. Every
   quote is verified as a substring of what was sent; an unverifiable correction
   becomes "no change". `security_check` and OSV findings never reach it. A

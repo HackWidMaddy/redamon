@@ -706,7 +706,7 @@ What follows from that:
   like any other's; muted and judged ones are kept as stale, as the nmap rule in
   `_note_nmap_without_port_data` does. A source that was meant to run and could
   not check everything is degraded instead, through
-  `recon/helpers/passive_cve_coverage.note_cve_coverage`: each lookup records
+  `note_cve_coverage` in `recon/helpers/passive_cve_coverage.py`: each lookup records
   which IPs got an answer ("no data" included), the IPs it could not ask about
   are kept by host (`target_ip`, source-only), and a lookup that reached
   nothing (a refused key, a crash, no IP at all) keeps its whole source.
