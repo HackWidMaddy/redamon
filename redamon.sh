@@ -2763,6 +2763,15 @@ remove_spawned_containers() {
     fi
 }
 
+# The third-party tool images recon/entrypoint.sh pre-pulls (its IMAGES array),
+# one per line, read from that file so the list removed here is the list pulled.
+_recon_tool_images() {
+    local img
+    while IFS= read -r img; do
+        if [[ -n "$img" && "$img" != redamon-* ]]; then printf '%s\n' "$img"; fi
+    done < <(sed -n '/^IMAGES=(/,/^)/s/^[[:space:]]*"\([^"]*\)".*/\1/p' "$SCRIPT_DIR/recon/entrypoint.sh")
+}
+
 remove_redamon_images() {
     # Remove locally-built redamon images
     docker images --format '{{.Repository}}:{{.Tag}}' \
@@ -2774,27 +2783,13 @@ remove_redamon_images() {
         | grep 'registry.community.greenbone.net' \
         | xargs -r docker rmi 2>/dev/null || true
 
-    # Remove ProjectDiscovery + recon tool images (pulled at runtime by entrypoint)
-    local runtime_images=(
-        "projectdiscovery/naabu"
-        "projectdiscovery/httpx"
-        "projectdiscovery/katana"
-        "projectdiscovery/nuclei"
-        "projectdiscovery/subfinder"
-        "projectdiscovery/dnsx"
-        "projectdiscovery/uncover"
-        "sxcurity/gau"
-        "caffix/amass"
-        "frost19k/puredns"
-        "jauderho/hakrawler"
-        "trufflesecurity/trufflehog"
-        # On-demand local LLM (Ollama) for the AI Attack Surface judge/attacker —
-        # pulled at runtime by the orchestrator, not built.
-        "$LOCAL_LLM_IMAGE"
-    )
-    for img in "${runtime_images[@]}"; do
+    # Remove the recon tool images (pulled at runtime by recon/entrypoint.sh) and
+    # the on-demand local LLM (Ollama) the orchestrator pulls for the AI Attack
+    # Surface judge/attacker.
+    local img
+    while IFS= read -r img; do
         docker rmi "$img" 2>/dev/null || true
-    done
+    done < <(_recon_tool_images; printf '%s\n' "$LOCAL_LLM_IMAGE")
 }
 
 pull_gvm_images() {
