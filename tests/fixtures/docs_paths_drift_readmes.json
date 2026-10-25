@@ -45,46 +45,6 @@
    "file": "docs/readmes/README.TRAFFIC.md",
    "path": "../../_local/internal/stride/README.TM.STRIDE.md",
    "item": "drift-map 4.14: links into _local/"
-  },
-  {
-   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
-   "path": "../../.pre-commit-config.yaml",
-   "item": "drift-map #41"
-  },
-  {
-   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
-   "path": "../../AGENTS.md",
-   "item": "drift-map #41"
-  },
-  {
-   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
-   "path": "../../my_readmes/",
-   "item": "drift-map #41"
-  },
-  {
-   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
-   "path": "../../skills/skill-creator/SKILL.md",
-   "item": "drift-map #41"
-  },
-  {
-   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
-   "path": "../../skills/skill-sync/SKILL.md",
-   "item": "drift-map #41"
-  },
-  {
-   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
-   "path": "../../skills/skill-sync/assets/citation-check.sh",
-   "item": "drift-map #41"
-  },
-  {
-   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
-   "path": "../../skills/skill-sync/assets/drift-audit.sh",
-   "item": "drift-map #41"
-  },
-  {
-   "file": "docs/readmes/skills_management/SKILLS_MANAGEMENT.md",
-   "path": "../../skills/skill-sync/assets/sync.sh",
-   "item": "drift-map #41"
   }
  ]
 }
