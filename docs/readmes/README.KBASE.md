@@ -59,7 +59,7 @@ graph TB
         SB[Source Boosts]
         RR[Cross-Encoder Rerank<br/>bge-reranker-base]
         MMR[MMR Diversity Filter]
-        SC[Sufficiency Check<br/>score >= 0.35?]
+        SC[Sufficiency Check<br/>score >= threshold?]
         TV[Tavily Fallback]
         RES[Results to Agent]
 
@@ -234,7 +234,7 @@ flowchart TD
     end
 
     subgraph "Stage 6: Sufficiency Check"
-        CHECK["top_result.score >= 0.35?"]
+        CHECK["top_result.score >= threshold?"]
         YES["Return KB results"]
         NO["Fallback to Tavily<br/>merge if partial KB results"]
         CHECK -->|yes| YES
@@ -255,7 +255,7 @@ flowchart TD
 - **Source boosts** are multiplicative on the RRF score (pre-rerank) and on the sigmoid-transformed reranker score (post-rerank).
 - **Cross-encoder** returns raw logits (can be negative). Sigmoid is applied before boosting to ensure correct directionality.
 - **MMR** uses a lightweight similarity proxy (no stored vectors): `0.4 * same_source + 0.6 * title_jaccard`. Lambda=0.65 slightly favors relevance over diversity.
-- **Sufficiency threshold** defaults to 0.35. Below this, Tavily is queried as a fallback.
+- **Sufficiency threshold** is the project's `KB_SCORE_THRESHOLD`, else `retrieval.score_threshold`: 0.80 in the shipped `kb_config.yaml` (0.35 is the code default for a config without the key). Below it, Tavily is queried as a fallback.
 
 ---
 
@@ -315,7 +315,7 @@ The `web_search` tool implements a three-tier fallback:
 
 | Condition | Behavior |
 |---|---|
-| KB score >= threshold (0.35) | Return KB results only, skip Tavily |
+| KB score >= threshold | Return KB results only, skip Tavily |
 | KB score < threshold | Query Tavily, merge KB partial results with Tavily results |
 | KB fails, Tavily succeeds | Return Tavily results only |
 | Tavily fails, KB has partial results | Return KB results with "(Tavily unavailable)" header |
@@ -417,7 +417,7 @@ flowchart BT
 Located at `services/knowledge_base/kb_config.yaml`. Mounted read-only into the agent container.
 
 ```yaml
-KB_ENABLED: true
+KB_ENABLED: false                  # not read at runtime: the agent's KB_ENABLED env var decides
 
 embedder:
   model: "intfloat/e5-large-v2"   # 1024 dimensions, 512 token cap
@@ -439,7 +439,7 @@ fulltext:
 retrieval:
   top_k: 5
   overfetch_factor: 6              # candidate_pool = top_k * factor
-  score_threshold: 0.35            # below this, fall back to Tavily
+  score_threshold: 0.80            # below this, fall back to Tavily
   rrf_k: 60                        # RRF smoothing constant
 
 mmr:
@@ -460,6 +460,7 @@ ingestion:
   nvd_lookback_days: 90
   nvd_min_cvss: 7.0
   profiles:
+    cpu-lite: [tool_docs, gtfobins, lolbas]
     lite: [tool_docs, gtfobins, lolbas, owasp, exploitdb]
     standard: [tool_docs, gtfobins, lolbas, owasp, exploitdb, nvd]
     full: [tool_docs, gtfobins, lolbas, owasp, exploitdb, nvd, nuclei]
@@ -937,8 +938,8 @@ flowchart TD
     end
 
     subgraph "WebSearchToolManager"
-        WSM["web_search tool closure<br/>tools.py"]
-        CHK["KB attached?"]
+        WSM["web_search tool closure<br/>WebSearchToolManager.get_tool()"]
+        CHK["KB attached and on?"]
         SRCS["Resolve sources<br/>include/exclude from args<br/>or project KB_ENABLED_SOURCES"]
         CLAMP["Clamp top_k to 1-20"]
     end
@@ -956,7 +957,7 @@ flowchart TD
     end
 
     subgraph "Sufficiency Decision"
-        SUFF["top_result.score >= 0.35?"]
+        SUFF["top_result.score >= threshold?"]
         KB_OK["Format KB results<br/>sanitize content<br/>wrap in UNTRUSTED frame"]
         TAVILY["Call Tavily API<br/>search_depth=advanced"]
         MERGE["Merge KB partial +<br/>Tavily results"]
@@ -990,9 +991,9 @@ flowchart TD
     RERANK --> MMR_Q
     MMR_Q --> SUFF
 
-    SUFF -->|">= 0.35"| KB_OK
+    SUFF -->|">= threshold"| KB_OK
     KB_OK --> RESULT
-    SUFF -->|"< 0.35"| TAVILY
+    SUFF -->|"< threshold"| TAVILY
     TAVILY -->|success + KB partial| MERGE
     MERGE --> RESULT
     TAVILY -->|fail + KB partial| KB_ONLY
@@ -1010,22 +1011,22 @@ flowchart TD
 | 1 | User sends chat message over the browser's WebSocket to the agent | Webapp | `webapp/src/hooks/agentWsUrl.ts` (`/ws/agent`) | -- |
 | 2 | The agent's WebSocket handler passes it to the orchestrator | Agent | `websocket_api.py` -> `orchestrator.py` | ~ms |
 | 3 | LLM decides to call `web_search` | LLM inference | (external API) | ~1-3s |
-| 4 | Tool invocation enters `WebSearchToolManager` | Agent | `tools.py:570-580` | -- |
-| 5 | Check if KB is attached | Agent | `tools.py:588` | -- |
-| 6 | Resolve `include_sources` from args or project settings | Agent | `tools.py:578-582` | -- |
-| 7 | Clamp `top_k` to [1, 20] | Agent | `tools.py:587` | -- |
-| 8 | `kb.query()` starts | KB Orchestrator | `kb_orchestrator.py:90` | -- |
-| 9 | Embed query with `e5-large-v2` (prepend `"query: "`) | Embedder | `embedder.py:100-110` | ~30ms |
-| 10 | FAISS inner-product search on normalized vectors | FAISSIndexer | `faiss_indexer.py:110-130` | ~5ms |
-| 11 | Neo4j Lucene fulltext search on `content` + `title` | Neo4jLoader | `neo4j_loader.py:285-330` | ~5ms |
-| 12 | RRF fusion merges vector + keyword ranked lists | KB Orchestrator | `kb_orchestrator.py:240-270` | <1ms |
-| 13 | Neo4j metadata fetch + source/CVSS/severity filter | Neo4jLoader | `neo4j_loader.py:230-280` | ~5ms |
-| 14 | Multiply scores by source boost factors | KB Orchestrator | `kb_orchestrator.py:145-155` | <1ms |
-| 15 | Cross-encoder rerank (top 30, sigmoid, re-boost) | Reranker | `reranker.py:130-190` | ~200ms |
-| 16 | MMR diversity selection (top_k from pool) | KB Orchestrator | `kb_orchestrator.py:280-340` | <1ms |
-| 17 | Sufficiency check: `results[0].score >= 0.35` | KB Orchestrator | `kb_orchestrator.py:230-235` | -- |
-| 18a | **If sufficient**: sanitize, frame, return KB results | Agent | `tools.py:600-640` | -- |
-| 18b | **If insufficient**: call Tavily, merge with partials | Agent | `tools.py:606-626` | ~1-2s |
+| 4 | Tool invocation enters the `web_search` closure built by `WebSearchToolManager.get_tool()` | Agent | `agentic/tools.py`: `WebSearchToolManager.get_tool` | -- |
+| 5 | Check the KB is attached and not turned off for the project (`KB_ENABLED`) | Agent | `agentic/tools.py`: `web_search` (`kb and kb_on`) | -- |
+| 6 | Resolve `include_sources` from args, else the project's `KB_ENABLED_SOURCES` | Agent | `agentic/tools.py`: `web_search` (`effective_include`) | -- |
+| 7 | Clamp a caller-given `top_k` to [1, 20]; without one, `KB_TOP_K` or `retrieval.top_k` | Agent | `agentic/tools.py`: `web_search` | -- |
+| 8 | `kb.query()` starts | KB Orchestrator | `kb_orchestrator.py`: `PentestKnowledgeBase.query` | -- |
+| 9 | Embed query with `e5-large-v2` (prepend `"query: "`) | Embedder | `embedder.py`: `Embedder.embed_query` | ~30ms |
+| 10 | FAISS inner-product search on normalized vectors | FAISSIndexer | `faiss_indexer.py`: `FAISSIndexer.search` | ~5ms |
+| 11 | Neo4j Lucene fulltext search on `content` + `title` | Neo4jLoader | `neo4j_loader.py`: `Neo4jLoader.fulltext_search` | ~5ms |
+| 12 | RRF fusion merges vector + keyword ranked lists | KB Orchestrator | `kb_orchestrator.py`: `PentestKnowledgeBase._rrf_score_map` | <1ms |
+| 13 | Neo4j metadata fetch + source/CVSS/severity filter | Neo4jLoader | `neo4j_loader.py`: `Neo4jLoader.filter_chunks` | ~5ms |
+| 14 | Drop `exclude_sources`, multiply scores by source boost factors | KB Orchestrator | `kb_orchestrator.py`: `PentestKnowledgeBase.query` | <1ms |
+| 15 | Cross-encoder rerank (top 30, sigmoid, re-boost) | Reranker | `reranker.py`: `CrossEncoderReranker.rerank` (sigmoid and re-boost in `PentestKnowledgeBase.query`) | ~200ms |
+| 16 | MMR diversity selection (top_k from pool) | KB Orchestrator | `kb_orchestrator.py`: `PentestKnowledgeBase._mmr_rerank` | <1ms |
+| 17 | Sufficiency check: `results[0].score >= threshold` (`KB_SCORE_THRESHOLD`, else `retrieval.score_threshold`) | KB Orchestrator | `kb_orchestrator.py`: `PentestKnowledgeBase.is_sufficient` | -- |
+| 18a | **If sufficient**: sanitize, frame, return KB results | Agent | `agentic/tools.py`: `_format_kb_results` | -- |
+| 18b | **If insufficient**: call Tavily, merge with partials | Agent | `agentic/tools.py`: `_tavily_search`, `_merge_results` | ~1-2s |
 | 19 | Tool result injected into LLM context | Agent | `orchestrator.py` | -- |
 
 ### When does the LLM call web_search?
