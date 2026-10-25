@@ -18,7 +18,8 @@ export type Transport = (typeof TRANSPORTS)[number]
  * Tool names reserved by built-in / system tools - user MCP tools must not use these.
  *
  * Must equal what the agent rejects at manifest load: `_builtin_tool_names()` in
- * agentic/mcp_registry.py (the TOOL_REGISTRY keys plus `tradecraft_lookup`).
+ * agentic/mcp_registry.py (the TOOL_REGISTRY keys, `tradecraft_lookup`, and every
+ * tool a system MCP server exposes, SYSTEM_MCP_TOOL_NAMES).
  * A name missing here is accepted by the form and then refused by the agent.
  * agentic/tests/test_reserved_tool_names_parity.py compares the two sets.
  */
@@ -35,7 +36,7 @@ export const BUILTIN_RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set([
   'execute_amass', 'execute_arjun', 'execute_ffuf', 'execute_gau',
   'execute_jsluice', 'execute_katana', 'execute_wpscan',
   'execute_nmap', 'execute_nuclei', 'kali_shell', 'execute_playwright',
-  'execute_hydra', 'metasploit_console', 'msf_restart',
+  'execute_hydra', 'metasploit_console', 'msf_restart', 'execute_masscan',
   // Workspace filesystem tools
   'fs_read', 'fs_read_many', 'fs_stat', 'fs_write', 'fs_edit', 'fs_multi_edit',
   'fs_undo_edit', 'fs_delete', 'fs_move', 'fs_copy', 'fs_mkdir', 'fs_chmod',
