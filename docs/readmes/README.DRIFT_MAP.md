@@ -106,6 +106,11 @@ reasoned from the code and not reproduced.
 | 70 | **`execute_masscan` is reserved on neither side** | `mcp/servers/network_recon_server.py` exposes it and `SYSTEM_MCP_TOOL_NAMES` (`agentic/tools.py`) lists it, but it is not in `TOOL_REGISTRY`, so neither `mcp_registry._builtin_tool_names()` nor `BUILTIN_RESERVED_TOOL_NAMES` reserves it. | A user MCP server can declare a tool named like a live system tool. Needs a decision: reserve it, or retire it from the server. |
 | 71 | **`cache_purge_exposed` has no network-initial-access category** | An IP-level finding type `recon/helpers/security_checks.py` emits that `NET_VULN_TYPES` (`webapp/src/app/api/analytics/redzone/netInitAccess/route.ts`) does not list; allowlisted in `recon/tests/test_net_init_access_parity.py`. | Absent from the Red Zone table. Needs a decision. |
 | 72 | **The GVM scan container has no Wappalyzer cache** | `container_manager.py` mounts only `recon/output` into the GVM container, so `graph_db/cpe_resolver.py` finds neither Wappalyzer path there and falls back to its hand-picked names. | Weaker CPE names for GVM-ingested technologies. |
+| 77 | **The agent is told to run CLIs the Kali image lacks** | Read against `mcp/kali-sandbox/Dockerfile` and checked with `command -v` in the built image. The `kali_shell` description (`agentic/prompts/tool_registry.py`) names `ngrok` (its install ends in `\|\| echo WARNING`, so a failed download is swallowed) and `/usr/share/hashcat/rules/best64.rule` (hashcat 7 ships `best66.rule`; `best64` is only under `/usr/share/john/rules/`). Skill prompts name `gopherus` (`rce_prompts.py:446,449`), bare `ntlmrelayx` (`ad_cs_esc.md`; only `impacket-ntlmrelayx` exists), `aws`, `gh`, `heroku`, `fastly`, `certbot` (`subdomain_takeover.md`, `information_disclosure.md`), `mysql`, `redis-cli`, `mongosh` (`brute_force_credential_guess_prompts.py:271-276`), `ldapsearch`, `nmap-parse-output`, `http`, `xxd`, `whois`, `showmount`. `certipy-ad` exists only because an apt dependency of netexec ships it. | The agent spends turns on "command not found". |
+| 78 | **The triage tier boundary differs between Python and the UI** | A tier's score at risk 1.0 equals the next tier's minimum (T2 at 1.0 scores 75, T1 at 0 scores 75); `tierForScore` (`webapp/src/app/graph/components/Triage/triageLayers.ts`) names the higher tier there, `score_model.py` the lower. Allowlisted in `triageScore.vectors.json`. | A row with no stored tier shows the next tier up at T2, T3 and T4 boundary scores. |
+| 79 | **Presets leave 780 active-toggle decisions pending** | `webapp/src/lib/recon-presets/traffic-decisions.allowlist.json` (guard 11): 853 (preset, field) pairs where a preset leaves a default-on active toggle unnamed, 780 marked "decision pending". About 86 take effect today: `tlsxEnabled` in 18 presets including stealth-recon; the AI-surface probes in bug-bounty-deep, graphql-recon, secret-hunter, secret-miner; `openapiEnabled` in 7; `takeoverCertValidationEnabled` in stealth-recon; the nmap/masscan AI hooks; secret-miner's wappalyzer. | A preset runs active tools its description does not mention. Needs a decision per pair. |
+| 80 | **Two broker images nothing runs through the broker** | `sxcurity/gau:arm64` is named nowhere else; `redamon-supply-chain:latest` is started by the orchestrator on the real socket. Allowlisted in `services/docker_broker/test_image_parity.py`. | A wider broker allowlist than recon needs. |
+| 81 | **A triage prompt module looks dead** | `TRIAGE_QUERIES` and `SCORING_QUERIES` in `agentic/cypherfix_triage/prompts/cypher_queries.py` are imported only by `agentic/tests/test_triage_security_hardening.py`; the file holds a prose copy of the finding-label set no guard reads. | A stale copy that looks authoritative. |
 
 ### 2.2 Guards that do not guard
 
@@ -114,7 +119,7 @@ reasoned from the code and not reproduced.
 | 73 | **`npm run lint` cannot run** | Next 16 removed `next lint`, so the script fails with "Invalid project directory provided, no such directory: .../webapp/lint", and the webapp has no ESLint config. `webapp/AGENTS.md` and its QA checklist require it clean. |
 | 74 | **Live schema checks pass by printing SKIP** | `recon/tests/test_schema_catalog.py` skips its live-Neo4j checks with `print("SKIP"); return`, which pytest records as PASSED; the `redamon-testing` skill forbids the pattern. |
 | 75 | **Two integration tests are red** | `agentic/tests/test_cve_intel_integration.py::TestPdcpApiKeyPlumbing` `test_api_keys_template_has_pdcp` and `test_settings_api_route_whitelists_pdcp_field` (integration tier, so outside the unit gate) look for quoting the webapp files no longer use. |
-| 76 | **A plugin-runner timing test flakes under the gate** | `services/plugin_runner/tests/test_gateway_proxy.py::test_a_full_listener_refuses_at_once_and_the_other_listener_still_answers` failed once in a full `./redamon.sh test unit` and passed three runs alone. |
+| 76 | **Timing tests flake under load** | `services/plugin_runner/tests/test_gateway_proxy.py::test_a_full_listener_refuses_at_once_and_the_other_listener_still_answers` failed in both full gate runs of the fix pass and in one of three runs alone at load average 16-21 on 12 cores; `tests/test_node_filters_engine.py::TestPerformance::test_100k_nodes_by_40_rules_under_5_seconds` failed once in the gate and passed alone. |
 
 ### 2.3 Agent-facing and developer text (produces wrong code)
 
@@ -172,14 +177,16 @@ reasoned from the code and not reproduced.
 | multi-mute suggestion contract | `MULTI_MUTE_CONTRACT_WRITE=1` on `agentic/tests/test_multi_mute_contract.py` | `webapp/src/app/graph/components/MuteNode/multiMuteSuggest.contract.json` | the same test, compare mode |
 | node-filter run contracts | `NODE_FILTER_CONTRACT_WRITE=1` on `agentic/tests/test_node_filter_runs.py` and `route.nodeFilter.test.ts` | `webapp/src/lib/nodeFilters/contracts/{run_callbacks,project_get}.json` | the same tests, compare mode |
 | `skills/*/SKILL.md` frontmatter | `bash skills/skill-sync/assets/sync.sh` | the "Auto-invoke Skills" tables in every `AGENTS.md` | `sync.sh --dry-run` (no gate test) |
-| skill + AGENTS.md citations | `bash skills/skill-sync/assets/drift-audit.sh` | report of dead cited paths in `skills/*/SKILL.md` and `AGENTS.md` only; exits 1 on any | manual (not in the gate); a markdown link resolves only from the citing file's folder; `tests/drift_audit_test.sh` tests the script; `citation-check.sh` in the advisory pre-commit hook |
+| skill + AGENTS.md citations | `bash skills/skill-sync/assets/drift-audit.sh` | report of dead cited paths in `skills/*/SKILL.md` and `AGENTS.md`; exits 1 on any | manual; a markdown link resolves only from the citing file's folder; `tests/drift_audit_test.sh` tests the script; `citation-check.sh` in the advisory pre-commit hook |
+| cited repo paths in every doc | `bash skills/skill-sync/assets/drift-audit.sh --docs` | dead paths in `docs/readmes/**`, `README.md`, `CONTRIBUTING.md`, the top-level wiki, `SKILL.md`, `AGENTS.md` (a path counts only if git tracks it) | GEN-like: `tests/docs_cited_paths_test.sh`, with today's dead paths in `tests/fixtures/docs_paths_drift_{wiki,readmes,root}.json` (an entry that stops failing must leave) |
 | built-in skill prompts | `agentic/tests/tools/record_skill_golden.py` | `agentic/tests/fixtures/skill_workflow_golden.json` | `test_skill_workflow_golden.py` (fails until re-recorded) |
 | the settings resolution path | `recon/tests/regen_golden_settings.py` (inside `redamon-recon`, see `README.SETTINGS_REGISTRY.md`) | `recon/tests/fixtures/golden_settings/*.json` (18 cases) | `test_golden_master.py` |
 | the two PSL snapshots | `python3 tooling/scripts/psl_drift_report.py` | report only | manual release step (`README.DEV.md` §5.8) |
 | the wiki | `DevergoLabs/scripts/sync-docs.mjs` (nightly `refresh-docs.sh` on the server), `add-wiki-canonical.mjs` | redamon.org `/docs` pages (top-level pages only; `hacklab/` and the session subtrees are not copied, so links into them probably break there, unverified), the canonical banner on each wiki page | none; the banner bytes are duplicated in `webapp/src/lib/mcp/apiReference.ts` `CANONICAL_BANNER` |
 
 On 2026-10-25 all three Python generators reported up to date (all three are
-gate checks since wave 1), the skill sync dry run changed nothing,
+gate checks since wave 1, and `tooling/hooks/pre-commit` runs them when a commit
+stages a generator's files), the skill sync dry run changed nothing,
 `drift-audit.sh` found one false positive (`tools/list`, an MCP method name), and
 ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 
@@ -217,11 +224,13 @@ ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 | unseen-badge labels <-> labels the schema indexes; ViewTabs coverage | `webapp/src/app/graph/unseen/registry.test.ts` (skips without `graph_db/`) |
 | every relationship Python or webapp Cypher reads (every member of `A\|B`) is written somewhere; a named allowlist for legacy aliases | `recon/tests/test_graph_writes_documented.py` |
 | no unconditional legacy drop names a live constraint or index; index names unique | `tests/test_schema_legacy_drops.py` |
+| global reference labels: `schema.py` reads `GLOBAL_REFERENCE_LABELS`; the TS copies (`injectProjectFilter.ts`, `graphRestore.ts`, `mcp/graphGuard.ts`) equal it, and no exempt label has a per-project key | `tests/test_reference_labels_mirrors.py` |
+| the finding-label set: 11 copies (`agentic/api.py`, `chain_graph_writer.py`, `fact_queries.py`, the triage mixin, `actions.ts`, `findingLabels.ts`, `reportData.ts`, ...) equal `MUTEABLE_LABELS`; the Multi mute pool is it minus `ExploitGvm` | `tests/test_finding_labels_mirrors.py` |
 | `graph_db/schema_sections.md` <-> `graph_db/schema_catalog.py` | `recon/tests/test_schema_catalog.py` (`seed_schema_catalog.py --check`) |
 | Red Zone network-initial-access ports and finding types <-> `security_checks.py` | `recon/tests/test_net_init_access_parity.py` |
 | deleted bundled data stays deleted; `cpe_resolver` reads the cache `http_probe` refreshes | `recon/tests/test_dead_bundled_data.py` |
 | nothing in `agentic/` shadows a file the agent image bakes earlier | `tests/test_agent_image_no_shadowed_copy.py` |
-| broker allowlist covers every image recon runs (the `*_DOCKER_IMAGE` defaults and the entrypoint `IMAGES`, `redamon-*` included; one direction) | `services/docker_broker/test_image_parity.py` |
+| broker allowlist <-> every image recon runs, both ways (a broker image recon does not run needs a named caller); the entrypoint `IMAGES` == the `*_DOCKER_IMAGE` defaults | `services/docker_broker/test_image_parity.py` |
 | `SUB_CONTAINER_IMAGES` covers every `*_DOCKER_IMAGE` default; `remove_redamon_images` removes every third-party one (it reads the entrypoint `IMAGES`) | `recon_orchestrator/tests/test_sub_container_images.py`, `tests/redamon_runtime_images_test.sh` |
 | what `update` rebuilds: every COPY/ADD source of every image compose builds must rebuild it (or restart it under a compose bind mount), derived from the compose file and the Dockerfiles | `tests/redamon_update_map_test.sh` |
 | OSV ecosystems in 4 places (`SEED_MANIFESTS`, `_OSV_SYNC_ECOSYSTEMS`, `OSV_ALL_ECOSYSTEMS`, compose `OSV_DB_ECOSYSTEMS`) | `tests/test_supply_chain_osv_refresh.py` |
@@ -232,32 +241,42 @@ ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 | GVM data containers count | `tests/redamon_gvm_compose_test.sh:216-217` |
 | fireteam timeout UI fallbacks == `FIRETEAM_TIMEOUT_SEC` | `webapp/src/components/projects/ProjectForm/sections/AgentBehaviourSection.test.tsx` |
 | the preset-generation no-temperature rules (TS) == `llm_setup.py`'s | `webapp/src/lib/llmTemperature.test.ts` |
+| the triage score and tiers, Python and TS, answer one vector file | `webapp/src/app/graph/components/Triage/triageScore.vectors.json` (`triageLayers.parity.test.ts`, `agentic/tests/test_triage_score_vectors.py`) |
+| every preset decides each default-on active toggle, and passive or stealth presets run none (allowlist with reasons) | `webapp/src/lib/recon-presets/traffic-decisions.test.ts` |
+| every webapp route Python calls with the internal or scanner key matches the middleware allowlists, computed from the callers | `webapp/src/middleware.internalCallers.test.ts` |
+| one version per pinned tool (TruffleHog, osv-scanner, guarddog, retire.js) across Dockerfiles, prose, the licence file and fixtures | `tests/test_tool_version_pins.py` |
+| wiki links, anchors, images and doc counts | `tests/test_docs_not_stale.py` (P21; today's drift in `tests/fixtures/docs_drift_*.json`) |
+| `redamon.wiki` is a declared submodule; an empty checkout fails the wiki tests unless allowed | `tests/test_wiki_submodule.py`, `tooling/scripts/wiki_checkout.py`, `webapp/src/lib/wikiCheckout.testUtils.ts` |
+| the pre-commit hook blocks a commit that leaves a generated artifact stale | `tests/pre_commit_hook_test.sh` |
 | every registered recon preset records a vhost-SNI decision | `webapp/src/lib/recon-presets/vhost-sni.test.ts` |
 | `drift-audit.sh` reports a dead relative link | `tests/drift_audit_test.sh` |
 | `_GENERATED` names files that exist | `tests/test_docs_not_stale.py` |
-| shared vectors read by both languages | `recon/tests/fixtures/roe_exclusion_vectors.json` (recon, agent and webapp RoE matchers), `webapp/src/lib/llmTemperature.vectors.json`, `recon_orchestrator/tests/fixtures/hard_guardrail_vectors.json`, `tests/fixtures/scope_groups_contract.json`, `tests/fixtures/legacy_domain_vectors.json`, `webapp/src/lib/engagement.derivation.fixtures.json`, `recon/tests/fixtures/public_suffix_vectors.json`, `agentic/tests/fixtures/redaction_vectors.json`, `agentic/tests/fixtures/skill_metadata_contract.json`, `webapp/src/lib/mcp/contracts/triage_mute.json`, `webapp/src/app/graph/components/MuteNode/multiMuteSuggest.contract.json`, `webapp/src/lib/nodeFilters/contracts/*.json`, `services/plugin_runner/sdk/contract_cases.json`, `services/plugin_runner/tests/runner_contract_cases.json` |
+| shared vectors read by both languages | `recon/tests/fixtures/roe_exclusion_vectors.json` (recon, agent and webapp RoE matchers), `webapp/src/lib/llmTemperature.vectors.json`, `webapp/src/app/graph/components/Triage/triageScore.vectors.json`, `recon_orchestrator/tests/fixtures/hard_guardrail_vectors.json`, `tests/fixtures/scope_groups_contract.json`, `tests/fixtures/legacy_domain_vectors.json`, `webapp/src/lib/engagement.derivation.fixtures.json`, `recon/tests/fixtures/public_suffix_vectors.json`, `agentic/tests/fixtures/redaction_vectors.json`, `agentic/tests/fixtures/skill_metadata_contract.json`, `webapp/src/lib/mcp/contracts/triage_mute.json`, `webapp/src/app/graph/components/MuteNode/multiMuteSuggest.contract.json`, `webapp/src/lib/nodeFilters/contracts/*.json`, `services/plugin_runner/sdk/contract_cases.json`, `services/plugin_runner/tests/runner_contract_cases.json` |
 
 ### 3.3 Blind spots shared by all of them
 
-- **No CI.** A guard that nobody runs guards nothing.
-- **The wiki is a gitlink with no `.gitmodules`.** A fresh clone gets an empty
-  `redamon.wiki`, so `tests/test_docs_not_stale.py`, the two wiki byte-compares
-  and the scope-copy anchor check skip silently. During this audit the pointer
-  matched the wiki HEAD; `m redamon.wiki` in `git status` came from uncommitted
-  edits inside the wiki checkout.
+- **No CI.** A guard that nobody runs guards nothing. The pre-commit hook runs
+  the three generator checks, but only where `tooling/hooks/install-hooks.sh`
+  has installed the current copy.
+- **The wiki is a separate checkout.** `.gitmodules` declares it, and an empty
+  `redamon.wiki` fails every wiki-dependent test unless
+  `REDAMON_TEST_ALLOW_MISSING` names `wiki`; with that opt-out they skip.
 - **Cross-tree tests skip when the other tree is absent.** 31 webapp test files
   use `skipIf(!existsSync(...))` or similar; they run in the host checkout but
   not inside the webapp image.
-- **Expectations copied into the test.** The middleware allowlist test (13 of
-  28 patterns) and the dangerous-tools test (19 names pinned) compare the code
-  with a hand copy, so they catch an edit but not an omission.
+- **Expectations copied into the test.** The dangerous-tools test (19 names
+  pinned) and the hand-written label lists in `tests/test_mcp_cypher_scoping.py`,
+  `tests/test_triage_mixin.py`, `agentic/tests/test_triage_security_hardening.py`,
+  `recon/tests/test_schema_constraints_generated.py` and
+  `recon/tests/test_schema_catalog.py` compare the code with a hand copy, so they
+  catch an edit but not an omission.
 - **Mirrored cases are not mirrored constants.** Several TS tests copy the
   Python test cases (e.g. `injectProjectFilter.test.ts` mirrors
   `tests/test_tenant_filter_muted.py`) instead of reading the Python constant, so
   both suites stay green while the two constants differ.
-- **Citation audit covers two kinds of file.** `drift-audit.sh` checks
-  `skills/*/SKILL.md` and `AGENTS.md`; the coding-agent guides, the 36 subsystem
-  docs and the wiki hold the dead paths in 2.3 and 2.4.
+- **The path audit reads prose, not fences.** `drift-audit.sh --docs` does not
+  see paths inside code fences (the file trees of #40), bare file names
+  (`HydraSection.tsx`) or shorthand (`sections/index.ts`).
 - **Structure, not truth.** As `README.SETTINGS_REGISTRY.md` says: no test knows
   whether a `meaning`, a bound or a prose sentence is *true*.
 
@@ -734,16 +753,7 @@ NONE in section 4.
 
 | # | Guard | Closes |
 |---|---|---|
-| 2 | Broker parity in the other direction (no broker image recon does not run, or a named reason), and derive the entrypoint `IMAGES` from the `*_DOCKER_IMAGE` defaults (recon -> broker, `SUB_CONTAINER_IMAGES` and `remove_redamon_images` are done) | 4.6 |
-| 10 | Run `drift-audit.sh` (its basename fallback is gone) over `docs/readmes/**`, `redamon.wiki/*.md` and `README.md` | #37-#41, #54 |
-| 11 | Preset decision test: every preset names every `traffic: active` toggle (or an allowlist says why not); passive and stealth presets turn them off | 4.5 table |
-| 13 | Docs consistency test in `tests/test_docs_not_stale.py`: wiki links and `Page#anchor` links resolve, images exist, known counts match code or are replaced by "see the generated page" | #46-#58 |
-| 15 | Run the gate on push (CI), or at least make the pre-commit hook run the generator checks | 3.3 |
-| 16 | Add `.gitmodules` for `redamon.wiki`, or make wiki-dependent tests fail loudly when the directory is empty | 3.3 |
-| 17 | Compare constants, not cases: the TS mirrors read the Python constant (or a shared JSON) for reference labels, the finding-label set and the triage formula (the RoE matcher and the `netInitAccess` ports are done) | 4.7, 4.10 |
-| 19 | Internal-route test: every webapp path Python calls with `X-Internal-Key` matches `INTERNAL_ALLOWLIST` (computed, not hand-copied) | 4.10 |
-| 20 | Pin tests: `trufflehogDetectors.ts` header == `TRUFFLEHOG_VERSION`; osv-scanner, guarddog and retire versions equal across images | 4.11, 4.12 |
-| 22 | A Kali tool-presence smoke step: `command -v` every CLI the `kali_shell` description names | 4.1 |
+| 22 | A Kali tool-presence smoke step: `command -v` every CLI the `kali_shell` description and the skill prompts name (a read-only report is in #77) | #77, 4.1 |
 | 23 | Decide whether runtime caches (`mitre_db/resources`, `wappalyzer_cache`) belong in git (the dead data is deleted and `cpe_resolver.py` reads the refreshed cache) | 4.11 |
 | 24 | Derive `_ROOT_RECON_TESTS` from imports; one default model id constant per language | 4.3, 4.13 |
 
