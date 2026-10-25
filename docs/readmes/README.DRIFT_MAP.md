@@ -12,7 +12,7 @@ that will (or will not) catch you, and the command that refreshes it.
 > audits, one per area, and every claim was re-verified against the source. The
 > fix pass the same day fixed items #1-#64 (except the decisions still listed in
 > section 2), added the guards of section 6 that are now in section 3, and
-> recorded what it found as #65-#88. `git log --grep 'drift-map #N'` finds the
+> recorded the staleness it found as #65-#86 (numbers are never reused). `git log --grep 'drift-map #N'` finds the
 > commit that fixed item N.
 
 ## Contents
@@ -101,28 +101,18 @@ reasoned from the code and not reproduced.
 | # | What | Evidence | Effect |
 |---|---|---|---|
 | 65 | **The memory-governor knobs stop at the orchestrator** | `REDAMON_MEM_GOVERNOR`, `MEM_SCALE_HIGH`/`LOW`/`FLOOR`, `MEM_READ_TTL_S` and `MEM_BUDGET_FRACTION` reach `recon-orchestrator` through compose, but the recon container it spawns gets none of them (the `environment=` of `start_recon` in `recon_orchestrator/container_manager.py`), and that is where the ratio model runs (`rg.scaled`, `recon/project_settings.py:2299`). `pressure()` has no runtime caller. | Setting them changes nothing for recon's parallelism. Found while fixing the old #23. |
-| 66 | **`update` never recreates `kb-refresh`** | `kb-refresh` runs the `redamon-agent` image and is started by hand with its compose profile (`docker-compose.yml`); `redamon.sh` never names it, and `cmd_update` recreates only the services it rebuilt (`docker compose up -d --no-deps "$svc"`). | After an update that rebuilds the agent image, an opted-in KB refresher keeps the previous code until someone recreates it. |
 | 67 | **The classifier still sends gadget chains to `rce`** | `agentic/prompts/classification.py:100,130,227` route deserialization gadget chains to `rce`; the same file's `deserialization` section says a named sink, format or gadget tool means `deserialization`. The old #15 fixed only the unclassified table. | A deserialization request can be classified `rce` (inferred). |
 | 68 | **Recon progress has two totals** | `ReconState.total_phases = 6` (`recon_orchestrator/models.py:71`, matching `PHASE_PATTERNS` numbered 1-6 with a 4.5); the webapp recon status fallback and the drawer default say 7. | The total shown depends on which side answers. Verify intent. |
-| 69 | **A default-ON skill added later shows ON and runs OFF** | A project saved before a default-ON built-in skill existed has no key for it: the form shows the default (ON), while `get_enabled_builtin_skills` reads only stored keys (missing is OFF). Documented in `AttackSkillsSection.tsx`. | The UI and the agent disagree until someone saves the form. |
 | 70 | **`execute_masscan` is reserved on neither side** | `mcp/servers/network_recon_server.py` exposes it and `SYSTEM_MCP_TOOL_NAMES` (`agentic/tools.py`) lists it, but it is not in `TOOL_REGISTRY`, so neither `mcp_registry._builtin_tool_names()` nor `BUILTIN_RESERVED_TOOL_NAMES` reserves it. | A user MCP server can declare a tool named like a live system tool. Needs a decision: reserve it, or retire it from the server. |
 | 71 | **`cache_purge_exposed` has no network-initial-access category** | An IP-level finding type `recon/helpers/security_checks.py` emits that `NET_VULN_TYPES` (`webapp/src/app/api/analytics/redzone/netInitAccess/route.ts`) does not list; allowlisted in `recon/tests/test_net_init_access_parity.py`. | Absent from the Red Zone table. Needs a decision. |
-| 72 | **The GVM scan container has no Wappalyzer cache** | `container_manager.py` mounts only `recon/output` into the GVM container, so `graph_db/cpe_resolver.py` finds neither Wappalyzer path there and falls back to its hand-picked names. | Weaker CPE names for GVM-ingested technologies. |
 | 77 | **The agent is told to run CLIs the Kali image lacks** | Read against `mcp/kali-sandbox/Dockerfile` and checked with `command -v` in the built image. The `kali_shell` description (`agentic/prompts/tool_registry.py`) names `ngrok` (its install ends in `\|\| echo WARNING`, so a failed download is swallowed) and `/usr/share/hashcat/rules/best64.rule` (hashcat 7 ships `best66.rule`; `best64` is only under `/usr/share/john/rules/`). Skill prompts name `gopherus` (`rce_prompts.py:446,449`), bare `ntlmrelayx` (`ad_cs_esc.md`; only `impacket-ntlmrelayx` exists), `aws`, `gh`, `heroku`, `fastly`, `certbot` (`subdomain_takeover.md`, `information_disclosure.md`), `mysql`, `redis-cli`, `mongosh` (`brute_force_credential_guess_prompts.py:271-276`), `ldapsearch`, `nmap-parse-output`, `http`, `xxd`, `whois`, `showmount`. `certipy-ad` exists only because an apt dependency of netexec ships it. | The agent spends turns on "command not found". |
 | 78 | **The triage tier boundary differs between Python and the UI** | A tier's score at risk 1.0 equals the next tier's minimum (T2 at 1.0 scores 75, T1 at 0 scores 75); `tierForScore` (`webapp/src/app/graph/components/Triage/triageLayers.ts`) names the higher tier there, `score_model.py` the lower. Allowlisted in `triageScore.vectors.json`. | A row with no stored tier shows the next tier up at T2, T3 and T4 boundary scores. |
-| 88 | **Guinea-pig labs collide** | Several labs share a fixed IP or host port and cannot run together (172.25.0.92: `serialized_target` and `waf-bypass`; port 9092: three labs; 9091: two; 8080: three), and the four `setup.sh` scripts run `docker system prune -a -f --volumes` (now noted in `testing/guinea_pigs/README.md`). | Running two labs at once fails, and a setup script wipes the host's Docker data. |
-| 79 | **Presets leave 780 active-toggle decisions pending** | `webapp/src/lib/recon-presets/traffic-decisions.allowlist.json` (guard 11): 853 (preset, field) pairs where a preset leaves a default-on active toggle unnamed, 780 marked "decision pending". About 86 take effect today: `tlsxEnabled` in 18 presets including stealth-recon; the AI-surface probes in bug-bounty-deep, graphql-recon, secret-hunter, secret-miner; `openapiEnabled` in 7; `takeoverCertValidationEnabled` in stealth-recon; the nmap/masscan AI hooks; secret-miner's wappalyzer. | A preset runs active tools its description does not mention. Needs a decision per pair. |
 | 80 | **Two broker images nothing runs through the broker** | `sxcurity/gau:arm64` is named nowhere else; `redamon-supply-chain:latest` is started by the orchestrator on the real socket. Allowlisted in `services/docker_broker/test_image_parity.py`. | A wider broker allowlist than recon needs. |
 | 81 | **A triage prompt module looks dead** | `TRIAGE_QUERIES` and `SCORING_QUERIES` in `agentic/cypherfix_triage/prompts/cypher_queries.py` are imported only by `agentic/tests/test_triage_security_hardening.py`; the file holds a prose copy of the finding-label set no guard reads. | A stale copy that looks authoritative. |
 
 ### 2.2 Guards that do not guard
 
-| # | Guard | What it really does |
-|---|---|---|
-| 73 | **`npm run lint` cannot run** | Next 16 removed `next lint`, so the script fails with "Invalid project directory provided, no such directory: .../webapp/lint", and the webapp has no ESLint config. `webapp/AGENTS.md` and its QA checklist require it clean. |
-| 74 | **Live schema checks pass by printing SKIP** | `recon/tests/test_schema_catalog.py` skips its live-Neo4j checks with `print("SKIP"); return`, which pytest records as PASSED; the `redamon-testing` skill forbids the pattern. |
-| 75 | **Two integration tests are red** | `agentic/tests/test_cve_intel_integration.py::TestPdcpApiKeyPlumbing` `test_api_keys_template_has_pdcp` and `test_settings_api_route_whitelists_pdcp_field` (integration tier, so outside the unit gate) look for quoting the webapp files no longer use. |
-| 76 | **Timing tests flake under load** | `services/plugin_runner/tests/test_gateway_proxy.py::test_a_full_listener_refuses_at_once_and_the_other_listener_still_answers` failed in both full gate runs of the fix pass and in one of three runs alone at load average 16-21 on 12 cores; `tests/test_node_filters_engine.py::TestPerformance::test_100k_nodes_by_40_rules_under_5_seconds` failed once in the gate and passed alone. |
+None open.
 
 ### 2.3 Agent-facing and developer text (produces wrong code)
 
@@ -130,7 +120,6 @@ reasoned from the code and not reproduced.
 |---|---|---|
 | 85 | **CONTRIBUTING promises a README Wall of Fame** | `README.md` has had no Wall of Fame since `1d5b3863`, but `CONTRIBUTING.md` still promises it in four places (`:407` calls it "the living leaderboard"), and its Step 5 says the first merged PR earns Scout while the rank table needs five. The dead links were removed; the promise needs the maintainer's decision. |
 | 86 | **Subsystem docs whose function sections are stale** | `README.PORT_SCAN.md`, `README.VULN_SCAN.md` and `README.HTTP_PROBE.md` cite the right modules now, but their function-by-function sections still describe old code; `README.KBASE.md`'s step table cites `tools.py` line numbers that moved. |
-| 87 | **A doc shows the maintainer's lab host** | The "EC2 Info" block in `docs/readmes/README.GPIGS.md` names the lab host and its public IP (left untouched). Check whether it should be public. |
 
 ### 2.4 Counts and links in docs
 
@@ -322,7 +311,7 @@ names all 14, and the Prisma default's values equal Python's
 |---|---|---|
 | Classifier | `_BUILTIN_SKILL_MAP` (`classification.py:137`) and `_CLASSIFICATION_INSTRUCTIONS` (`:155`), 14 each | PART (see below) |
 | Settings default | `ATTACK_SKILL_CONFIG.builtIn` `agentic/project_settings.py:403` | PART |
-| Prisma default (**frozen copy**) | `attackSkillConfig @default(...)` `schema.prisma:1310` | TEST for the values (`test_prisma_default_parity.py`); existing rows need a backfill, same as 4.1 (`get_enabled_builtin_skills` reads only stored keys, #69) |
+| Prisma default (**frozen copy**) | `attackSkillConfig @default(...)` `schema.prisma:1310` | TEST for the values (`test_prisma_default_parity.py`); existing rows need a backfill, same as 4.1 (`get_enabled_builtin_skills` reads only stored keys) |
 | Form default | `DEFAULT_CONFIG` `AttackSkillsSection.tsx:157-175` | NONE |
 | UI toggle + badge | `AttackSkillsSection.tsx`, `AIAssistantDrawer/phaseConfig.ts` | PART |
 | Drawer tooltip | `BUILT_IN_SKILLS` in `webapp/src/app/api/users/[id]/attack-skills/available/route.ts` | PART |
@@ -419,7 +408,7 @@ listed by hand in `webapp/src/lib/recon-presets/index.ts` (import + array).
 | Dependency | Guard | Fails how |
 |---|---|---|
 | Parameter **names** (`Partial<ProjectFormData>`) | `tsc` (type-check) | A renamed column fails the build: good |
-| Parameter **semantics** when a tool is added | TEST (`traffic-decisions.test.ts`: every default-on active toggle is decided per preset, 780 pairs pending, #79; `vhost-sni.test.ts` derives its list; `tlsxPresetGuard.test.ts`) | Applying a preset resets every field it does not name to its default (`applyPresetSettings`, `defaultFor`), so a tool whose default is ON runs under every preset that does not mention it |
+| Parameter **semantics** when a tool is added | TEST (`traffic-decisions.test.ts`: every default-on active toggle is decided per preset, 780 pairs still pending a decision; `vhost-sni.test.ts` derives its list; `tlsxPresetGuard.test.ts`) | Applying a preset resets every field it does not name to its default (`applyPresetSettings`, `defaultFor`), so a tool whose default is ON runs under every preset that does not mention it |
 | The count | `recon-presets.test.ts` "registry contains exactly 26 presets" | intentional tripwire |
 | Icons `webapp/public/preset-*.svg` | PART (`recon-presets.test.ts:3535` checks the path pattern, not that the file exists; all 26 exist) | |
 | `fullDescription` / `shortDescription` prose | "required section headers" + "no em dashes" only | Description and parameters disagree; counts such as "all 10 OSINT providers" (`osint-investigator.ts:8`, correct today) age |
@@ -595,7 +584,7 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | Data | Where | Refreshed by | Guard / risk |
 |---|---|---|---|
 | MITRE CWE / CAPEC / CVE2CAPEC | `recon/main_recon_modules/data/mitre_db/` | `add_mitre.py` at scan time (24h TTL), **writing into the mounted source tree** | The 4 tracked resource files churn in `git status`; whether they belong in git is guard 23 |
-| Wappalyzer fingerprints | `recon/main_recon_modules/data/wappalyzer_cache/technologies.json` | `http_probe.py` (24h TTL) from `unpkg.com/wappalyzer@<WAPPALYZER_NPM_VERSION>` (immutable per version) | `cpe_resolver.py` reads this copy (`test_dead_bundled_data.py`); the GVM container has none (#72) |
+| Wappalyzer fingerprints | `recon/main_recon_modules/data/wappalyzer_cache/technologies.json` | `http_probe.py` (24h TTL) from `unpkg.com/wappalyzer@<WAPPALYZER_NPM_VERSION>` (immutable per version) | `cpe_resolver.py` reads this copy (`test_dead_bundled_data.py`); the GVM container has none |
 | DNS resolvers | `recon/data/resolvers.txt` (gitignored) | `recon/entrypoint.sh:79` every 7 days | `tests/recon_resolvers_refresh_test.sh` |
 | Public Suffix List | inside `tldts` and `publicsuffixlist` | dependency bump | release blocker if older than ~3 months |
 | CDN / WAF edge prefixes | `recon/helpers/cdn_edge_prefixes.py` | **manual**; "retrieved 2026-10-25" | `recon/tests/test_cdn_edge_list.py` guards that consumers use the one list, not its freshness |
@@ -627,7 +616,7 @@ and the webapp build cannot import across its root. So shared facts are copied.
 
 | Item | Where | Guard | Note |
 |---|---|---|---|
-| **What `update` rebuilds** | `cmd_update`, `_map_core_changes`, `_map_tool_changes` and `_map_baked_graph_db` (`redamon.sh`): one hand-written rule per folder | TEST (`tests/redamon_update_map_test.sh`, derived from every built image's COPY sources) | Cross-folder COPYs: recon, gvm, github-hunt -> `graph_db`; recon and the agent -> `recon_settings`; the agent and kb-refresh -> `graph_db`, `services/knowledge_base`; capture-proxy and traffic-ingest -> `recon_orchestrator/{hard_guardrail,ip_denylist}.py`. kb-refresh is never recreated (#66) |
+| **What `update` rebuilds** | `cmd_update`, `_map_core_changes`, `_map_tool_changes` and `_map_baked_graph_db` (`redamon.sh`): one hand-written rule per folder | TEST (`tests/redamon_update_map_test.sh`, derived from every built image's COPY sources) | Cross-folder COPYs: recon, gvm, github-hunt -> `graph_db`; recon and the agent -> `recon_settings`; the agent and kb-refresh -> `graph_db`, `services/knowledge_base`; capture-proxy and traffic-ingest -> `recon_orchestrator/{hard_guardrail,ip_denylist}.py` |
 | Image and service name lists | `TOOL_IMAGES` (`redamon.sh:24`, 10 = the tools-profile services), compose `image:` tags, the orchestrator `*_IMAGE` env (`docker-compose.yml:505-511`); `CORE_BUILD_SERVICES` (`redamon.sh:29`) typed again at `:3680` | NONE | Agree today |
 | Memory specs | `_MEM_SPECS_*` (`redamon.sh:508-542`, 16) vs compose `mem_limit` variables; `_status_expected_mb` (`:4604-4613`) maps only 10 containers; `_GVM_DATA_CONTAINERS=8` | NONE / NONE / TEST (`redamon_gvm_compose_test.sh:216-217`) | `status` never flags the GVM and kb-refresh caps |
 | Env vars | `.env.example` vs what compose forwards | TEST (`tests/test_env_example_keys.py`: every key is forwarded or a `HOST_ONLY_ENV_KEYS` entry `redamon.sh` reads) | The governor knobs stop at the orchestrator (#65) |
