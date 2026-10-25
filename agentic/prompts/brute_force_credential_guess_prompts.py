@@ -193,8 +193,8 @@ Web apps frequently seed a personal user account -- a first name, a full name, o
 local-part of an email the app exposes -- rather than `admin` / `root` / a daemon
 account, so a service/OS username list ALONE will miss it and falsely report "0 valid".
 For a web form login, sweep BOTH: (a) the standard admin/service usernames, AND (b) a
-COMMON-HUMAN-NAMES / personal-handle username list (e.g. SecLists
-`Usernames/Names/names.txt`, plus any names or email local-parts you harvest from the
+COMMON-HUMAN-NAMES / personal-handle username list (e.g. a top-N slice of SecLists
+`Usernames/xato-net-10-million-usernames.txt`, whose top entries are first names, plus any names or email local-parts you harvest from the
 app's own pages, author/profile fields, comments, or contact content) -- crossed with a
 common-web-password list (e.g. a rockyou top-N slice or `http_default_pass.txt`). Pass
 the name list via `-L names.txt` (or `-C user:pass` combos). Do NOT declare the login

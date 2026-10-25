@@ -5,8 +5,8 @@
    "sha256": "e4353717b7f816c419d9a4e4b4699e67f95ee2d61d343df358d03d231c6820d7"
   },
   "all_off/exploitation/brute_force_credential_guess": {
-   "chars": 16747,
-   "sha256": "ef2a9179b853248f0319fcfacd6d5984c10b67865002bcf037660a259332ce32"
+   "chars": 16817,
+   "sha256": "15858d672aa241645c480b56ee28592285cc6a797996cb4e187101a200592905"
   },
   "all_off/exploitation/crypto_attack": {
    "chars": 13722,
@@ -61,8 +61,8 @@
    "sha256": "e4353717b7f816c419d9a4e4b4699e67f95ee2d61d343df358d03d231c6820d7"
   },
   "all_off/informational/brute_force_credential_guess": {
-   "chars": 16747,
-   "sha256": "ef2a9179b853248f0319fcfacd6d5984c10b67865002bcf037660a259332ce32"
+   "chars": 16817,
+   "sha256": "15858d672aa241645c480b56ee28592285cc6a797996cb4e187101a200592905"
   },
   "all_off/informational/crypto_attack": {
    "chars": 13722,
@@ -117,8 +117,8 @@
    "sha256": "e4353717b7f816c419d9a4e4b4699e67f95ee2d61d343df358d03d231c6820d7"
   },
   "all_on/exploitation/brute_force_credential_guess": {
-   "chars": 16747,
-   "sha256": "f7cb5dd306236eb0235e1a866a5815a76ac0f6de0578ed48f35e7c1b26189c81"
+   "chars": 16817,
+   "sha256": "9196a47289db5e7ad567d9672e30715454017abc0bb10a27b751d7f294db4137"
   },
   "all_on/exploitation/crypto_attack": {
    "chars": 13722,
@@ -173,8 +173,8 @@
    "sha256": "e4353717b7f816c419d9a4e4b4699e67f95ee2d61d343df358d03d231c6820d7"
   },
   "all_on/informational/brute_force_credential_guess": {
-   "chars": 16747,
-   "sha256": "f7cb5dd306236eb0235e1a866a5815a76ac0f6de0578ed48f35e7c1b26189c81"
+   "chars": 16817,
+   "sha256": "9196a47289db5e7ad567d9672e30715454017abc0bb10a27b751d7f294db4137"
   },
   "all_on/informational/crypto_attack": {
    "chars": 13722,
@@ -261,8 +261,8 @@
    "sha256": "e4353717b7f816c419d9a4e4b4699e67f95ee2d61d343df358d03d231c6820d7"
   },
   "defaults/exploitation/brute_force_credential_guess": {
-   "chars": 16747,
-   "sha256": "ef2a9179b853248f0319fcfacd6d5984c10b67865002bcf037660a259332ce32"
+   "chars": 16817,
+   "sha256": "15858d672aa241645c480b56ee28592285cc6a797996cb4e187101a200592905"
   },
   "defaults/exploitation/crypto_attack": {
    "chars": 13722,
@@ -317,8 +317,8 @@
    "sha256": "e4353717b7f816c419d9a4e4b4699e67f95ee2d61d343df358d03d231c6820d7"
   },
   "defaults/informational/brute_force_credential_guess": {
-   "chars": 16747,
-   "sha256": "ef2a9179b853248f0319fcfacd6d5984c10b67865002bcf037660a259332ce32"
+   "chars": 16817,
+   "sha256": "15858d672aa241645c480b56ee28592285cc6a797996cb4e187101a200592905"
   },
   "defaults/informational/crypto_attack": {
    "chars": 13722,
@@ -602,12 +602,12 @@
    "sha256": "ae1601af67b9721efea54c5710dc87695f630df2c4fb9876b4eae972cba3c852"
   },
   "all_off/brute_force_credential_guess": {
-   "chars": 16699,
+   "chars": 16769,
    "parts": [
-    "ac5b7c8c96fefc7190da0a717649d2912ccacbcc8f57784bf3943c5d8b90ec39",
+    "e510c993b568de537935b6d12ee2af2f54a98c1eafe22932b4b890c444150d30",
     "56e12d833064f01ce317557c0e020a42abe6a32c5fe11a97764cdf6ef4024667"
    ],
-   "sha256": "0f4578ff715660a1e7d5ae4a4229f9101f13dbf6744105a146b9d9526b74acf7"
+   "sha256": "cc4f912eb47ed7f10f044b1dc864e7b612bda85f232f8e61da728803f7bf258b"
   },
   "all_off/crypto_attack": {
    "chars": 13674,
@@ -714,12 +714,12 @@
    "sha256": "ae1601af67b9721efea54c5710dc87695f630df2c4fb9876b4eae972cba3c852"
   },
   "all_on/brute_force_credential_guess": {
-   "chars": 16699,
+   "chars": 16769,
    "parts": [
-    "a998ef22a48c6ca1577b66a95f785071c7a31c65a2262bd13d55b8709fff9847",
+    "c1958ac5514008ff92d92a5b9a21cd96253ab7ec34c609ba0a47d08807d10e47",
     "56e12d833064f01ce317557c0e020a42abe6a32c5fe11a97764cdf6ef4024667"
    ],
-   "sha256": "5c62aadd4ce415935aaeadea5809b03e297a87a1b9107decf79c5e3faa587435"
+   "sha256": "16982ca0b16dea3109177fd0d20a41b00105dc30b1fd8c672bc26eed415df8e2"
   },
   "all_on/crypto_attack": {
    "chars": 13674,
@@ -879,12 +879,12 @@
    "sha256": "ae1601af67b9721efea54c5710dc87695f630df2c4fb9876b4eae972cba3c852"
   },
   "defaults/brute_force_credential_guess": {
-   "chars": 16699,
+   "chars": 16769,
    "parts": [
-    "ac5b7c8c96fefc7190da0a717649d2912ccacbcc8f57784bf3943c5d8b90ec39",
+    "e510c993b568de537935b6d12ee2af2f54a98c1eafe22932b4b890c444150d30",
     "56e12d833064f01ce317557c0e020a42abe6a32c5fe11a97764cdf6ef4024667"
    ],
-   "sha256": "0f4578ff715660a1e7d5ae4a4229f9101f13dbf6744105a146b9d9526b74acf7"
+   "sha256": "cc4f912eb47ed7f10f044b1dc864e7b612bda85f232f8e61da728803f7bf258b"
   },
   "defaults/crypto_attack": {
    "chars": 13674,
