@@ -3430,7 +3430,7 @@ cmd_install() {
     # switch is on (it is not compose-managed, so `up`/restart won't bring it back).
     ensure_capture_proxy_running
 
-    # Bootstrap the Knowledge Base if enabled (reads KB_ENABLED from kb_config.yaml).
+    # Bootstrap the Knowledge Base if enabled (the .kbase-enabled flag file).
     # Install always runs a fresh bootstrap -- first-time setup populates FAISS +
     # Neo4j from committed caches. Graceful failure: if bootstrap fails
     # (network, missing deps, etc.) the agent still starts with an empty KB
