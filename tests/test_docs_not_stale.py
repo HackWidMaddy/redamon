@@ -272,8 +272,8 @@ def test_p19_no_guide_names_the_deleted_tool():
 # FILE link exists is the path audit's job (drift-audit.sh); here only its anchor.
 #
 # Wave 3 of the drift-map fix pass corrects the docs, so what is broken today is
-# named in _DOCS_DRIFT with its map item, and an entry that no longer fails must
-# leave it: the allowlist can only shrink.
+# named in tests/fixtures/docs_drift_*.json with its map item, and an entry that no
+# longer fails must leave it: the allowlist can only shrink.
 
 _GH = "https://github.com/samugit83/redamon"
 _FENCE = re.compile(r"^\s*(```|~~~)")
@@ -340,68 +340,20 @@ _NOT_A_COUNT_OF_THE_SET = {
     ("redamon.wiki/MCP-Tool-Plugins.md", "4 presets"): "the presets that need extra setup",
 }
 
-#: Broken today, fixed by wave 3. (kind, file, target) -> map item.
-_DOCS_DRIFT = {
-    ("anchor", "CONTRIBUTING.md", "README.md#contributors-wall-of-fame"): "drift-map #53",
-    ("anchor", "CONTRIBUTING.md", "README.md#video-showcase"): "drift-map #53",
-    ("anchor", "README.md", "docs/readmes/README.AGENTIC_SYSTEM.md#fireteam--parallel-specialist-sub-agents"): "drift-map #53",
-    ("anchor", "README.md", "docs/readmes/README.AGENTIC_SYSTEM.md#evograph--evolutive-attack-chain-graph"): "drift-map #53",
-    ("anchor", "docs/readmes/README.AGENTIC_SYSTEM.md", "#fireteam--parallel-specialist-sub-agents"): "drift-map #53",
-    ("anchor", "docs/readmes/README.AGENTIC_SYSTEM.md", "#evograph--evolutive-attack-chain-graph"): "drift-map #53",
-    ("anchor", "docs/readmes/README.SUPPLY_CHAIN.md", "#layer-l1--standalone-scan-other-scans"): "drift-map #53",
-    ("anchor", "docs/readmes/README.SUPPLY_CHAIN.md", "#layer-l2--recon-pipeline-module"): "drift-map #53",
-    ("anchor", "docs/readmes/README.SUPPLY_CHAIN.md", "#layer-l3--agent-tools"): "drift-map #53",
-    ("anchor", "redamon.wiki/AI-Gauntlet.md", "#screenshots-to-capture"): "drift-map #53",
-    ("anchor", "redamon.wiki/Agent-Skills.md", "#path-traversal-lfi-rfi"): "drift-map #53",
-    ("anchor", "redamon.wiki/Deploying-to-a-Server.md", "#the-env-reference-every-variable"): "drift-map #53",
-    ("anchor", "redamon.wiki/XBOW-Validation-Benchmark.md", "#35-score"): "drift-map #53",
-    ("wiki-link", "README.md", f"{_GH}/wiki/The-Graph-Dashboard#redamon-terminal"): "drift-map #52",
-    ("wiki-link", "README.md", f"{_GH}/wiki/Pentest-Agent#tool-confirmation-gate"): "drift-map #52",
-    ("wiki-link", "redamon.wiki/AI-Agent-Guide.md", "Agent-Skills#phishing--social-engineering"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/Agent-Workspace.md", "Creating-a-Project#switching-between-projects"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/CVE-Intel.md", "Project-Settings-Reference#tool-matrix"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/GVM-Vulnerability-Scanning.md", "Deploying-to-a-Server#1-a-linux-server"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/GVM-Vulnerability-Scanning.md", "Creating-a-Project#tab-8-gvm-scan"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/Global-Settings.md", "Project-Settings-Reference#agent-settings"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/GraphQL-Security-Testing.md",
-     "Running-Reconnaissance#group-6-phase-a-nuclei--graphql-security-parallel"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/Project-Settings-Reference.md", "AI-Agent-Guide#tunnel-providers"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/Project-Settings-Reference.md", "Agent-Skills#phishing--social-engineering"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/Subdomain-Takeover-Detection.md",
-     "Running-Reconnaissance#group-6-phase-a-nuclei--graphql-security-parallel"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/Tradecraft-Lookup.md", "Project-Settings-Reference#agent-settings"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/Troubleshooting.md", "Getting-Started#minimum-system-requirements"): "drift-map #53",
-    ("wiki-link", "redamon.wiki/VHost-and-SNI-Enumeration.md",
-     "Running-Reconnaissance#group-6-phase-a-nuclei--graphql-security--subdomain-takeover--vhost--sni-parallel"): "drift-map #53",
-    ("image", "redamon.wiki/EvoGraph-Attack-Chain-Evolution.md", "images/evograph-bridges.png"): "drift-map #55",
-    ("image", "redamon.wiki/Global-Settings.md", "images/mcp-tool-plugins-tab.png"): "drift-map #55",
-    ("image", "redamon.wiki/MCP-Tool-Plugins.md", "images/mcp-tool-plugins-overview.png"): "drift-map #55",
-    ("count", "README.md", "node types:17"): "drift-map #48",
-    ("count", "README.md", "node types:19"): "drift-map #48",
-    ("count", "README.md", "MCP presets:39"): "drift-map #47",
-    ("count", "README.md", "settings:500+"): "drift-map #49",
-    ("count", "docs/readmes/README.DEV.md", "settings:190+"): "drift-map #49",
-    ("count", "docs/readmes/README.POSTGRES.md", "settings:169+"): "drift-map #49",
-    ("count", "docs/readmes/README.RECON.md", "settings:169+"): "drift-map #49",
-    ("count", "docs/readmes/TECH_STACK.md", "node types:17"): "drift-map #48",
-    ("count", "redamon.wiki/AI-Assisted-Development.md", "settings:190+"): "drift-map #49",
-    ("count", "redamon.wiki/AI-Assisted-Development.md", "node types:17"): "drift-map #48",
-    ("count", "redamon.wiki/Attack-Surface-Graph.md", "node types:25"): "drift-map #48",
-    ("count", "redamon.wiki/Creating-a-Project.md", "settings:196+"): "drift-map #49",
-    ("count", "redamon.wiki/Creating-a-Project.md", "recon presets:21"): "drift-map #46",
-    ("count", "redamon.wiki/Data-Export-and-Import.md", "settings:180+"): "drift-map #49",
-    ("count", "redamon.wiki/Home.md", "recon presets:21"): "drift-map #46",
-    ("count", "redamon.wiki/Home.md", "settings:328+"): "drift-map #49",
-    ("count", "redamon.wiki/Home.md", "node types:22"): "drift-map #48",
-    ("count", "redamon.wiki/Home.md", "settings:245+"): "drift-map #49",
-    ("count", "redamon.wiki/MCP-Server.md", "settings:717"): "drift-map #49",
-    ("count", "redamon.wiki/Project-Settings-Reference.md", "recon presets:21"): "drift-map #46",
-    ("count", "redamon.wiki/Recon-Pipeline-Workflow.md", "settings:196+"): "drift-map #49",
-    ("count", "redamon.wiki/Recon-Presets.md", "settings:328+"): "drift-map #49",
-    ("count", "redamon.wiki/Recon-Presets.md", "settings:196+"): "drift-map #49",
-    ("count", "redamon.wiki/Recon-Presets.md", "recon presets:21"): "drift-map #46",
-    ("count", "redamon.wiki/VHost-and-SNI-Enumeration.md", "recon presets:22"): "drift-map #46",
-}
+#: Broken today, fixed by wave 3: (kind, file, target) -> map item. Kept in three
+#: files by where the citing doc lives (the wiki, docs/readmes, the rest), so each
+#: docs change removes its own entries in the same commit as the fix.
+_DOCS_DRIFT_FILES = ("docs_drift_wiki.json", "docs_drift_readmes.json", "docs_drift_root.json")
+
+
+def _docs_drift() -> dict[tuple[str, str, str], str]:
+    import json
+
+    out = {}
+    for name in _DOCS_DRIFT_FILES:
+        for e in json.loads((REPO_ROOT / "tests" / "fixtures" / name).read_text(encoding="utf-8"))["entries"]:
+            out[(e["kind"], e["file"], e["target"])] = e["item"]
+    return out
 
 
 def _prose_lines(text: str):
@@ -539,17 +491,17 @@ def _docs_findings() -> dict[tuple[str, str, str], str]:
 
 
 def test_p21_docs_links_anchors_images_and_counts_hold():
-    findings = _docs_findings()
-    new = sorted(msg for key, msg in findings.items() if key not in _DOCS_DRIFT)
+    findings, drift = _docs_findings(), _docs_drift()
+    new = sorted(msg for key, msg in findings.items() if key not in drift)
     assert new == [], "\n".join(new)
 
 
 def test_p21_the_docs_drift_allowlist_only_shrinks():
-    """An entry wave 3 fixed must leave _DOCS_DRIFT, or the guard would excuse a
-    regression at the same place later."""
+    """An entry the docs no longer break must leave the drift files, or the guard
+    would excuse a regression at the same place later."""
     findings = _docs_findings()
-    fixed = sorted(f"{key} ({item})" for key, item in _DOCS_DRIFT.items() if key not in findings)
-    assert fixed == [], "no longer broken, drop from _DOCS_DRIFT:\n" + "\n".join(fixed)
+    fixed = sorted(f"{key} ({item})" for key, item in _docs_drift().items() if key not in findings)
+    assert fixed == [], "no longer broken, drop from tests/fixtures/docs_drift_*.json:\n" + "\n".join(fixed)
 
 
 def test_p21_the_counts_are_read_from_the_code():

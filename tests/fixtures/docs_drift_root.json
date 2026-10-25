@@ -1,0 +1,65 @@
+{
+ "_comment": "Docs drift wave 3 must fix; read by tests/test_docs_not_stale.py (P21). Remove an entry in the same commit as its fix.",
+ "entries": [
+  {
+   "kind": "anchor",
+   "file": "CONTRIBUTING.md",
+   "target": "README.md#contributors-wall-of-fame",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "anchor",
+   "file": "CONTRIBUTING.md",
+   "target": "README.md#video-showcase",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "anchor",
+   "file": "README.md",
+   "target": "docs/readmes/README.AGENTIC_SYSTEM.md#evograph--evolutive-attack-chain-graph",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "anchor",
+   "file": "README.md",
+   "target": "docs/readmes/README.AGENTIC_SYSTEM.md#fireteam--parallel-specialist-sub-agents",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "count",
+   "file": "README.md",
+   "target": "MCP presets:39",
+   "item": "drift-map #47"
+  },
+  {
+   "kind": "count",
+   "file": "README.md",
+   "target": "node types:17",
+   "item": "drift-map #48"
+  },
+  {
+   "kind": "count",
+   "file": "README.md",
+   "target": "node types:19",
+   "item": "drift-map #48"
+  },
+  {
+   "kind": "count",
+   "file": "README.md",
+   "target": "settings:500+",
+   "item": "drift-map #49"
+  },
+  {
+   "kind": "wiki-link",
+   "file": "README.md",
+   "target": "https://github.com/samugit83/redamon/wiki/Pentest-Agent#tool-confirmation-gate",
+   "item": "drift-map #52"
+  },
+  {
+   "kind": "wiki-link",
+   "file": "README.md",
+   "target": "https://github.com/samugit83/redamon/wiki/The-Graph-Dashboard#redamon-terminal",
+   "item": "drift-map #52"
+  }
+ ]
+}

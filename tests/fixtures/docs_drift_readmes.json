@@ -1,0 +1,59 @@
+{
+ "_comment": "Docs drift wave 3 must fix; read by tests/test_docs_not_stale.py (P21). Remove an entry in the same commit as its fix.",
+ "entries": [
+  {
+   "kind": "anchor",
+   "file": "docs/readmes/README.AGENTIC_SYSTEM.md",
+   "target": "#evograph--evolutive-attack-chain-graph",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "anchor",
+   "file": "docs/readmes/README.AGENTIC_SYSTEM.md",
+   "target": "#fireteam--parallel-specialist-sub-agents",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "count",
+   "file": "docs/readmes/README.DEV.md",
+   "target": "settings:190+",
+   "item": "drift-map #49"
+  },
+  {
+   "kind": "count",
+   "file": "docs/readmes/README.POSTGRES.md",
+   "target": "settings:169+",
+   "item": "drift-map #49"
+  },
+  {
+   "kind": "count",
+   "file": "docs/readmes/README.RECON.md",
+   "target": "settings:169+",
+   "item": "drift-map #49"
+  },
+  {
+   "kind": "anchor",
+   "file": "docs/readmes/README.SUPPLY_CHAIN.md",
+   "target": "#layer-l1--standalone-scan-other-scans",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "anchor",
+   "file": "docs/readmes/README.SUPPLY_CHAIN.md",
+   "target": "#layer-l2--recon-pipeline-module",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "anchor",
+   "file": "docs/readmes/README.SUPPLY_CHAIN.md",
+   "target": "#layer-l3--agent-tools",
+   "item": "drift-map #53"
+  },
+  {
+   "kind": "count",
+   "file": "docs/readmes/TECH_STACK.md",
+   "target": "node types:17",
+   "item": "drift-map #48"
+  }
+ ]
+}
