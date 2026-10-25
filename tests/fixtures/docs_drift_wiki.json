@@ -52,12 +52,6 @@
   {
    "kind": "count",
    "file": "redamon.wiki/Creating-a-Project.md",
-   "target": "recon presets:21",
-   "item": "drift-map #46"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Creating-a-Project.md",
    "target": "settings:196+",
    "item": "drift-map #49"
   },
@@ -118,12 +112,6 @@
   {
    "kind": "count",
    "file": "redamon.wiki/Home.md",
-   "target": "recon presets:21",
-   "item": "drift-map #46"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Home.md",
    "target": "settings:245+",
    "item": "drift-map #49"
   },
@@ -146,12 +134,6 @@
    "item": "drift-map #55"
   },
   {
-   "kind": "count",
-   "file": "redamon.wiki/Project-Settings-Reference.md",
-   "target": "recon presets:21",
-   "item": "drift-map #46"
-  },
-  {
    "kind": "wiki-link",
    "file": "redamon.wiki/Project-Settings-Reference.md",
    "target": "AI-Agent-Guide#tunnel-providers",
@@ -168,12 +150,6 @@
    "file": "redamon.wiki/Recon-Pipeline-Workflow.md",
    "target": "settings:196+",
    "item": "drift-map #49"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/Recon-Presets.md",
-   "target": "recon presets:21",
-   "item": "drift-map #46"
   },
   {
    "kind": "count",
@@ -204,12 +180,6 @@
    "file": "redamon.wiki/Troubleshooting.md",
    "target": "Getting-Started#minimum-system-requirements",
    "item": "drift-map #53"
-  },
-  {
-   "kind": "count",
-   "file": "redamon.wiki/VHost-and-SNI-Enumeration.md",
-   "target": "recon presets:22",
-   "item": "drift-map #46"
   },
   {
    "kind": "wiki-link",
