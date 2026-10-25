@@ -74,7 +74,7 @@ fi
 summary="$(printf '%s\n' "$OUT" | grep -m1 '^drift-audit --docs:')"
 nfiles="$(printf '%s\n' "$summary" | sed -n 's/^drift-audit --docs: \([0-9]*\) file.*/\1/p')"
 nchecked="$(printf '%s\n' "$summary" | sed -n 's/.*, \([0-9]*\) citation.*/\1/p')"
-# Floors well below today's counts (139 files, 1734 citations with the wiki): a
+# Floors well below today's counts (139 files, 1727 citations with the wiki): a
 # broken file list or extractor must fail here, not pass by finding nothing.
 min_files=$(( WIKI ? 100 : 60 )); min_checked=$(( WIKI ? 1200 : 700 ))
 if [[ -n "$nfiles" && -n "$nchecked" && $nfiles -ge $min_files && $nchecked -ge $min_checked ]]; then

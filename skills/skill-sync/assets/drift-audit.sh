@@ -161,6 +161,8 @@ resolves() {
 #   - `path:12` and `path::TestX` cite `path`;
 #   - links to https://github.com/samugit83/redamon/{blob,tree}/<ref>/<path>
 #     are repo citations too (origin G, resolved from the repo root);
+#   - "exists" means git would commit it (tracked, or new and not ignored),
+#     see known_paths;
 #   - a backticked token is a path only if its first segment exists in the
 #     citing dir, the repo root or a ROOT: `recon/port_scan.py` is audited,
 #     `notes/`, `bedrock/` or `nginx/1.25` are not. A token starting with ".."
@@ -216,20 +218,11 @@ extract_doc_citations() {
   ' "$1"
 }
 
-root_has() {
-  local r base
-  for r in "${ROOTS[@]}"; do
-    if [ "$r" = "." ]; then base="$REPO_ROOT"; else base="$REPO_ROOT/$r"; fi
-    [ -e "$base/$1" ] && return 0
-  done
-  return 1
-}
-
 # Sets DOC_P to the path a citation names, or "" to skip it. Builtins only:
 # this runs once per token across hundreds of files.
-# $1 token, $2 origin, $3 citing file's dir, $4 1 when the citing file is a wiki page.
+# $1 token, $2 origin, $3 1 when the citing file is a wiki page.
 doc_path_of() {
-  local p="$1" origin="$2" fdir="$3" in_wiki="$4" first last
+  local p="$1" origin="$2" in_wiki="$3" last
   DOC_P=""
   case "$p" in
     *://*|mailto:*|\#*|/*|~*) return ;;
@@ -245,8 +238,6 @@ doc_path_of() {
     case "$p" in
       tools/list|tools/call|prompts/list|prompts/get|resources/list|resources/read|resources/templates/list) return ;;
     esac
-    first="${p%%/*}"
-    [ -e "$fdir/$first" ] || root_has "$first" || return
   else
     p="${p//%5B/[}"; p="${p//%5D/]}"
   fi
@@ -294,6 +285,20 @@ repo_rel() {
   fi
 }
 
+# Every path git would commit (tracked, or new and not ignored) and every
+# parent dir of one, plus the wiki checkout's own. Existence on disk is not
+# enough: a scan or a test container can leave an untracked, empty runtime dir
+# at a path a doc cites as moved, and the audit must answer alike on every clone.
+known_paths() {
+  {
+    git -C "$REPO_ROOT" ls-files --cached --others --exclude-standard 2>/dev/null
+    if [ -f "$REPO_ROOT/$WIKI_DIR/Home.md" ]; then
+      git -C "$REPO_ROOT/$WIKI_DIR" ls-files --cached --others --exclude-standard 2>/dev/null \
+        | sed "s|^|$WIKI_DIR/|"
+    fi
+  } | awk -F/ '{ p = $1; print p; for (i = 2; i <= NF; i++) { p = p "/" $i; print p } }' | sort -u
+}
+
 # git check-ignore aborts the whole batch on a path beyond a symlink.
 beyond_symlink() {
   local prefix="" seg parts=()
@@ -306,39 +311,12 @@ beyond_symlink() {
   return 1
 }
 
-# Returns 0 live, 1 dead, 2 placeholder. A link or image resolves from the
-# citing file's dir only (where a renderer sends the click), a GitHub URL from
-# the repo root, a backticked path from the citing dir or any ROOT. Sets
-# DOC_IGN to the candidates git might ignore, for the batched check-ignore.
-doc_verdict() {
-  local p="$1" origin="$2" fdir="$3" r base c cands=()
-  DOC_IGN=()
-  case "$origin" in
-    G) repo_rel "$REPO_ROOT/$p"; cands+=("$REL") ;;
-    L|I) repo_rel "$fdir/$p"; cands+=("$REL") ;;
-    *)
-      repo_rel "$fdir/$p"; cands+=("$REL")
-      for r in "${ROOTS[@]}"; do
-        if [ "$r" = "." ]; then base="$REPO_ROOT"; else base="$REPO_ROOT/$r"; fi
-        repo_rel "$base/$p"; cands+=("$REL")
-      done ;;
-  esac
-  for c in "${cands[@]}"; do
-    [ -n "$c" ] || continue
-    case "$c" in _local|_local/*) continue ;; esac
-    [ -e "$REPO_ROOT/$c" ] && return 0
-    case "$c" in "$WIKI_DIR"|"$WIKI_DIR"/*) continue ;; esac
-    beyond_symlink "$c" || DOC_IGN+=("$c")
-  done
-  case "$p" in *\[*\]*) return 2 ;; esac
-  return 1
-}
-
 if [ "$DOCS" -eq 1 ]; then
-  pending=()           # "rel -> path" of each dead citation, by index
-  cand_file="$(mktemp)"
-  trap 'rm -f "$cand_file"' EXIT
-  checked=0
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  known_paths > "$work/known"
+  : > "$work/cites"; : > "$work/cands"
+  idx=0
   audited=0
   for f in "${FILES[@]}"; do
     [ -f "$f" ] || continue
@@ -349,38 +327,88 @@ if [ "$DOCS" -eq 1 ]; then
     done
     audited=$((audited+1))
     fdir="$(dirname "$f")"
+    fdir_rel="${fdir#$REPO_ROOT}"; fdir_rel="${fdir_rel#/}"
     case "$rel" in "$WIKI_DIR"/*) in_wiki=1 ;; *) in_wiki=0 ;; esac
     while IFS=$'\t' read -r origin cand; do
       [ -n "$cand" ] || continue
-      doc_path_of "$cand" "$origin" "$fdir" "$in_wiki"
+      doc_path_of "$cand" "$origin" "$in_wiki"
       [ -n "$DOC_P" ] || continue
-      checked=$((checked+1))
-      doc_verdict "$DOC_P" "$origin" "$fdir"
-      [ $? -eq 1 ] || continue
-      for c in "${DOC_IGN[@]+"${DOC_IGN[@]}"}"; do
-        printf '%s\t%s\n' "${#pending[@]}" "$c" >> "$cand_file"
-      done
-      pending+=("$rel -> $DOC_P")
+      case "$DOC_P" in *\[*\]*) br=1 ;; *) br=0 ;; esac
+      printf '%s\t%s -> %s\t%s\n' "$idx" "$rel" "$DOC_P" "$br" >> "$work/cites"
+      # A link or image resolves from the citing file's dir only (where a
+      # renderer sends the click), a GitHub URL from the repo root, a
+      # backticked path from the citing dir or any ROOT; F lines are where a
+      # backticked token's first segment must exist for it to count as a path.
+      {
+        case "$origin" in
+          G) repo_rel "$REPO_ROOT/$DOC_P"; printf '%s\tC\t%s\n' "$idx" "$REL" ;;
+          L|I) repo_rel "$fdir/$DOC_P"; printf '%s\tC\t%s\n' "$idx" "$REL" ;;
+          *)
+            first="${DOC_P%%/*}"
+            printf '%s\tF\t%s\n' "$idx" "${fdir_rel:+$fdir_rel/}$first"
+            repo_rel "$fdir/$DOC_P"; printf '%s\tC\t%s\n' "$idx" "$REL"
+            for r in "${ROOTS[@]}"; do
+              if [ "$r" = "." ]; then
+                printf '%s\tF\t%s\n' "$idx" "$first"
+                repo_rel "$REPO_ROOT/$DOC_P"
+              else
+                printf '%s\tF\t%s\n' "$idx" "$r/$first"
+                repo_rel "$REPO_ROOT/$r/$DOC_P"
+              fi
+              printf '%s\tC\t%s\n' "$idx" "$REL"
+            done ;;
+        esac
+      } >> "$work/cands"
+      idx=$((idx+1))
     done < <(extract_doc_citations "$f" | sort -u)
   done
-  # One check-ignore for every candidate of every dead citation. --no-index:
-  # none of these paths exists, so the index has nothing to add.
-  ignored_idx=" $(cut -f2 "$cand_file" | git -C "$REPO_ROOT" check-ignore --no-index --stdin 2>/dev/null \
-                  | awk -F'\t' 'NR == FNR { ign[$0] = 1; next } ($2 in ign) { print $1 }' - "$cand_file" \
-                  | sort -u | tr '\n' ' ')"
-  docs_dead=()
-  for i in "${!pending[@]}"; do
-    case "$ignored_idx" in *" $i "*) continue ;; esac
-    docs_dead+=("${pending[$i]}")
-  done
+
+  # Verdict per citation: "skip" (a backticked token whose first segment exists
+  # nowhere, so not a path), "live", or "dead"; anything under _local/ never
+  # counts as live.
+  awk -F'\t' -v known="$work/known" -v cands="$work/cands" '
+    BEGIN {
+      while ((getline line < known) > 0) k[line] = 1
+      while ((getline line < cands) > 0) {
+        split(line, c, "\t")
+        if (c[2] == "F") { hasF[c[1]] = 1; if ((c[3] in k) || c[3] == "_local") firstOk[c[1]] = 1; continue }
+        if (c[3] == "" || c[3] == "_local" || index(c[3], "_local/") == 1) continue
+        if (c[3] in k) live[c[1]] = 1
+      }
+    }
+    {
+      if (($1 in hasF) && !($1 in firstOk)) { print "skip\t" $0; next }
+      print ((($1 in live) ? "live" : "dead") "\t" $0)
+    }
+  ' "$work/cites" > "$work/verdicts"
+  checked=$(grep -vc '^skip' "$work/verdicts")
+
+  # A dead citation that lands on a gitignored path is a runtime output, not
+  # drift; so is an unresolved [placeholder]. One check-ignore for them all,
+  # --no-index because none of these paths is tracked.
+  : > "$work/ign_cands"
+  while IFS=$'\t' read -r i c; do
+    case "$c" in _local|_local/*|"$WIKI_DIR"|"$WIKI_DIR"/*) continue ;; esac
+    beyond_symlink "$c" || printf '%s\t%s\n' "$i" "$c" >> "$work/ign_cands"
+  done < <(awk -F'\t' 'NR == FNR { if ($1 == "dead" && $4 == "0") dead[$2] = 1; next }
+                       ($1 in dead) && $2 == "C" && $3 != "" { print $1 "\t" $3 }' \
+             "$work/verdicts" "$work/cands")
+  cut -f2 "$work/ign_cands" | git -C "$REPO_ROOT" check-ignore --no-index --stdin 2>/dev/null \
+    | awk -F'\t' 'NR == FNR { ign[$0] = 1; next } ($2 in ign) { print $1 }' - "$work/ign_cands" \
+    | sort -u > "$work/ignored"
+  awk -F'\t' -v ignf="$work/ignored" '
+    BEGIN { while ((getline line < ignf) > 0) ign[line] = 1 }
+    $1 == "dead" && $4 == "0" && !($2 in ign) { print $3 }
+  ' "$work/verdicts" | sort -u > "$work/dead"
+
   echo "drift-audit --docs: $audited file(s), $checked citation(s) checked."
-  if [ "${#docs_dead[@]}" -eq 0 ]; then
+  if [ ! -s "$work/dead" ]; then
     echo "OK - every cited path resolves."
     exit 0
   fi
   echo
   echo "[docs] dead citations:"
-  printf '%s\n' "${docs_dead[@]}" | sort -u | sed 's/^/  /'
+  sed 's/^/  /' "$work/dead"
   exit 1
 fi
 

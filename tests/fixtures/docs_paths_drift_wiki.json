@@ -57,9 +57,9 @@
    "item": "drift-map #54"
   },
   {
-   "file": "redamon.wiki/Secret-Multiscanner.md",
-   "path": "scan_targets/filesystem",
-   "item": "not a path: a scan descriptor string"
+   "file": "redamon.wiki/RedAmon-HackLab.md",
+   "path": "redamon.wiki/hacklab/community/",
+   "item": "not a path: the folder a contributor's first session file creates"
   },
   {
    "file": "redamon.wiki/XBOW-Validation-Benchmark.md",

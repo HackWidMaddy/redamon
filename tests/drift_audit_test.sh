@@ -72,14 +72,15 @@ OUT="$(bash "$FX/skills/skill-sync/assets/drift-audit.sh" 2>&1)"; RC=$?
     && pass "agentic/AGENTS.md -> tooling/missing.sh under [AGENTS]" || fail "exit $RC: $OUT"
 
 echo "== --docs: prose docs and the wiki, with the docs rules =="
-mkdir -p "$FX/docs/readmes" "$FX/_local" "$FX/recon/output" "$FX/webapp/app/[id]" "$FX/redamon.wiki"
+mkdir -p "$FX/docs/readmes" "$FX/_local" "$FX/recon/output" "$FX/webapp/app/[id]" "$FX/redamon.wiki" \
+         "$FX/recon/data/old_db"     # an empty, untracked dir a run left behind
 : > "$FX/_local/plan.md"
 : > "$FX/webapp/app/[id]/route.ts"
 printf '%s\n' '/_local/' 'recon/output/*.json' > "$FX/.gitignore"
 cat > "$FX/docs/readmes/README.X.md" <<'EOF'
 Live: `recon/scan_utils.py`, `recon/scan_utils.py:12`, `helpers/scan_utils.py` and the
 route `webapp/app/[id]/route.ts`.
-Dead: `recon/gone.py:5` and `recon/gone_test.py::TestX::test_y`.
+Dead: `recon/gone.py:5`, `recon/gone_test.py::TestX::test_y` and `recon/data/old_db`.
 Not paths: `notes/report.md`, `bedrock/`, `tools/list`, `recon/[tool].py`, `../../etc/passwd`.
 Runtime output: `recon/output/recon_example.json`.
 Private: [plan](../../_local/plan.md).
@@ -98,6 +99,7 @@ OUT="$(bash "$FX/skills/skill-sync/assets/drift-audit.sh" --docs 2>&1)"; RC=$?
 [[ $RC -eq 1 ]] && pass "exit 1 when a doc cites a dead path" || fail "exit $RC: $OUT"
 for dead in "docs/readmes/README.X.md -> recon/gone.py" \
             "docs/readmes/README.X.md -> recon/gone_test.py" \
+            "docs/readmes/README.X.md -> recon/data/old_db" \
             "docs/readmes/README.X.md -> ../../_local/plan.md" \
             "redamon.wiki/Home.md -> ../docs/readmes/README.GONE.md" \
             "redamon.wiki/Home.md -> recon/gone_on_github.py"; do
