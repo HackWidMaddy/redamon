@@ -32,8 +32,6 @@ CPE_RESOLVER = PROJECT_ROOT / "graph_db" / "cpe_resolver.py"
 
 #: Tracked files that still name a dead path, each with the reason.
 STILL_NAMED = {
-    "recon/Dockerfile": "drift-map #60: handed back, mkdir of the unused /app/recon/data/mitre_db",
-    "recon/entrypoint.sh": "drift-map #60: handed back, mkdir of the unused /app/recon/data/mitre_db",
     "docs/readmes/README.MITRE.md": "drift-map #60: docs are wave 3",
     "docs/readmes/README.DRIFT_MAP.md": "the drift map records the deletion",
 }
