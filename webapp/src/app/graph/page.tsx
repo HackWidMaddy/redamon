@@ -67,7 +67,7 @@ import { useScanStartFailure } from '@/hooks/useScanStartFailure'
 import { useDrawerOffsets } from '@/hooks/useDrawerOffsets'
 import { useGraphTypeFilterPrefs, useGraphViewPrefs } from '@/hooks/useUserPreferences'
 import { useProject } from '@/providers/ProjectProvider'
-import { PARTIAL_RECON_PHASE_MAP } from '@/lib/recon-types'
+import { GITHUB_HUNT_PHASES, GVM_PHASES, PARTIAL_RECON_PHASE_MAP, TRUFFLEHOG_PHASES } from '@/lib/recon-types'
 import { WORKFLOW_TOOLS } from '@/components/projects/ProjectForm/WorkflowView/workflowDefinition'
 import type { ReconStatus } from '@/lib/recon-types'
 import type { ScanMode } from '@/hooks/useReconStatus'
@@ -1892,7 +1892,7 @@ export default function GraphPage() {
         onResume={handleResumeGvm}
         onStop={handleStopGvm}
         title="GVM Vulnerability Scan Logs"
-        totalPhases={4}
+        totalPhases={GVM_PHASES.length}
       />
 
       <ReconLogsDrawer
@@ -1908,7 +1908,7 @@ export default function GraphPage() {
         onResume={handleResumeGithubHunt}
         onStop={handleStopGithubHunt}
         title="GitHub Secret Hunt Logs"
-        totalPhases={3}
+        totalPhases={GITHUB_HUNT_PHASES.length}
       />
 
       <ReconLogsDrawer
@@ -1922,7 +1922,7 @@ export default function GraphPage() {
         onClearLogs={clearTrufflehogLogs}
         onStop={() => { if (openTrufflehogLogsSource) void handleStopTrufflehog(openTrufflehogLogsSource) }}
         title={`Secret Multiscanner Logs — ${openTrufflehogLogsSource ?? ''}`}
-        totalPhases={3}
+        totalPhases={TRUFFLEHOG_PHASES.length}
       />
 
       <ReconLogsDrawer

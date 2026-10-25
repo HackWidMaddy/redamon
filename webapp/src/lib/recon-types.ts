@@ -59,9 +59,13 @@ export interface GvmState {
   container_id?: string | null
 }
 
+// Kept in step with GVM_PHASE_PATTERNS in container_manager.py, in order: the
+// drawer's "Phase N/M" takes M from here and N from the pattern's number.
+// recon-types.phases.test.ts compares the three phase lists below with the Python.
 export const GVM_PHASES = [
   'Loading Recon Data',
-  'Connecting to GVM',
+  'Waiting for GVM',
+  'Connected to GVM',
   'Scanning IPs',
   'Scanning Hostnames',
 ] as const
@@ -86,6 +90,7 @@ export interface GithubHuntState {
   container_id?: string | null
 }
 
+// Kept in step with GITHUB_HUNT_PHASE_PATTERNS in container_manager.py.
 export const GITHUB_HUNT_PHASES = [
   'Loading Settings',
   'Scanning Repositories',
