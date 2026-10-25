@@ -379,6 +379,38 @@ When `NAABU_EXCLUDE_CDN = True`:
 - Reduces false positives from CDN edge servers
 - Still reports CDN detection in output
 
+### How an IP gets its CDN tag (`IP.is_cdn`, `cdn_name`, `cdn_source`)
+
+Three scanners can say an IP is a CDN edge, and all three reach the graph:
+
+| Source | When | Graph write |
+|---|---|---|
+| naabu `-cdn` | GROUP 3, port scan | `update_graph_from_port_scan` sets `is_cdn` / `cdn_name` from `port_scan.by_ip` (no `cdn_source`) |
+| httpx `-cdn` | GROUP 4, per URL | on the `Endpoint` (`is_cdn`, `cdn`); readers that need an IP's tag also read `http_probe.by_url` |
+| tlsx certificate issuer | GROUP 3.6 | `_attribute_cdn` (`recon/main_recon_modules/tls_scan.py`) fills a **blank** tag on `port_scan.by_ip` from the issuer (Cloudflare, Akamai, Fastly, Sucuri, Incapsula/Imperva; never Amazon, since ACM certificates sit on real origins) and lists those IPs in the tlsx payload as `cdn_by_ip` |
+
+The port graph write runs **before** tlsx in a full run, so the tlsx graph writer
+(`update_graph_from_tlsx`) carries its own tag: for each IP in `cdn_by_ip` it
+sets `is_cdn = true`, fills a blank `cdn_name`, and stamps `cdn_source = 'tlsx'`
+unless another tool tagged the IP first. It MATCHes the tenant-scoped IP (never
+creates one) and never writes `is_cdn = false`.
+
+Partial runs rebuild `port_scan` from the graph (`_build_port_scan_data_from_graph`)
+and carry each IP's existing `is_cdn` / `cdn_name`, so the port write a partial
+tlsx, httpx or nmap run makes does not reset a tagged IP to false.
+
+**One CDN list.** `recon/helpers/cdn_ranges.py` is the single source every module
+reads for "is this a CDN edge?": edge prefixes for Cloudflare, Fastly, CloudFront,
+Azure Front Door, Imperva and Sucuri (static, `recon/helpers/cdn_edge_prefixes.py`,
+each list with its source and retrieval date; nothing is fetched at run time
+except the optional live Cloudflare list `is_cloudflare_ip` already used), the
+edge ASNs (Cloudflare, Fastly, Akamai, Imperva, Sucuri; never a generic cloud
+ASN), the certificate-issuer markers and the edge response-header signatures.
+Origin discovery, `ip_filter` (Shodan, Netlas, Uncover, the OSINT enrichers),
+security checks and vhost/SNI import it. Akamai has no prefix list: ARIN shows
+compute (`AKAMAI-COMPUTE`, Linode) reassignments inside its CDN blocks, so a
+prefix cannot tell an Akamai edge from a customer's server.
+
 ---
 
 ## Architecture & Flow
