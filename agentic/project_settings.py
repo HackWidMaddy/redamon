@@ -523,7 +523,6 @@ AGENT_SETTING_COLUMNS: dict[str, str] = {
     'HYDRA_MAX_WORDLIST_ATTEMPTS': 'hydraMaxWordlistAttempts',
     'SHODAN_ENABLED': 'shodanEnabled',
     'CAPTURE_PROXY_ENABLED': 'captureProxyEnabled',
-    'AUTH_PROFILE': 'authProfile',
     'STEALTH_MODE': 'stealthMode',
     'AGENT_GUARDRAIL_ENABLED': 'agentGuardrailEnabled',
     # Fireteam (multi-agent)
@@ -721,6 +720,8 @@ def fetch_agent_settings(project_id: str, webapp_url: str, *,
     # response. Stored here as a raw list of dicts; parse_user_servers()
     # validates and converts to MCPServer instances at orchestrator setup.
     settings['USER_MCP_SERVERS'] = project.get('userMcpServers', []) or []
+    # A relation the project route includes, not a column.
+    settings['AUTH_PROFILE'] = project.get('authProfile', DEFAULT_AGENT_SETTINGS['AUTH_PROFILE'])
     # LATS_ALLOWED_PHASES is assembled from the two LATS phase booleans.
     _lats_phase_defaults = {'exploitation': True, 'post_exploitation': False}
     _lats_phases = [

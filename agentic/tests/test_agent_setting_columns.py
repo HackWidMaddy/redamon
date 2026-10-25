@@ -46,11 +46,14 @@ _NOT_LOADED = {"ROE_ENABLED": "derived from the engagement fields"}
 
 
 def _project_columns() -> set[str]:
+    """Scalar and enum fields of model Project; relation fields are not columns."""
     src = open(_SCHEMA, encoding="utf-8").read()
+    models = set(re.findall(r"^model (\w+) \{", src, re.M))
     body = re.search(r"^model Project \{(.*?)^\}", src, re.S | re.M).group(1)
     return {
         m.group(1)
-        for m in re.finditer(r"^\s+([a-z]\w*)\s+[A-Z]\w*", body, re.M)
+        for m in re.finditer(r"^\s+([a-z]\w*)\s+([A-Z]\w*)", body, re.M)
+        if m.group(2) not in models
     }
 
 
