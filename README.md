@@ -704,7 +704,7 @@ The agent's most powerful execution mode. When an objective decomposes into **in
 
 Every safety guarantee that applies to the root agent also applies to every member: hard guardrails, soft guardrails, phase gating, Rules of Engagement, and dangerous-tool confirmations (handled **per-member, in parallel**; N members can each be awaiting your approval on their own panel simultaneously without serializing). Recursion is forbidden (a member cannot itself deploy a fireteam) and every wave has a hard cap on members, an iteration budget per member, and a wall-clock timeout. The result is wall-clock parallelism without coordination chaos, predictable termination, and an audit trail where every action is attributable to the specialist that produced it.
 
-> **[Wiki: Fireteam (Parallel Specialists)](https://github.com/samugit83/redamon/wiki/Fireteam-Parallel-Specialists)** | **[Technical: README.AGENTIC_SYSTEM.md](docs/readmes/README.AGENTIC_SYSTEM.md#fireteam--parallel-specialist-sub-agents)**
+> **[Wiki: Fireteam (Parallel Specialists)](https://github.com/samugit83/redamon/wiki/Fireteam-Parallel-Specialists)** | **[Technical: README.AGENTIC_SYSTEM.md](docs/readmes/README.AGENTIC_SYSTEM.md#fireteam---parallel-specialist-sub-agents)**
 
 ### AI Model Providers
 
@@ -724,7 +724,7 @@ A **Neo4j knowledge graph**, the single source of truth for the target's attack 
 
 A persistent, evolutionary graph tracking everything the AI agent does: tool executions, discoveries, failures, and strategic decisions. Structured chain context replaces flat execution traces, improving agent efficiency by 25%+. Cross-session memory means the agent never starts from zero.
 
-> **[Wiki: EvoGraph](https://github.com/samugit83/redamon/wiki/EvoGraph-Attack-Chain-Evolution)** | **[Technical: README.AGENTIC_SYSTEM.md](docs/readmes/README.AGENTIC_SYSTEM.md#evograph--evolutive-attack-chain-graph)**
+> **[Wiki: EvoGraph](https://github.com/samugit83/redamon/wiki/EvoGraph-Attack-Chain-Evolution)** | **[Technical: README.AGENTIC_SYSTEM.md](docs/readmes/README.AGENTIC_SYSTEM.md#evograph-evolutive-attack-chain-graph)**
 
 ### Multi-Session Parallel Attack Chains
 

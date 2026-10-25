@@ -120,7 +120,7 @@ Open a Pull Request against `master`. The [PR template](.github/PULL_REQUEST_TEM
 
 ### Step 5 — Celebrate
 
-Your first merged PR earns you the **Scout** rank and a spot in the [Contributors Wall of Fame](README.md#contributors-wall-of-fame). Welcome to the team.
+Your first merged PR earns you the **Scout** rank and a spot in the Contributors Wall of Fame. Welcome to the team.
 
 ---
 
@@ -257,8 +257,8 @@ Every rank unlocks real rewards. No empty promises.
 
 | Reward | Starting rank | Details |
 |--------|--------------|---------|
-| Wall of Fame recognition | Scout | Name + GitHub link in [Contributors Wall of Fame](README.md#contributors-wall-of-fame) |
-| Video in README showcase | Broadcaster | Your video embedded in the [Video Showcase](README.md#video-showcase) section — visible to every visitor |
+| Wall of Fame recognition | Scout | Name + GitHub link in the Contributors Wall of Fame |
+| Video in README showcase | Broadcaster | Your video listed in the [Community Showcase](README.md#community-showcase) section — visible to every visitor |
 | LinkedIn recommendation | Hunter | The maintainer writes a personalized LinkedIn recommendation highlighting your open-source contributions |
 | Early access | Hunter | Access to feature branches before public release |
 | Blog co-authorship | Elite | Co-author technical writeups about features you built (published on project blog / Medium / dev.to) |
@@ -404,7 +404,7 @@ For full details, see [SECURITY.md](SECURITY.md). We follow responsible disclosu
 
 ## Hall of Fame
 
-The [Contributors Wall of Fame](README.md#contributors-wall-of-fame) in README.md is the living leaderboard. It's updated with every rank promotion and tracks:
+The Contributors Wall of Fame in README.md is the living leaderboard. It's updated with every rank promotion and tracks:
 
 - Your name and GitHub profile
 - Your current rank
