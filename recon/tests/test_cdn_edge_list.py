@@ -48,6 +48,7 @@ def _no_fetch(monkeypatch):
     ("2a04:4e42::10", "fastly"),
     ("13.32.0.1", "cloudfront"),
     ("54.230.0.1", "cloudfront"),
+    ("2600:9000:1000::1", "cloudfront"),
     ("13.107.246.10", "azurefrontdoor"),
     ("45.60.1.1", "imperva"),
     ("2a02:e980::1", "imperva"),

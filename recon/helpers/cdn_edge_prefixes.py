@@ -29,10 +29,12 @@ EDGE_PREFIXES: dict[str, tuple[str, ...]] = {
         "167.82.160.0/20", "167.82.224.0/20", "172.111.64.0/18", "185.31.16.0/22", "199.27.72.0/21",
         "199.232.0.0/16", "2a04:4e40::/32", "2a04:4e42::/31", "2a04:4e44::/32",
     ),
-    # Amazon CloudFront: https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips
-    # (CLOUDFRONT_GLOBAL_IP_LIST + CLOUDFRONT_REGIONAL_EDGE_IP_LIST), retrieved
-    # 2026-10-25. These are CloudFront's own edge servers; the generic Amazon
-    # ranges and ASN are not here, since EC2 and ALB origins live in them.
+    # Amazon CloudFront: IPv4 from https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips
+    # (CLOUDFRONT_GLOBAL_IP_LIST + CLOUDFRONT_REGIONAL_EDGE_IP_LIST), IPv6 from the
+    # CLOUDFRONT entries of https://ip-ranges.amazonaws.com/ip-ranges.json
+    # (createDate 2026-10-25-04-17-04), both retrieved 2026-10-25. These are
+    # CloudFront's own edge servers; the generic Amazon ranges and ASN are not
+    # here, since EC2 and ALB origins live in them.
     "cloudfront": (
         "3.10.17.128/25", "3.11.53.0/24", "3.29.40.64/26", "3.29.40.128/26", "3.29.40.192/26",
         "3.29.57.0/26", "3.35.130.128/25", "3.101.158.0/23", "3.107.43.128/25", "3.107.44.0/25",
@@ -77,6 +79,15 @@ EDGE_PREFIXES: dict[str, tuple[str, ...]] = {
         "204.246.168.0/22", "204.246.172.0/24", "204.246.173.0/24", "204.246.174.0/23", "204.246.176.0/20",
         "205.251.202.0/23", "205.251.204.0/23", "205.251.206.0/23", "205.251.208.0/20", "205.251.249.0/24",
         "205.251.250.0/23", "205.251.252.0/23", "205.251.254.0/24", "216.137.32.0/19",
+        "2001:3fc6:4::/48", "2001:3fc6:5::/48", "2001:3fc6:20::/43", "2400:7fc0:500::/40",
+        "2404:c2c0:500::/40", "2409:8c00:2421:300::/56", "2409:8c00:2421:400::/56", "2600:9000:ddd::/48",
+        "2600:9000:eee::/48", "2600:9000:fff::/48", "2600:9000:1000::/36", "2600:9000:2000::/36",
+        "2600:9000:3000::/36", "2600:9000:4000::/36", "2600:9000:5200::/40", "2600:9000:5308::/45",
+        "2600:9000:5310::/44", "2600:9000:5320::/43", "2600:9000:5340::/42", "2600:9000:5380::/41",
+        "2600:9000:6000::/36", "2600:9000:f000::/38", "2600:9000:f400::/40", "2600:9000:f500::/43",
+        "2600:9000:f520::/44", "2600:9000:f534::/46", "2600:9000:f538::/45", "2600:9000:f540::/42",
+        "2600:9000:f580::/41", "2600:9000:f600::/39", "2600:9000:f800::/37", "2600:f0f0:601::/48",
+        "2600:f0f0:602::/47", "2600:f0f0:5504::/46",
     ),
     # Azure Front Door: the AzureFrontDoor.Frontend service tag of
     # ServiceTags_Public_20261019.json (changeNumber 44), from
