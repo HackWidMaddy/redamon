@@ -34,12 +34,12 @@ For the graph write, use `graph-db-writes`. For the settings, use
 - **NEVER ship the enrichment module without its `_isolated` wrapper.**
   `run_<tool>_enrichment_isolated()` is the **actual call path** for the GROUP 3b
   parallel fan-out AND for every unit test; the plain `run_<tool>_enrichment()`
-  alone is never fan-out-safe. Reference:
-  [recon/main_recon_modules/censys_enrich.py:369](../../recon/main_recon_modules/censys_enrich.py#L369).
+  alone is never fan-out-safe. Reference: `run_censys_enrichment_isolated()` in
+  [recon/main_recon_modules/censys_enrich.py](../../recon/main_recon_modules/censys_enrich.py).
 - **NEVER vary the top-level result key.** The module writes
   `combined_result["<tool>"]` and the wrapper returns `snapshot.get("<tool>", {})`
   with the **same** identifier used everywhere else in the pipeline
-  ([censys_enrich.py:365](../../recon/main_recon_modules/censys_enrich.py#L365)).
+  (`snapshot.get("censys", {})` in [censys_enrich.py](../../recon/main_recon_modules/censys_enrich.py)).
 - **NEVER collect a field and not write it to the graph.** Every field in the
   output dict must land on a node/relationship or it is silent data loss - see
   `graph-db-writes`.
