@@ -335,7 +335,7 @@ _disk_reserve_gb() {
 # a clear message, instead of failing mysteriously later. Returns 1 to abort.
 # Override with REDAMON_SKIP_RAM_GATE=1 or REDAMON_MIN_RAM_MB=<mb>.
 preflight_ram_gate() {
-    [[ "${REDAMON_SKIP_RAM_GATE:-}" == "1" ]] && return 0
+    [[ "$(_env_knob REDAMON_SKIP_RAM_GATE)" == "1" ]] && return 0
     detect_build_resources
     local required_mb baseline_mb headroom_mb
     if [[ -n "${REDAMON_MIN_RAM_MB:-}" ]]; then
@@ -609,6 +609,15 @@ _env_knob() {
         END { gsub(/^[[:space:]]+|[[:space:]]+$/, "", val); print val }
     ' "$env_file"
 }
+
+# The .env.example keys only this script reads, through _env_knob on the host.
+# Compose forwards every other key; tests/test_env_example_keys.py fails on a key
+# that is in neither, because that is a documented knob that does nothing.
+HOST_ONLY_ENV_KEYS=(
+    OS_RESERVE_PCT SERVICES_PCT BURST_FACTOR BURST_SWAP_MIN_PCT BLAST_PCT
+    REDAMON_WEIGHT_WEBAPP REDAMON_WEIGHT_NEO4J REDAMON_WEIGHT_AGENT
+    REDAMON_SKIP_RAM_GATE REDAMON_ENABLE_ZRAM
+)
 
 # An integer percentage knob, with a default and a sane range.
 _pct_env() {
@@ -1098,7 +1107,7 @@ export_resource_caps() {
 # host only; a NO-OP on macOS/Windows (Docker Desktop's VM manages its own swap)
 # and when REDAMON_ENABLE_ZRAM != 1. Best-effort: never fatal, never interactive.
 setup_zram() {
-    [[ "${REDAMON_ENABLE_ZRAM:-}" == "1" ]] || return 0
+    [[ "$(_env_knob REDAMON_ENABLE_ZRAM)" == "1" ]] || return 0
 
     # Docker Desktop / WSL2 / mac: cannot add zram to the host VM from here.
     case "$(uname -s 2>/dev/null || echo unknown)" in
