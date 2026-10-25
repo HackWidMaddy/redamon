@@ -6,11 +6,19 @@ fully idempotent — safe to run multiple times without side effects.
 """
 
 
-# Drop old global constraints that conflict with tenant-scoped ones
+# Constraints that kept their NAME when their key became tenant-scoped: they
+# were unique on the natural key alone, and schema_keys.py declares the same
+# name for (natural key, user_id, project_id). An unconditional DROP of these
+# would remove the LIVE constraint on every init_schema (every scan-container
+# spawn, every agent graph call) and rebuild it at once, a full re-index with a
+# window in which concurrent MERGEs have no uniqueness guard. So
+# drop_legacy_shaped_constraints drops one only while the database still holds
+# it with a key other than the declared one.
+LEGACY_SHAPED_CONSTRAINTS = ("subdomain_unique", "ip_unique", "baseurl_unique")
+
+# Dropped unconditionally, so no name here may be one schema_keys.py or the
+# index lists below still create (tests/test_schema_legacy_drops.py).
 DROP_LEGACY_CONSTRAINTS = [
-    "DROP CONSTRAINT subdomain_unique IF EXISTS",
-    "DROP CONSTRAINT ip_unique IF EXISTS",
-    "DROP CONSTRAINT baseurl_unique IF EXISTS",
     # Renamed with the Trufflehog -> Multiscanner labels. Dropped by their OLD
     # names, because a constraint is identified by NAME: recreating it under the
     # new name leaves this one behind, still guarding a label nothing writes.
@@ -683,6 +691,41 @@ def consolidate_resolves_to_identity(session):
               f"edge(s) across {stats['pairs']} Subdomain->IP pair(s)")
 
 
+def _live_constraint_shapes(session):
+    """{name: (labels, properties)} of every constraint, or None if unreadable."""
+    try:
+        return {
+            rec["name"]: (list(rec["labelsOrTypes"] or []),
+                          list(rec["properties"] or []))
+            for rec in session.run(
+                "SHOW CONSTRAINTS YIELD name, labelsOrTypes, properties")
+        }
+    except Exception:
+        return None
+
+
+def drop_legacy_shaped_constraints(session):
+    """Drop each LEGACY_SHAPED_CONSTRAINTS name whose live key is not the
+    declared one, so the CREATE that follows can install the declared key.
+
+    A constraint that already matches schema_keys.py is left alone. When the
+    constraints cannot be listed the drop runs anyway: rebuilding a correct
+    constraint costs a re-index, while keeping a global one makes the
+    same-name CREATE ... IF NOT EXISTS a silent no-op, and two projects then
+    collide on one node.
+    """
+    declared = {k["constraint"]: ([k["label"]], list(k["key_properties"]))
+                for k in _key_constraints()}
+    live = _live_constraint_shapes(session)
+    for name in LEGACY_SHAPED_CONSTRAINTS:
+        if live is not None and (name not in live or live[name] == declared.get(name)):
+            continue
+        try:
+            session.run(f"DROP CONSTRAINT {name} IF EXISTS")
+        except Exception:
+            pass
+
+
 def init_schema(session):
     """
     Initialize constraints and indexes for the graph schema.
@@ -698,6 +741,7 @@ def init_schema(session):
     consolidate_technology_identity(session)
     consolidate_resolves_to_identity(session)
 
+    drop_legacy_shaped_constraints(session)
     for stmt in DROP_LEGACY_CONSTRAINTS:
         try:
             session.run(stmt)
