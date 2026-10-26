@@ -67,3 +67,23 @@ def test_every_resolves_to_read_skips_a_shodan_edge(builder):
     for q in reads:
         assert re.search(r"-\[r:RESOLVES_TO\]-", q), q
         assert FORWARD in q, q
+
+
+def test_partial_origin_discovery_reads_forward_dns_only():
+    """The fronted-host loader decides "this host sits behind a CDN" from the
+    IPs its name resolves to, and its IP becomes the host's edge address, which
+    a candidate is dropped against as "the edge". A Shodan PTR edge points at an
+    address whose PTR names the host, often a former origin: read as current
+    DNS, the very origin sought is discarded. Every RESOLVES_TO it reads carries
+    the forward-DNS filter."""
+    from recon.partial_recon_modules import origin_enrichment as oe
+
+    queries: list = []
+    with mock.patch.dict("sys.modules", {"graph_db": _fake_graph_db(queries)}):
+        oe._inject_graph_fronted_hosts({}, ["example.com"], "u1", "p1")
+    reads = [q for q in queries if "RESOLVES_TO" in q]
+    assert reads, "the loader reads no DNS edge"
+    for q in reads:
+        edges = re.findall(r"\[(\w*):RESOLVES_TO\]", q)
+        assert edges and all(edges), f"an unnamed RESOLVES_TO cannot be filtered: {q}"
+        assert q.count(FORWARD) >= len(edges), q
