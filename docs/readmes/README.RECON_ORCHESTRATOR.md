@@ -8,7 +8,7 @@ The Recon Orchestrator acts as a bridge between the webapp and the recon Docker 
 
 - **Container Lifecycle Management** - Start, stop, and monitor recon containers
 - **Real-time Log Streaming** - SSE-based log streaming to the frontend
-- **Phase Detection** - Automatic detection of recon phases from log output
+- **Phase Detection** - The pipeline's own group headers set each scan's phase (see Phase Detection)
 - **Status Tracking** - Track running/completed/error states per project
 
 ## Architecture
@@ -278,18 +278,34 @@ Server-Sent Events stream of TruffleHog log lines. Event format follows the same
 
 ## Phase Detection
 
-The orchestrator automatically detects recon phases from log output:
+A full scan's progress label comes from the pipeline's own group headers,
+which `recon/main.py` prints from its main thread, in run order, in both
+targeting modes (`PIPELINE_HEADER_PHASES` in `container_manager.py`; pinned by
+`recon/tests/test_pipeline_headers.py`):
 
-| Phase | Pattern | Description |
-|-------|---------|-------------|
-| 1 | `[Phase 1]`, `domain.*discovery` | Domain Discovery |
-| 2 | `[Phase 2]`, `port.*scan` | Port Scanning |
-| 3 | `[Phase 3]`, `http.*prob` | HTTP Probing |
-| 4 | `[Phase 4]`, `resource.*enum` | Resource Enumeration |
-| 4b | `JS Recon Scanner`, `JsRecon` | JS Recon (post-resource_enum) |
-| 5 | `[Phase 5]`, `vuln.*scan` | Vulnerability Scanning |
-| 6 | `[Phase 6]`, `mitre`, `cwe`, `capec` | MITRE Enrichment |
-| 7 | `[Phase 7]`, `github.*secret` | GitHub Secret Hunt |
+| Phase | Header (`[*][Pipeline] ...`) | Label |
+|-------|------------------------------|-------|
+| 1 | `GROUP 1:` | Domain Discovery (IP mode: reverse DNS, DNS, IP WHOIS) |
+| 2 | `GROUP 3:`, `GROUP 3.5:`, `GROUP 3.6:`, `GROUP 3b:` | Port Scanning |
+| 3 | `GROUP 4:` | HTTP Probing |
+| 4 | `GROUP 5:` | Resource Enumeration |
+| 4.5 | `GROUP 4.5:`, `GROUP 5b:`, `GROUP 5.5:` | AI Surface Recon, JS Recon, Supply-Chain Recon |
+| 5 | `GROUP 6:` (IP mode's inline Nuclei), `GROUP 6 Phase A:` | Vulnerability Scanning |
+| 6 | `GROUP 6 Phase B:` | CVE & MITRE |
+
+Once a log has shown a header (`PhaseTracker`), only headers move the phase:
+the background graph writer's `[graph-db]` lines, Nmap's banner, lines a
+parallel fan-out interleaves, the end-of-run summaries and IP mode's
+`IP STEP n:` prelude cannot. A `[Batch] Group` marker resets it, since each
+group runs the phases again. The tool-name `PHASE_PATTERNS` serve only a log
+with no header yet (partial recon), and never move the phase backwards.
+
+Each running scan has one `_PhaseCursor`: the log stream feeds it, and when no
+stream is attached a status poll (`_get_status_sync`, at most every
+`PHASE_POLL_INTERVAL_S` = 10 s, the 30 s reaper included) reads the new lines
+with `container.logs(since=..., timestamps=True)`. Every line is parsed once,
+by timestamp, so `get_recon_status` reports the phase with nobody watching and
+a stream attached later replays the log without rewinding it.
 
 ## Configuration
 

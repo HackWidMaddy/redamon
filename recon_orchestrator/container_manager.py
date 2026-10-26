@@ -180,10 +180,11 @@ def run_labels(project_id: str, run_id: str, kind: str) -> dict:
     """The labels a recon or partial-recon container is spawned with."""
     return {RUN_PROJECT_LABEL: project_id, RUN_KIND_LABEL: kind, RUN_ID_LABEL: run_id}
 
-# Phase patterns to detect from logs
-# Order matters - more specific patterns should come first within each phase
+# Tool-name phase patterns, for a log with no pipeline header yet (partial recon,
+# or a container from before the headers). Order matters - more specific patterns
+# should come first within each phase.
 PHASE_PATTERNS = [
-    (r"\[Phase 1\]|\[PHASE 1\]|Phase 1:|WHOIS Lookup|domain.*discovery|Domain Reconnaissance", "Domain Discovery", 1),
+    (r"\[Phase 1\]|\[PHASE 1\]|Phase 1:|domain.*discovery|Domain Reconnaissance", "Domain Discovery", 1),
     (r"\[Phase 2\]|\[PHASE 2\]|Phase 2:|NAABU PORT SCANNER|port.*scan", "Port Scanning", 2),
     (r"\[Phase 3\]|\[PHASE 3\]|Phase 3:|HTTPX HTTP PROBER|http.*prob", "HTTP Probing", 3),
     (r"\[Phase 4\]|\[PHASE 4\]|Phase 4:|Resource Enumeration|Katana.*GAU|resource.*enum", "Resource Enumeration", 4),
@@ -194,9 +195,105 @@ PHASE_PATTERNS = [
 
 
 # Domain batch: the outer progress. The pipeline prints exactly this line when it
-# starts a group (see run_domain_batch in recon/main.py), and the phase patterns
-# above then cycle 1..6 again inside it.
+# starts a group (see run_domain_batch in recon/main.py), and the phases then
+# cycle 1..6 again inside it.
 BATCH_GROUP_PATTERN = re.compile(r"\[Batch\]\s+Group\s+(\d+)/(\d+):\s*(\S+)")
+
+# The pipeline's own group headers. recon/main.py prints them from its main
+# thread, in run order, in both targeting modes (recon/tests/test_pipeline_headers.py
+# pins them against this table). Once a log has shown one, only headers move the
+# phase: tool output (the background graph writer's [graph-db] lines, Nmap's
+# banner, lines interleaved by a parallel fan-out, the end-of-run summaries, IP
+# mode's prelude) cannot. JS Recon and supply chain share AI Surface Recon's
+# number, because they run after it and before the vulnerability scan.
+PIPELINE_HEADER_PHASES = [
+    (r"\[Pipeline\] GROUP 1:", "Domain Discovery", 1),
+    (r"\[Pipeline\] GROUP 3(?:\.5|\.6|b)?:", "Port Scanning", 2),
+    (r"\[Pipeline\] GROUP 4:", "HTTP Probing", 3),
+    (r"\[Pipeline\] GROUP 5:", "Resource Enumeration", 4),
+    (r"\[Pipeline\] GROUP 4\.5:", "AI Surface Recon", 4.5),
+    (r"\[Pipeline\] GROUP 5b:", "JS Recon", 4.5),
+    (r"\[Pipeline\] GROUP 5\.5:", "Supply-Chain Recon", 4.5),
+    (r"\[Pipeline\] GROUP 6(?: Phase A)?:", "Vulnerability Scanning", 5),
+    (r"\[Pipeline\] GROUP 6 Phase B:", "CVE & MITRE", 6),
+]
+_PIPELINE_HEADERS = [(re.compile(p), name, n) for p, name, n in PIPELINE_HEADER_PHASES]
+_TOOL_PHASES = [(re.compile(p, re.IGNORECASE), name, n) for p, name, n in PHASE_PATTERNS]
+
+# A status poll with no log stream attached reads new log lines at most this often.
+PHASE_POLL_INTERVAL_S = 10.0
+
+
+class PhaseTracker:
+    """The phase of one log, fed its lines in order.
+
+    A pipeline header sets the phase. Before the first header the tool-name
+    PHASE_PATTERNS apply, and never move the phase backwards. A `[Batch] Group`
+    marker resets it, since each group runs the phases again.
+    """
+
+    __slots__ = ("phase", "phase_number", "header_seen")
+
+    def __init__(self, phase: Optional[str] = None, phase_number=None):
+        self.phase = phase
+        self.phase_number = phase_number
+        self.header_seen = False
+
+    def feed(self, line: str) -> bool:
+        """Advance on one line; True when the phase changed."""
+        if BATCH_GROUP_PATTERN.search(line):
+            changed = self.phase is not None
+            self.phase = self.phase_number = None
+            return changed
+        for regex, name, number in _PIPELINE_HEADERS:
+            if regex.search(line):
+                self.header_seen = True
+                return self._set(name, number)
+        if self.header_seen:
+            return False
+        for regex, name, number in _TOOL_PHASES:
+            if regex.search(line):
+                if self.phase_number is not None and number < self.phase_number:
+                    return False
+                return self._set(name, number)
+        return False
+
+    def _set(self, name: str, number) -> bool:
+        changed = (name, number) != (self.phase, self.phase_number)
+        self.phase, self.phase_number = name, number
+        return changed
+
+
+def _stamp_key(stamp: str) -> Optional[str]:
+    """A Docker RFC3339Nano timestamp as a string that sorts like the time.
+    Docker trims trailing zeros of the fraction, so it is padded to 9 digits."""
+    if len(stamp) < 20 or stamp[4] != "-" or stamp[10] != "T" or not stamp.endswith("Z"):
+        return None
+    head, _, frac = stamp[:-1].partition(".")
+    return f"{head}.{frac.ljust(9, '0')[:9]}Z"
+
+
+def _stamp_datetime(stamp: str) -> Optional[datetime]:
+    key = _stamp_key(stamp)
+    if key is None:
+        return None
+    try:
+        return datetime.fromisoformat(key[:26] + "+00:00")
+    except ValueError:
+        return None
+
+
+class _PhaseCursor:
+    """One run's log position, shared by its log streams and status polls, so
+    each line is parsed once and a stream attached later cannot rewind."""
+
+    __slots__ = ("tracker", "last_key", "last_at", "next_poll")
+
+    def __init__(self):
+        self.tracker = PhaseTracker()
+        self.last_key = ""
+        self.last_at: Optional[datetime] = None
+        self.next_poll = 0.0
 
 
 # GVM phase patterns to detect from logs
@@ -926,6 +1023,8 @@ class ContainerManager:
                     container = self.client.containers.get(state.container_id)
                     if container.status == "paused":
                         state.status = ReconStatus.PAUSED
+                    elif container.status == "running":
+                        self._poll_phase_cursor(project_id, container)
                     elif container.status != "running":
                         # Container stopped - check exit code
                         exit_code = container.attrs.get("State", {}).get("ExitCode", -1)
@@ -1034,6 +1133,8 @@ class ContainerManager:
             started_at=datetime.now(timezone.utc),
         )
         self.running_states[project_id] = state
+        # The previous run's log position means nothing for this container.
+        (getattr(self, "_phase_cursors", None) or {}).pop(project_id, None)
 
         try:
             # Ensure recon image exists
@@ -1841,17 +1942,26 @@ class ContainerManager:
             "port": self._capture_port(),
         }
 
-    def _parse_log_line(self, line: str, current_phase: Optional[str], current_phase_num: Optional[int], timestamp: Optional[datetime] = None) -> ReconLogEvent:
-        """Parse a log line and detect phase changes"""
+    def _parse_log_line(self, line: str, current_phase: Optional[str], current_phase_num: Optional[int],
+                        timestamp: Optional[datetime] = None,
+                        tracker: Optional["PhaseTracker"] = None) -> ReconLogEvent:
+        """Parse a log line and detect phase changes.
+
+        Pass the log's own `tracker` to keep its header state across lines;
+        without one the line is judged alone, from (current_phase, number).
+        """
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
-        phase = current_phase
-        phase_num = current_phase_num
-        is_phase_start = False
-        level = "info"
-
-        # Strip ANSI escape codes (terminal colors) from log line
+        if tracker is None:
+            tracker = PhaseTracker(current_phase, current_phase_num)
         line = ANSI_ESCAPE.sub('', line)
+        is_phase_start = tracker.feed(line)
+        return self._log_event(line, tracker.phase, tracker.phase_number, is_phase_start, timestamp)
+
+    def _log_event(self, line: str, phase: Optional[str], phase_num, is_phase_start: bool,
+                   timestamp: datetime) -> ReconLogEvent:
+        """The SSE event for one log line, with its level and any batch-group marker."""
+        level = "info"
 
         # Detect log level based on prefix symbols only
         # [!] = error (red), [+]/[✓] = success (green), [*] = action (blue), no symbol = info (gray)
@@ -1862,17 +1972,7 @@ class ContainerManager:
         elif "[*]" in line:
             level = "action"  # Blue
 
-        # Detect phase changes
-        for pattern, phase_name, num in PHASE_PATTERNS:
-            if re.search(pattern, line, re.IGNORECASE):
-                if phase_name != current_phase:
-                    phase = phase_name
-                    phase_num = num
-                    is_phase_start = True
-                break
-
-        # Domain batch: the OUTER progress. Checked after the phase patterns so a
-        # group marker never masks a phase change on the same line.
+        # Domain batch: the OUTER progress.
         group_match = BATCH_GROUP_PATTERN.search(line)
 
         return ReconLogEvent(
@@ -1888,6 +1988,66 @@ class ContainerManager:
             is_group_start=bool(group_match),
         )
 
+    def _phase_cursor(self, project_id: str) -> "_PhaseCursor":
+        cursors = getattr(self, "_phase_cursors", None)
+        if cursors is None:
+            cursors = self._phase_cursors = {}
+        return cursors.setdefault(project_id, _PhaseCursor())
+
+    def _feed_phase_cursor(self, project_id: str, stamped_line: str) -> bool:
+        """Feed one `<docker timestamp> <text>` log line to the run's phase
+        cursor, unless it saw it already, and mirror a change onto the run's
+        state. True when the phase changed."""
+        cursor = self._phase_cursor(project_id)
+        stamp, _, text = stamped_line.partition(" ")
+        key = _stamp_key(stamp)
+        if key is None:
+            text = stamped_line
+        elif key <= cursor.last_key:
+            return False
+        else:
+            cursor.last_key = key
+            cursor.last_at = _stamp_datetime(stamp)
+        text = ANSI_ESCAPE.sub('', text)
+        changed = cursor.tracker.feed(text)
+        state = self.running_states.get(project_id)
+        if state is not None:
+            if changed:
+                state.current_phase = cursor.tracker.phase
+                state.phase_number = cursor.tracker.phase_number
+            # Domain batch: the outer progress. Phases restart at 1 for every
+            # group, so without this the UI cannot tell a second group
+            # beginning from the first one looping.
+            group = BATCH_GROUP_PATTERN.search(text)
+            if group:
+                state.group_number = int(group.group(1))
+                state.total_groups = int(group.group(2))
+                state.current_group = group.group(3)
+        return changed
+
+    def _poll_phase_cursor(self, project_id: str, container) -> None:
+        """Read a running scan's new log lines when no log stream is parsing
+        them, so its phase moves with nobody watching (get_recon_status, UI and
+        MCP). Throttled to PHASE_POLL_INTERVAL_S. Blocking: runs inside
+        _get_status_sync. Never raises."""
+        if (getattr(self, "_phase_streams", None) or {}).get(project_id):
+            return
+        cursor = self._phase_cursor(project_id)
+        now = time.monotonic()
+        if now < cursor.next_poll:
+            return
+        cursor.next_poll = now + PHASE_POLL_INTERVAL_S
+        try:
+            raw = container.logs(since=cursor.last_at, timestamps=True)
+        except Exception as e:  # noqa: BLE001 - the phase is a nicety
+            logger.debug(f"phase poll for {project_id} failed: {e}")
+            return
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        for line in str(raw).splitlines():
+            if line.strip():
+                self._feed_phase_cursor(project_id, line.rstrip())
+
     async def stream_logs(self, project_id: str) -> AsyncGenerator[ReconLogEvent, None]:
         """Stream logs from a recon container"""
         state = await self.get_status(project_id)
@@ -1900,8 +2060,11 @@ class ContainerManager:
             )
             return
 
-        current_phase: Optional[str] = None
-        current_phase_num: Optional[int] = None
+        # While a stream parses this run's lines, status polls do not.
+        streams = getattr(self, "_phase_streams", None)
+        if streams is None:
+            streams = self._phase_streams = {}
+        streams[project_id] = streams.get(project_id, 0) + 1
 
         try:
             container = self.client.containers.get(state.container_id)
@@ -1985,28 +2148,14 @@ class ContainerManager:
                                 except (ValueError, OverflowError):
                                     pass
 
-                        event = self._parse_log_line(log_text, current_phase, current_phase_num, timestamp=docker_ts)
-
-                        # Update current phase tracking
-                        if event.is_phase_start:
-                            current_phase = event.phase
-                            current_phase_num = event.phase_number
-
-                            # Update state
-                            if project_id in self.running_states:
-                                self.running_states[project_id].current_phase = current_phase
-                                self.running_states[project_id].phase_number = current_phase_num
-
-                        # Domain batch: the outer progress. Phases restart at 1 for
-                        # every group, so without this the UI cannot tell a second
-                        # group beginning from the first one looping.
-                        if event.is_group_start and project_id in self.running_states:
-                            state = self.running_states[project_id]
-                            state.current_group = event.current_group
-                            state.group_number = event.group_number
-                            state.total_groups = event.total_groups
-
-                        yield event
+                        # The run's shared cursor parses each line once; a line
+                        # it saw already (a stream attached late replays the log
+                        # from the start) is shown with the current phase.
+                        changed = self._feed_phase_cursor(project_id, decoded_line)
+                        tracker = self._phase_cursor(project_id).tracker
+                        yield self._log_event(
+                            ANSI_ESCAPE.sub('', log_text), tracker.phase, tracker.phase_number,
+                            changed, docker_ts or datetime.now(timezone.utc))
 
                 except asyncio.TimeoutError:
                     # Check if container is still running or paused
@@ -2029,6 +2178,10 @@ class ContainerManager:
                 timestamp=datetime.now(timezone.utc),
                 level="error",
             )
+        finally:
+            streams[project_id] = streams.get(project_id, 1) - 1
+            if streams[project_id] <= 0:
+                streams.pop(project_id, None)
 
     def get_running_count(self) -> int:
         """Get count of running recon processes"""
@@ -2424,6 +2577,7 @@ class ContainerManager:
 
         current_phase: Optional[str] = "Partial Recon"
         current_phase_num: Optional[int] = 1
+        tracker = PhaseTracker(current_phase, current_phase_num)
 
         try:
             container = self.client.containers.get(state.container_id)
@@ -2503,7 +2657,8 @@ class ContainerManager:
                                 except (ValueError, OverflowError):
                                     pass
 
-                        event = self._parse_log_line(log_text, current_phase, current_phase_num, timestamp=docker_ts)
+                        event = self._parse_log_line(log_text, current_phase, current_phase_num,
+                                                     timestamp=docker_ts, tracker=tracker)
                         # Partial recon always runs a single tool/phase, so pin
                         # phase_number to 1 regardless of which full-pipeline
                         # pattern the line happens to match (e.g. NUCLEI => 5).

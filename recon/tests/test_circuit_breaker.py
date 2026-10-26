@@ -27,7 +27,7 @@ REPO = Path(__file__).resolve().parents[2]
 # A pinned copy of recon_orchestrator/container_manager.py PHASE_PATTERNS.
 # test_pinned_phase_patterns_match_the_orchestrator keeps it honest.
 PINNED_PHASE_PATTERNS = [
-    r"\[Phase 1\]|\[PHASE 1\]|Phase 1:|WHOIS Lookup|domain.*discovery|Domain Reconnaissance",
+    r"\[Phase 1\]|\[PHASE 1\]|Phase 1:|domain.*discovery|Domain Reconnaissance",
     r"\[Phase 2\]|\[PHASE 2\]|Phase 2:|NAABU PORT SCANNER|port.*scan",
     r"\[Phase 3\]|\[PHASE 3\]|Phase 3:|HTTPX HTTP PROBER|http.*prob",
     r"\[Phase 4\]|\[PHASE 4\]|Phase 4:|Resource Enumeration|Katana.*GAU|resource.*enum",

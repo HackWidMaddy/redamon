@@ -719,6 +719,7 @@ def _maybe_run_ai_surface(result: dict, settings: dict, output_file: Path) -> di
     """
     if not settings.get('AI_SURFACE_RECON_ENABLED', True):
         return result
+    print(f"\n[*][Pipeline] GROUP 4.5: AI Surface Recon")
     try:
         result = run_ai_surface_recon(result, output_file=output_file, settings=settings)
         result.setdefault("metadata", {}).setdefault("modules_executed", [])
@@ -748,6 +749,7 @@ def _maybe_run_supply_chain(result: dict, settings: dict, output_file: Path) -> 
     """
     if not settings.get('SUPPLY_CHAIN_RECON_ENABLED', False):
         return result
+    print(f"\n[*][Pipeline] GROUP 5.5: Supply-Chain Recon")
     try:
         from recon.main_recon_modules.supply_chain_recon import run_supply_chain_recon
         result = run_supply_chain_recon(result, settings=settings)
@@ -1185,8 +1187,12 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
 
     dns_enabled = settings.get('DNS_ENABLED', True)
 
+    # The orchestrator takes the progress label from these GROUP headers only
+    # (PIPELINE_HEADER_PHASES in recon_orchestrator/container_manager.py).
+    print(f"\n[*][Pipeline] GROUP 1: Reverse DNS + DNS + IP WHOIS (IP mode)")
+
     if dns_enabled:
-        print(f"\n[*][DNS] PHASE 1: Reverse DNS Lookup")
+        print(f"\n[*][DNS] IP STEP 1: Reverse DNS Lookup")
         print("-" * 40)
 
         # Parallel PTR lookups: one IP at a time serialised the whole /24 sweep.
@@ -1221,7 +1227,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                 ip_to_hostname[ip] = mock_name
                 print(f"[-][DNS] {ip} -> no PTR (using {mock_name})")
     else:
-        print(f"\n[-][DNS] PHASE 1: Reverse DNS Lookup — SKIPPED (disabled)")
+        print(f"\n[-][DNS] IP STEP 1: Reverse DNS Lookup — SKIPPED (disabled)")
         for ip in expanded_ips:
             mock_name = ip.replace('.', '-').replace(':', '-')
             ip_to_hostname[ip] = mock_name
@@ -1229,7 +1235,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     # Step 3: Build DNS data structure for each "subdomain"
     subdomain_names = []
     if dns_enabled:
-        print(f"\n[*][DNS] PHASE 2: DNS Resolution for Discovered Hosts")
+        print(f"\n[*][DNS] IP STEP 2: DNS Resolution for Discovered Hosts")
         print("-" * 40)
 
         for ip, hostname in ip_to_hostname.items():
@@ -1257,7 +1263,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                 }
                 subdomain_names.append(hostname)
     else:
-        print(f"\n[-][DNS] PHASE 2: DNS Resolution — SKIPPED (disabled)")
+        print(f"\n[-][DNS] IP STEP 2: DNS Resolution — SKIPPED (disabled)")
         for ip, hostname in ip_to_hostname.items():
             is_v6 = ':' in ip
             subdomains_dns[hostname] = {
@@ -1275,7 +1281,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     # Step 4: IP WHOIS (best-effort)
     ip_whois = {}
     if settings.get('WHOIS_ENABLED', True):
-        print(f"\n[*][WHOIS] PHASE 3: IP WHOIS Lookup")
+        print(f"\n[*][WHOIS] IP STEP 3: IP WHOIS Lookup")
         print("-" * 40)
         try:
             from recon.helpers import circuit_breaker
@@ -1305,7 +1311,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         except Exception as e:
             print(f"[!][WHOIS] IP WHOIS module error: {e}")
     else:
-        print(f"\n[-][WHOIS] PHASE 3: IP WHOIS Lookup — SKIPPED (disabled)")
+        print(f"\n[-][WHOIS] IP STEP 3: IP WHOIS Lookup — SKIPPED (disabled)")
 
     # Build the subdomain_filter (all IPs + any PTR-resolved hostnames)
     # This becomes allowed_hosts for http_probe scope checking
@@ -1388,7 +1394,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         print("[!][Pipeline] Downstream modules (HTTP probe, vuln scan) require open ports to work")
 
     if shodan_enabled or "port_scan" in SCAN_MODULES:
-        print(f"\n[*][Pipeline] GROUP: Shodan + Port Scan (parallel fan-out)")
+        print(f"\n[*][Pipeline] GROUP 3: Shodan + Port Scan (parallel fan-out)")
         print("-" * 40)
 
         port_scan_workers = (1 if naabu_enabled else 0) + (1 if masscan_enabled else 0)
@@ -1519,7 +1525,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             )
         }
     if enabled_ip_osint:
-        print(f"\n[*][Pipeline] OSINT Enrichment ({', '.join(enabled_ip_osint.keys())}) — parallel")
+        print(f"\n[*][Pipeline] GROUP 3b: OSINT Enrichment ({', '.join(enabled_ip_osint.keys())}) — parallel")
         print("-" * 40)
         import importlib
         osint_workers = min(len(enabled_ip_osint), 5)
@@ -1551,6 +1557,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         if not settings.get('HTTPX_ENABLED', True):
             print("\n[*][httpx] HTTP probing disabled -- skipping")
         else:
+            print(f"\n[*][Pipeline] GROUP 4: HTTP Probing")
             try:
                 combined_result = run_http_probe(combined_result, output_file=output_file, settings=settings)
                 combined_result["metadata"]["modules_executed"].append("http_probe")
@@ -1580,6 +1587,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         combined_result = _maybe_run_cert_hygiene(combined_result, settings, output_file)
     else:
         if "resource_enum" in SCAN_MODULES:
+            print(f"\n[*][Pipeline] GROUP 5: Resource Enumeration")
             try:
                 combined_result = run_resource_enum(combined_result, output_file=output_file, settings=settings)
                 combined_result["metadata"]["modules_executed"].append("resource_enum")
@@ -1597,6 +1605,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     # GROUP 5b -- JS Recon (runs after resource_enum, before vuln_scan;
     # runs even when active scans are skipped -- uploaded files don't need live targets)
     if settings.get('JS_RECON_ENABLED', False):
+        print(f"\n[*][Pipeline] GROUP 5b: JS Recon")
         try:
             from recon.main_recon_modules.js_recon import run_js_recon
             combined_result = run_js_recon(combined_result, settings=settings)
@@ -1625,6 +1634,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
 
     if not skip_active_scans:
         if "vuln_scan" in SCAN_MODULES:
+            print(f"\n[*][Pipeline] GROUP 6: Vulnerability Scanning (Nuclei, then MITRE)")
             try:
                 combined_result = run_vuln_scan(combined_result, output_file=output_file, settings=settings)
                 combined_result["metadata"]["modules_executed"].append("vuln_scan")
@@ -2224,6 +2234,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         if not _settings.get('HTTPX_ENABLED', True):
             print("\n[*][httpx] HTTP probing disabled -- skipping")
         else:
+            print(f"\n[*][Pipeline] GROUP 4: HTTP Probing")
             try:
                 combined_result = run_http_probe(combined_result, output_file=output_file, settings=_settings)
                 combined_result["metadata"]["modules_executed"].append("http_probe")
@@ -2286,6 +2297,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     else:
         # GROUP 5 — Resource Enum (already parallel internally: Katana || GAU || Kiterunner)
         if "resource_enum" in SCAN_MODULES:
+            print(f"\n[*][Pipeline] GROUP 5: Resource Enumeration")
             try:
                 combined_result = run_resource_enum(combined_result, output_file=output_file, settings=_settings)
                 combined_result["metadata"]["modules_executed"].append("resource_enum")
@@ -2303,6 +2315,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     # GROUP 5b — JS Recon (runs after resource_enum, before vuln_scan;
     # runs even when active scans are skipped -- uploaded files don't need live targets)
     if _settings.get('JS_RECON_ENABLED', False):
+        print(f"\n[*][Pipeline] GROUP 5b: JS Recon")
         try:
             from recon.main_recon_modules.js_recon import run_js_recon
             combined_result = run_js_recon(combined_result, settings=_settings)
@@ -3129,6 +3142,7 @@ def run_domain_group(group: dict, start_time=None) -> int:
                 print("\n[!][Pipeline] Both Naabu and Masscan are disabled — skipping port scan phase")
                 print("[!][Pipeline] Downstream modules (HTTP probe, vuln scan) require open ports to work")
             else:
+                print(f"\n[*][Pipeline] GROUP 3: Port Scan")
                 if _naabu_on:
                     domain_result = run_port_scan(domain_result, output_file=output_file, settings=_settings)
                     if "metadata" in domain_result and "modules_executed" in domain_result["metadata"]:
@@ -3176,6 +3190,7 @@ def run_domain_group(group: dict, start_time=None) -> int:
             if not _settings.get('HTTPX_ENABLED', True):
                 print("\n[*][httpx] HTTP probing disabled -- skipping")
             else:
+                print(f"\n[*][Pipeline] GROUP 4: HTTP Probing")
                 domain_result = run_http_probe(domain_result, output_file=output_file, settings=_settings)
                 if "metadata" in domain_result and "modules_executed" in domain_result["metadata"]:
                     if "http_probe" not in domain_result["metadata"]["modules_executed"]:
@@ -3227,6 +3242,7 @@ def run_domain_group(group: dict, start_time=None) -> int:
         else:
             # Run resource_enum if in SCAN_MODULES (when domain_discovery is skipped)
             if "resource_enum" in SCAN_MODULES:
+                print(f"\n[*][Pipeline] GROUP 5: Resource Enumeration")
                 domain_result = run_resource_enum(domain_result, output_file=output_file, settings=_settings)
                 if "metadata" in domain_result and "modules_executed" in domain_result["metadata"]:
                     if "resource_enum" not in domain_result["metadata"]["modules_executed"]:
@@ -3266,6 +3282,7 @@ def run_domain_group(group: dict, start_time=None) -> int:
         # GROUP 5b — JS Recon (runs after resource_enum, before vuln_scan;
         # runs even when active scans are skipped -- uploaded files don't need live targets)
         if _settings.get('JS_RECON_ENABLED', False):
+            print(f"\n[*][Pipeline] GROUP 5b: JS Recon")
             try:
                 from recon.main_recon_modules.js_recon import run_js_recon
                 domain_result = run_js_recon(domain_result, settings=_settings)
@@ -3297,6 +3314,7 @@ def run_domain_group(group: dict, start_time=None) -> int:
             # Run vuln_scan if in SCAN_MODULES (when domain_discovery is skipped)
             # vuln_scan automatically includes MITRE CWE/CAPEC enrichment
             if "vuln_scan" in SCAN_MODULES:
+                print(f"\n[*][Pipeline] GROUP 6: Vulnerability Scanning (Nuclei, then MITRE)")
                 domain_result = run_vuln_scan(domain_result, output_file=output_file, settings=_settings)
                 if "metadata" in domain_result and "modules_executed" in domain_result["metadata"]:
                     if "vuln_scan" not in domain_result["metadata"]["modules_executed"]:
