@@ -16,6 +16,7 @@ ONE BaseURL per service, MANY Endpoints per BaseURL.
 """
 import json
 import hashlib
+import re
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
@@ -45,6 +46,16 @@ def _split_url(url: str) -> tuple[str, str]:
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     path = parsed.path or "/"
     return base_url, path
+
+
+def _asn_label(value) -> str | None:
+    """httpx -asn reports {"as_number": "AS13335", ...}. Stored as the "AS<n>"
+    string Netlas and FOFA write: Neo4j rejects a map property, which would drop
+    the whole Endpoint write."""
+    if isinstance(value, dict):
+        value = value.get("as_number")
+    match = re.search(r"\d+", str(value or ""))
+    return f"AS{match.group(0)}" if match else None
 
 
 class HttpMixin:
@@ -151,7 +162,7 @@ class HttpMixin:
                         "cname": url_info.get("cname"),
                         "cdn": url_info.get("cdn"),
                         "is_cdn": url_info.get("is_cdn", False),
-                        "asn": url_info.get("asn"),
+                        "asn": _asn_label(url_info.get("asn")),
                         "favicon_hash": url_info.get("favicon_hash"),
                         "is_live": url_info.get("status_code") is not None,
                         # status_code is the last hop's (httpx follows redirects).
@@ -190,6 +201,8 @@ class HttpMixin:
                     )
                     stats.setdefault("endpoints_created", 0)
                     stats["endpoints_created"] += 1
+
+                    self._tag_ip_from_httpx(session, url_info, user_id, project_id, stats)
 
                     # ---- BaseURL -[:HAS_ENDPOINT]-> Endpoint ------------------
                     session.run(
@@ -777,6 +790,38 @@ class HttpMixin:
                 print(f"[!][graph-db] {len(stats['errors'])} errors occurred")
 
         return stats
+
+    @staticmethod
+    def _tag_ip_from_httpx(session, url_info: dict, user_id: str, project_id: str,
+                           stats: dict) -> None:
+        """Carry httpx's CDN and ASN to the resolved IP, which IP attribution reads.
+
+        Only ever adds: is_cdn never goes from true to false, a cdn_name or asn
+        another tool wrote first is kept, and cdn_source is 'httpx' only when no
+        tool had tagged the address. Matches the tenant-scoped IP, never creates
+        one. A failure costs this tag only, never the Endpoint.
+        """
+        ip = url_info.get("ip")
+        is_cdn = bool(url_info.get("is_cdn"))
+        asn = _asn_label(url_info.get("asn"))
+        if not ip or not (is_cdn or asn):
+            return
+        try:
+            session.run(
+                """
+                MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                WITH i, coalesce(i.is_cdn, false) AS already_tagged
+                SET i.cdn_source = CASE WHEN $is_cdn AND NOT already_tagged THEN 'httpx'
+                                        ELSE i.cdn_source END,
+                    i.is_cdn = CASE WHEN $is_cdn THEN true ELSE i.is_cdn END,
+                    i.cdn_name = coalesce(i.cdn_name, $cdn_name),
+                    i.asn = coalesce(i.asn, $asn)
+                """,
+                ip=ip, is_cdn=is_cdn, cdn_name=(url_info.get("cdn") or None) if is_cdn else None,
+                asn=asn, user_id=user_id, project_id=project_id,
+            )
+        except Exception as e:
+            stats["errors"].append(f"httpx IP tag {ip}: {e}")
 
     @staticmethod
     def _mark_shared_body_clusters(session, user_id: str, project_id: str, stats: dict) -> None:

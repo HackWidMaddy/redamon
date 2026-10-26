@@ -258,9 +258,9 @@ Additional properties present on this node type, not yet described:
 - uncover_source_counts (string): JSON-encoded dict of engine->result count
 - uncover_total_raw (integer): total raw results before deduplication
 - uncover_total_deduped (integer): total results after deduplication
-- is_cdn (boolean): a CDN edge serves this address, by naabu's CDN check or by the issuer of the certificate tlsx grabbed on it. Only ever set true by tlsx, never cleared by it
+- is_cdn (boolean): a CDN, WAF or cloud front end serves this address, by naabu's or httpx's CDN check or by the issuer of the certificate tlsx grabbed on it. A cloud label (cdn_name "aws", "google") does not make the address a shared edge. Only ever set true by tlsx and httpx, never cleared by them
 - cdn_name (string): the CDN that is_cdn names (e.g. "cloudflare"); the first tool to name one keeps it
-- cdn_source (string): "tlsx" when the CDN tag came from tlsx's certificate issuer and no other tool had tagged the address; absent when naabu tagged it
+- cdn_source (string): "tlsx" or "httpx" when the CDN tag came from that tool (tlsx: the certificate issuer) and no other tool had tagged the address first; absent when naabu tagged it
 
 Additional properties present on this node type, not yet described:
 - ip_mode (boolean)
