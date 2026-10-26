@@ -1067,6 +1067,10 @@ class TriageMixin:
                coalesce(n.severity, '')            AS severity,
                coalesce(n.source, '')              AS source,
                coalesce(n.matched_at, n.url, n.endpoint, '') AS location,
+               // The webapp's disposition reads these: a key that is public by
+               // design is "info" whatever its tier (lib/triage/disposition.ts).
+               coalesce(n.public_client_key, false) AS public_client_key,
+               coalesce(n.secret_type, '')      AS secret_type,
                // The host the model actually used, not a non-deterministic pick
                // from whichever parent Neo4j returned first (R5).
                coalesce(n.triage_host, parent.name, parent.address, parent.url, '') AS host,

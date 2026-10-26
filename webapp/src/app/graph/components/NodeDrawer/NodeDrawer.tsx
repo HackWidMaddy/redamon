@@ -6,6 +6,8 @@ import { Drawer, ExternalLink, useToast } from '@/components/ui'
 import { trufflehogDisplayFields } from '@/lib/trufflehogDisplay'
 import { COVERAGE_STAMP_PROPERTIES, coverageLines, recordedCoverageModules } from '@/lib/coverageStamps'
 import { copyText } from '@/lib/copyText'
+import { muteableLabel } from '@/lib/muteTarget'
+import { dispositionText, readDisposition } from '@/lib/triage/disposition'
 import { GraphData, GraphNode } from '../../types'
 import { badgeColors, buildNodeContext, getNodeColor, getNodeUrl, nodeLabel } from '../../utils'
 import { domainScopeRoots, scanRootBadge } from '../../utils/scopeRootsForNode'
@@ -128,6 +130,11 @@ export function NodeDrawer({
           return 0
         })
     : []
+
+  // Findings only: an asset or a reference node is never "reportable".
+  const disposition = displayNode && muteableLabel([displayNode.type])
+    ? readDisposition(displayNode.properties)
+    : null
 
   const trufflehogFields = displayNode?.type === 'MultiscannerFinding'
     ? trufflehogDisplayFields((displayNode.properties ?? {}) as Record<string, unknown>)
@@ -267,6 +274,12 @@ export function NodeDrawer({
                 })()}
               </span>
             </div>
+            {disposition && (
+              <div className={styles.propertyRow} data-testid="drawer-disposition">
+                <span className={styles.propertyKey}>Disposition</span>
+                <span className={styles.propertyValue}>{dispositionText(disposition)}</span>
+              </div>
+            )}
             {(() => {
               const roots = domainScopeRoots(displayNode, scopeGroups)
               return roots && (

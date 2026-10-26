@@ -716,6 +716,22 @@ class TestTheBoardFilters(unittest.TestCase):
                        "AS triage_verdict_token", "AS triage_tier_inputs"):
             self.assertIn(column, client.last)
 
+    def test_rows_carry_what_the_disposition_reads(self):
+        """
+        The board and MCP list_findings decide a row's disposition (plan 10)
+        from it. A public client key is "info" by its flag, or, on a node
+        written before the flag, by its pattern name; without these columns a
+        triaged browser key read as a candidate there and as info in the report.
+        Read-only: the row is the board's, no triage layer is written.
+        """
+        client = FakeClient(records=[])
+        client.list_triage_findings(UID, PID)
+        # The page, the row a verdict answers with, and the detail all project
+        # through _board_row.
+        for query in (client.last, TriageMixin._board_row(), TriageMixin._board_row(", 1 AS x")):
+            self.assertIn("coalesce(n.public_client_key, false) AS public_client_key", query)
+            self.assertIn("coalesce(n.secret_type, '')      AS secret_type", query)
+
     def test_a_finding_named_by_its_title_shows_that_title(self):
         """
         A JsReconFinding has a title and no name, so a projection without

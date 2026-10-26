@@ -240,3 +240,39 @@ describe('NodeDrawer ask-agent modal', () => {
     expect(screen.queryByLabelText('What should the agent do?')).toBeNull()
   })
 })
+
+describe('NodeDrawer disposition line (plan 10.2b)', () => {
+  const finding = (properties: GraphNode['properties']): GraphNode => ({
+    id: '7', type: 'Vulnerability', name: 'Exposed panel', properties,
+  })
+
+  it('a finding node says whether it can go in a report, and what blocks it', () => {
+    renderDrawer({ node: finding({ severity: 'high', triage_tier_rule: 'credible, with impact worth planning for' }) })
+    const row = screen.getByTestId('drawer-disposition')
+    expect(row).toHaveTextContent('Disposition')
+    expect(row).toHaveTextContent('Candidate, blocked by credible, with impact worth planning for')
+  })
+
+  it('a finding never triaged says so', () => {
+    renderDrawer({ node: finding({ severity: 'high' }) })
+    expect(screen.getByTestId('drawer-disposition')).toHaveTextContent('Candidate, not triaged yet')
+  })
+
+  it('proof makes it reportable, a person\'s False positive excludes it', () => {
+    renderDrawer({ node: finding({ triage_tier_rule: 'proven' }) })
+    expect(screen.getByTestId('drawer-disposition')).toHaveTextContent('Reportable')
+    cleanup()
+    renderDrawer({ node: finding({ triage_status: 'likely_noise', triage_source: 'human' }) })
+    expect(screen.getByTestId('drawer-disposition')).toHaveTextContent('Excluded')
+  })
+
+  it('a node that is not a finding has no disposition', () => {
+    renderDrawer()
+    expect(screen.queryByTestId('drawer-disposition')).toBeNull()
+  })
+
+  it('a finding whose properties could not be read shows no line, never a default', () => {
+    renderDrawer({ node: { id: '8', type: 'Secret', name: 'k', properties: undefined as never } })
+    expect(screen.queryByTestId('drawer-disposition')).toBeNull()
+  })
+})
