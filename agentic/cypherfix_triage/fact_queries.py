@@ -104,6 +104,18 @@ RETURN collect(DISTINCT s.name) AS hosts
 """,
     },
     {
+        "name": "ip_ownership",
+        "description": "each IP's attribution tag and how many current DNS names point at it",
+        # Written by recon's IP attribution step. An IP written before it has
+        # neither property and is left out: "not known", never "not the target's".
+        "query": """
+MATCH (ip:IP {user_id: $userId, project_id: $projectId})
+WHERE ip.ownership IS NOT NULL OR ip.current_dns_names IS NOT NULL
+RETURN ip.address AS ip, ip.ownership AS ownership,
+       ip.current_dns_names AS dns_names, coalesce(ip.ip_mode, false) AS ip_mode
+""",
+    },
+    {
         "name": "threat_intel_hosts",
         "description": "hosts named in threat intelligence",
         "query": """
@@ -617,6 +629,19 @@ def build_project_facts(raw: dict) -> ProjectFacts:
         if set(row.get("ports") or []) & {3306, 5432, 6379, 9200, 27017,
                                           1433, 5984, 11211}:
             facts.sensitive_hosts.add(host)
+
+    for row in raw.get("ip_ownership") or []:
+        ip = str(row.get("ip") or "").strip()
+        if not ip:
+            continue
+        tag = str(row.get("ownership") or "").strip()
+        if tag:
+            facts.ip_ownership[ip] = tag
+        if tag == "shared_edge":
+            facts.shared_edge_hosts.add(ip)
+        # An operator-listed IP-mode target has no DNS name by design.
+        if row.get("dns_names") is not None and not row.get("ip_mode") and _int(row.get("dns_names")) == 0:
+            facts.no_dns_name_hosts.add(ip)
 
     for row in raw.get("package_exposure") or []:
         package = str(row.get("package") or "").strip()

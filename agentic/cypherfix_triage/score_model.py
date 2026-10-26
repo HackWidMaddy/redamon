@@ -49,10 +49,11 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
+from urllib.parse import urlparse
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.8.0"
+SCORE_MODEL_VERSION = "v3.9.0"
 
 
 # ===========================================================================
@@ -706,6 +707,14 @@ class ProjectFacts:
     cdn_only_hosts: set = field(default_factory=set)
     #: hosts whose matched URL answered 401/403
     auth_required_hosts: set = field(default_factory=set)
+    #: IP address -> IP attribution tag (shared_edge | dedicated | unknown); an
+    #: IP no run has attributed yet is absent, which means "not known"
+    ip_ownership: dict = field(default_factory=dict)
+    #: IP addresses tagged shared_edge: a CDN edge serving many tenants
+    shared_edge_hosts: set = field(default_factory=set)
+    #: IP addresses no current DNS name of the target points at (never an
+    #: IP-mode target, which the operator listed by address)
+    no_dns_name_hosts: set = field(default_factory=set)
     #: detector key -> {"real": n, "fp": n}, this USER's own verdicts across
     #: every project of theirs. Never shared between users: one operator's
     #: "that detector is noise here" is about their estate, not about the
@@ -1371,7 +1380,43 @@ def impact(finding: dict, facts: ProjectFacts, cvss: Cvss,
 # ===========================================================================
 # R (3.2.6)
 # ===========================================================================
+#: Below the 0.7 the KEV and "Act soon" rules need: a finding on an address that
+#: is not shown to be the target's own can still be planned for, never rushed.
+SHARED_EDGE_MAX_REACH = 0.5
+LEFT_TARGET_MAX_REACH = 0.5
+
+
+def _host_address(host: str) -> str:
+    """The address in a host spelled as a URL ("https://198.51.100.1:443"), else the host."""
+    if "://" not in host:
+        return host
+    try:
+        return urlparse(host).hostname or host
+    except ValueError:
+        return host
+
+
 def reach(finding: dict, facts: ProjectFacts, cvss: Cvss) -> Factor:
+    """R, capped when the IP attribution tag says the address may not be the target's.
+
+    The cap reads the IP itself (or a URL on it), never a hostname: a site
+    served through a CDN is still the target's application.
+    """
+    factor = _reach(finding, facts, cvss)
+    address = _host_address(finding.get("triage_host") or finding.get("host") or "")
+    if address in facts.shared_edge_hosts and factor.value > SHARED_EDGE_MAX_REACH:
+        return Factor(SHARED_EDGE_MAX_REACH,
+                      f"a shared CDN edge serving many tenants, not the target's own server "
+                      f"({factor.evidence})")
+    if (address in facts.no_dns_name_hosts and factor.value > LEFT_TARGET_MAX_REACH
+            and _lower(finding.get("source")) in PASSIVE_CVE_SOURCES):
+        return Factor(LEFT_TARGET_MAX_REACH,
+                      f"no current DNS name of the target points at this IP, which may have "
+                      f"left the target ({factor.evidence})")
+    return factor
+
+
+def _reach(finding: dict, facts: ProjectFacts, cvss: Cvss) -> Factor:
     host = finding.get("triage_host") or finding.get("host") or ""
 
     if cvss.attack_vector == "L" or cvss.attack_vector == "P":
