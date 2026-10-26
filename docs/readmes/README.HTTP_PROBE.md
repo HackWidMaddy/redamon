@@ -541,11 +541,21 @@ BANNER_GRAB_MAX_LENGTH = 1000
 
 ### How It Works
 
-For every open port in `port_scan.by_host` that is not in `HTTP_PORTS`,
-`grab_banner_for_target()` connects to the host's IP, reads what the service
-sends first, sends the port's probe if nothing came, and retries over TLS on
-993, 995, 465, 636 and 990. `identify_service()` matches the banner against
-`SERVICE_PATTERNS`.
+For every open port in `port_scan.by_host` that is not in
+`BANNER_GRAB_SKIP_PORTS` (every port in `HTTP_PORTS` and `HTTPS_PORTS`, plus
+9090 and 8800, which httpx already probes), `grab_banner_for_target()` connects
+to the host's IP, reads what the service sends first, sends the port's probe if
+nothing came, and retries over TLS on 993, 995, 465, 636 and 990.
+`identify_service()` matches the banner against `SERVICE_PATTERNS`.
+
+FTP and SMTP both greet with `220`, so their patterns are anchored at the start
+of the banner and the product decides (`vsFTPd`, `ProFTPD`, ... vs `Postfix`,
+`Exim 4.94.2`, `Sendmail`, `Microsoft ESMTP`, any `ESMTP`). A bare `220` that
+names no product is decided by the port: 25, 465, 587 and 2525 are SMTP, 21 and
+990 FTP, and any other port is FTP only when the banner says FTP, else
+`unknown`. Do not define `HTTP_PORTS` a second time for the skip set: a second
+definition once shadowed the first, and 443, 8443, 9090 and 8800 were
+banner-grabbed.
 
 ### Supported Services
 
@@ -553,7 +563,7 @@ sends first, sends the port's probe if nothing came, and retries over TLS on
 |---------|---------|------------------|
 | SSH | 22 | Banner: `SSH-2.0-OpenSSH_8.2p1` |
 | FTP | 21 | Banner: `220 vsFTPd 3.0.3` |
-| SMTP | 25, 465, 587 | `EHLO` response: `220 mail.example.com ESMTP Postfix` |
+| SMTP | 25, 465, 587, 2525 | `EHLO` response: `220 mail.example.com ESMTP Postfix` |
 | POP3 | 110, 995 | Banner: `+OK Dovecot ready` |
 | IMAP | 143, 993 | Banner: `* OK Dovecot IMAP` |
 | MySQL / MariaDB | 3306 | Connection handshake |

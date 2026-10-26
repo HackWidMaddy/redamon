@@ -231,9 +231,6 @@ def pull_httpx_docker_image(docker_image: str) -> bool:
 # Banner Grabbing for Non-HTTP Services
 # =============================================================================
 
-# HTTP ports that httpx handles (skip these for banner grabbing)
-HTTP_PORTS = {80, 443, 8080, 8443, 8000, 8888, 8008, 3000, 5000, 9000, 9090, 8800}
-
 # Service probes - sent to trigger banner responses
 SERVICE_PROBES = {
     21: b"",              # FTP - sends banner immediately
@@ -262,20 +259,19 @@ SERVICE_PATTERNS = [
     (r"OpenSSH[_\s]*([\d.p]+)", "ssh", lambda m: f"OpenSSH {m.group(1)}"),
     (r"dropbear[_\s]*([\d.]+)?", "ssh", lambda m: f"Dropbear {m.group(1) or ''}".strip()),
     
-    # FTP
-    (r"220[- ].*vsftpd\s*([\d.]+)?", "ftp", lambda m: f"vsFTPd {m.group(1) or ''}".strip()),
-    (r"220[- ].*ProFTPD\s*([\d.]+)?", "ftp", lambda m: f"ProFTPD {m.group(1) or ''}".strip()),
-    (r"220[- ].*Pure-FTPd", "ftp", lambda m: "Pure-FTPd"),
-    (r"220[- ].*FileZilla", "ftp", lambda m: "FileZilla FTP"),
-    (r"220[- ].*Microsoft FTP", "ftp", lambda m: "Microsoft FTP"),
-    (r"220[- ]", "ftp", lambda m: "FTP"),
-    
-    # SMTP
-    (r"220[- ].*Postfix", "smtp", lambda m: "Postfix"),
-    (r"220[- ].*Sendmail", "smtp", lambda m: "Sendmail"),
-    (r"220[- ].*Exim\s*([\d.]+)?", "smtp", lambda m: f"Exim {m.group(1) or ''}".strip()),
-    (r"220[- ].*Microsoft ESMTP", "smtp", lambda m: "Microsoft Exchange"),
-    (r"220[- ].*ESMTP", "smtp", lambda m: "SMTP"),
+    # FTP and SMTP both greet with 220, so the greeting is anchored at the
+    # start and the product decides; a bare 220 is decided by the port in
+    # identify_service (_BARE_220).
+    (r"^220[- ].*vsftpd\s*([\d.]+)?", "ftp", lambda m: f"vsFTPd {m.group(1) or ''}".strip()),
+    (r"^220[- ].*ProFTPD\s*([\d.]+)?", "ftp", lambda m: f"ProFTPD {m.group(1) or ''}".strip()),
+    (r"^220[- ].*Pure-FTPd", "ftp", lambda m: "Pure-FTPd"),
+    (r"^220[- ].*FileZilla", "ftp", lambda m: "FileZilla FTP"),
+    (r"^220[- ].*Microsoft FTP", "ftp", lambda m: "Microsoft FTP"),
+    (r"^220[- ].*Postfix", "smtp", lambda m: "Postfix"),
+    (r"^220[- ].*Sendmail", "smtp", lambda m: "Sendmail"),
+    (r"^220[- ].*Exim\s*([\d.]+)?", "smtp", lambda m: f"Exim {m.group(1) or ''}".strip()),
+    (r"^220[- ].*Microsoft ESMTP", "smtp", lambda m: "Microsoft Exchange"),
+    (r"^220[- ].*ESMTP", "smtp", lambda m: "SMTP"),
     
     # POP3/IMAP
     (r"\+OK.*Dovecot", "pop3", lambda m: "Dovecot POP3"),
@@ -362,6 +358,12 @@ def grab_banner(host: str, port: int, timeout: float = 5.0, use_ssl: bool = Fals
         return None
 
 
+# A greeting that names no product: FTP and SMTP both open with 220.
+_BARE_220 = re.compile(r"220[- ]")
+_SMTP_PORTS = {25, 465, 587, 2525}
+_FTP_PORTS = {21, 990}
+
+
 def identify_service(banner: str, port: int) -> Dict:
     """
     Identify service from banner using pattern matching.
@@ -381,7 +383,13 @@ def identify_service(banner: str, port: int) -> Dict:
                 }
             except:
                 return {"service": service, "version": None, "confidence": "medium"}
-    
+
+    if _BARE_220.match(banner):
+        if port in _SMTP_PORTS:
+            return {"service": "smtp", "version": "SMTP", "confidence": "medium"}
+        if port in _FTP_PORTS or re.search(r"\bftp\b", banner, re.IGNORECASE):
+            return {"service": "ftp", "version": "FTP", "confidence": "medium"}
+
     return {"service": "unknown", "version": None, "banner_hint": banner[:100], "confidence": "low"}
 
 
@@ -448,8 +456,8 @@ def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
         ports = host_data.get("ports", [])
 
         for port in ports:
-            # Skip HTTP ports - httpx handles these
-            if port in HTTP_PORTS:
+            # Web ports are httpx's; a plaintext connect there only waits.
+            if port in BANNER_GRAB_SKIP_PORTS:
                 continue
             targets.append((ip, port, hostname))
 
@@ -544,6 +552,9 @@ def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
 # Port classification shared by the URL builders below.
 HTTPS_PORTS = {443, 8443, 4443, 9443, 8843}
 HTTP_PORTS = {80, 8080, 8000, 8888, 8008, 3000, 5000, 9000}
+# The ports the banner grab leaves to httpx: every web port above, plus 9090
+# and 8800, common web ports in neither set (httpx tries them over both schemes).
+BANNER_GRAB_SKIP_PORTS = HTTP_PORTS | HTTPS_PORTS | {9090, 8800}
 
 
 def parse_port_spec(spec) -> Set[int]:
