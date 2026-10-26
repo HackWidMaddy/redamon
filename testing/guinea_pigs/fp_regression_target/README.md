@@ -139,6 +139,20 @@ the host.
    graph nodes (`MATCH (n {user_id: $uid, project_id: $pid}) DETACH DELETE n`)
    and run `python3 validate_e2e.py <cleanId> --coverage lost`.
 
+10. **Disposition (plan 10A).** On the main project, after its Priority Board
+    run:
+
+    ```bash
+    python3 validate_e2e.py <id> --disposition before      # prints CANDIDATES=<n>
+    python3 e2e_fp.py --disposition-decide <id>             # a Real, a False positive, an agent's FP review
+    python3 validate_e2e.py <id> --disposition decided     # prints CANDIDATES=<n>
+    ```
+
+    The decide step needs a token with `triage:write` and `triage:review`. Then
+    generate the report and check its top summary prints the same candidate
+    total, and run `testing/e2e/tests/dispositionBoard.spec.ts` with
+    `REDAMON_EXPECT_CANDIDATES=<n>`.
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -194,6 +208,11 @@ the host.
 | `.20`, `.22`, `.33` | a host serving JavaScript, a JSON API serving none, and one that answers 503 on every path (coverage project) | CV-01..CV-05 | `.20`'s BaseURL `js_recon_status` complete or partial with files read and findings, `.22`'s `no_input`; `.20` and `.22` carry a Nuclei stamp with URLs sent; `.33`'s BaseURL carries neither; `graph_summary`'s `coverage` has both modules recorded, `.33` among `not_scanned` |
 | `.10`, `.13` | the Shodan stub's CVEs, exported and imported (coverage project) | CV-06, EX-01/02 | the imported copy has the same `INCLUDES_CVE` links as the original, and the CVE nodes' properties are those before the export |
 | `.34` | one page and one script with nothing a detector reports (clean project) | CC-01..CC-03, GL-01 | `js_recon_status` complete, 1 file, 0 findings, and no js_recon finding; once its graph nodes are deleted, `graph_summary` warns `graph_data_missing` |
+| all | `list_findings` after the Priority Board (main project) | D-01, D-09 | every finding has a disposition and only candidates name a blocker; the `disposition` filter's totals equal the unfiltered counts |
+| `.20` | K-08's public keys beside K-01's AWS keys | D-02/D-03 | the public keys are info whatever their tier; the AWS keys are candidates with a tier-rule blocker |
+| `.20` | sourceless DOM sinks beside the high hash sink | D-04 | the info sinks are info; the high and critical sinks are candidates |
+| all | no proof and no verdict in the lab | D-05 | nothing is reportable |
+| `.20` | a person's Real (AWS key), a person's False positive (Zapier hook), an agent's `false_positive` review (high sink), made by `e2e_fp.py --disposition-decide` | D-06/D-07/D-08 | reportable; excluded; the reviewed sink moves to the board's false-positive section but stays a candidate, blocked by "AI review: likely false positive" |
 
 ## Not covered here
 

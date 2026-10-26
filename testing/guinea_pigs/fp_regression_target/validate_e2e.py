@@ -22,6 +22,11 @@ coverage_cve_snapshot.json), `--coverage import <thatProjectId>` on its
 exported-then-imported copy, `--coverage clean` on the --coverage-clean
 project, and `--coverage lost` on it once its graph nodes are deleted.
 
+Plan 10A, disposition, on the main project after its Priority Board run:
+`--disposition before`, then e2e_fp.py --disposition-decide <id>, then
+`--disposition decided`. Each prints CANDIDATES=<n>, the count the report's
+candidate total must equal. These read through list_findings as well.
+
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
 when every assertion holds. Case ids match README.md.
@@ -36,7 +41,8 @@ import mcp_client as mcp  # noqa: E402
 
 USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer"
          " | --passive-cves baseline|partial|unscanned|off | --js-coverage first | --js-coverage capped <n>"
-         " | --vhost-origin | --coverage stamps|clean|lost | --coverage import <originalProjectId>]")
+         " | --vhost-origin | --coverage stamps|clean|lost | --coverage import <originalProjectId>"
+         " | --disposition before|decided]")
 if len(sys.argv) not in (2, 3, 4, 5):
     sys.exit(USAGE)
 P = sys.argv[1]
@@ -370,6 +376,78 @@ def js_recon_count():
     return findings[0]["n"] + secrets[0]["n"]
 
 
+DISPOSITIONS = ("reportable", "candidate", "info", "excluded")
+AI_FP_BLOCKER = "AI review: likely false positive"
+
+
+def listed(**filters):
+    """Every finding list_findings returns, paged, and the last answer."""
+    rows, offset = [], 0
+    while True:
+        out, err = mcp.call("list_findings", {"projectId": P, "limit": 100, "offset": offset, **filters})
+        if err or not isinstance(out, dict):
+            raise RuntimeError(f"list_findings failed: {json.dumps(out)[:500]}")
+        rows += out.get("findings", [])
+        offset += out.get("returned", 0)
+        if not out.get("returned") or offset >= out.get("total", 0):
+            return rows, out
+
+
+def disposition_checks(stage):
+    """Plan 10A, on the main project after its Priority Board run. `before`: as the
+    run left it. `decided`: after e2e_fp.py --disposition-decide made a person's
+    Real, a person's False positive and an external agent's false_positive review."""
+    rows, _ = listed()
+    by_id = {r["id"]: r for r in rows}
+    bad = [r["id"] for r in rows if r.get("disposition") not in DISPOSITIONS
+           or bool(r.get("blocker")) != (r.get("disposition") == "candidate")]
+    check("D-01", rows and not bad, f"{len(rows)} findings; no disposition, or a blocker outside "
+                                     f"candidates: {bad[:5]}")
+    if stage == "before":
+        public = q("""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.public_client_key = true
+                      RETURN s.id AS id, s.secret_type AS t""")
+        aws = q("""MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.secret_type = 'AWS Access Key ID'
+                   RETURN s.id AS id""")
+        got_pub = sorted((r["t"], by_id.get(r["id"], {}).get("disposition")) for r in public)
+        got_aws = sorted({(by_id.get(r["id"], {}).get("disposition"), by_id.get(r["id"], {}).get("blocker"))
+                          for r in aws}, key=str)
+        check("D-02", public and all(d == "info" for _, d in got_pub),
+              f"public client keys: {got_pub} (expect info, whatever their tier)")
+        check("D-03", aws and all(d == "candidate" and b for d, b in got_aws),
+              f"AWS keys: {got_aws} (expect candidates with a tier-rule blocker)")
+        sinks = q("""MATCH (f:JsReconFinding) WHERE f.finding_type = 'dom_sink'
+                     RETURN f.id AS id, f.severity AS sev""")
+        quiet = sorted({by_id.get(r["id"], {}).get("disposition") for r in sinks if r["sev"] == "info"}, key=str)
+        loud = sorted({by_id.get(r["id"], {}).get("disposition") for r in sinks
+                       if r["sev"] in ("high", "critical")}, key=str)
+        check("D-04", quiet == ["info"] and loud == ["candidate"],
+              f"sourceless info sinks: {quiet} (expect info); high/critical sinks: {loud} (expect candidate)")
+        proven = [r["id"] for r in rows if r["disposition"] == "reportable"]
+        check("D-05", not proven, f"reportable with no proof and no verdict: {proven[:5]} (expect none)")
+    else:
+        mine = [r for r in rows if r.get("decidedVia") == "mcp"]
+        real = [(r["id"], r["disposition"]) for r in mine if r.get("triage_status") == "confirmed"]
+        noise = [(r["id"], r["disposition"]) for r in mine if r.get("triage_status") == "likely_noise"]
+        check("D-06", real and all(d == "reportable" for _, d in real), f"a person's Real: {real} (expect reportable)")
+        check("D-07", noise and all(d == "excluded" for _, d in noise),
+              f"a person's False positive: {noise} (expect excluded)")
+        ai = [(r["id"], r.get("sectionName"), r["disposition"], r.get("blocker")) for r in rows
+              if r.get("reviewedBy") == "mcp" and r.get("triage_ai_verdict") == "false_positive"]
+        if ai:
+            check("D-08", all(s == "likely_false_positive" and d == "candidate" and b == AI_FP_BLOCKER
+                              for _, s, d, b in ai),
+                  f"an agent's false_positive review: {ai} (expect the board's false-positive section, "
+                  f"still a candidate blocked by '{AI_FP_BLOCKER}', never excluded)")
+        else:
+            check("D-08 (not reviewed)", True, "no agent review on this project (the decide step's token "
+                                               "lacks triage:review); nothing to judge")
+    counted = {d: sum(1 for r in rows if r["disposition"] == d) for d in DISPOSITIONS}
+    filtered = {d: listed(disposition=d)[1].get("total") for d in ("candidate", "info")}
+    check("D-09", all(filtered[d] == counted[d] for d in filtered),
+          f"filter totals {filtered} vs the unfiltered listing {counted}")
+    print(f"CANDIDATES={counted['candidate']} REPORTABLE={counted['reportable']} INFO={counted['info']}")
+
+
 if len(sys.argv) > 2:
     if sys.argv[2] == "--js-count" and len(sys.argv) == 3:
         print(f"JS_RECON_COUNT={js_recon_count()}")
@@ -396,6 +474,9 @@ if len(sys.argv) > 2:
         sys.exit(report())
     if sys.argv[2] == "--coverage" and len(sys.argv) in (4, 5):
         coverage_checks(sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--disposition" and sys.argv[3:4] in (["before"], ["decided"]) and len(sys.argv) == 4:
+        disposition_checks(sys.argv[3])
         sys.exit(report())
     sys.exit(USAGE)
 

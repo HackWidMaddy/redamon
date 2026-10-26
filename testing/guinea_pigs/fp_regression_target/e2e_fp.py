@@ -236,6 +236,42 @@ def _triage_done(state):
     return status in ("completed", "error", "failed", "idle", "done") and not state.get("running")
 
 
+def disposition_decide(project_id):
+    """Plan 10A: a person's Real on an AWS key, a person's False positive on the
+    Zapier webhook, and an external agent's false_positive review of a high DOM
+    sink, all over MCP. Then validate_e2e.py --disposition decided reads what each
+    did: reportable, excluded, and still a candidate (an AI review never excludes)."""
+    def one(cypher):
+        rows = call("query_graph", {"projectId": project_id, "cypher": cypher}).get("records", [])
+        if not rows:
+            raise SystemExit(f"[!] nothing matched: {cypher}")
+        return rows[0]["id"]
+
+    aws = one("MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.secret_type = 'AWS Access Key ID' "
+              "RETURN s.id AS id ORDER BY s.id LIMIT 1")
+    zap = one("MATCH (s:Secret) WHERE s.source = 'js_recon' AND s.secret_type = 'Zapier Webhook' "
+              "RETURN s.id AS id ORDER BY s.id LIMIT 1")
+    sink = one("MATCH (f:JsReconFinding) WHERE f.finding_type = 'dom_sink' AND f.severity = 'high' "
+               "RETURN f.id AS id ORDER BY f.id LIMIT 1")
+    for node, status in ((aws, "confirmed"), (zap, "likely_noise")):
+        out = call("set_finding_verdict", {"projectId": project_id, "nodeId": node, "status": status,
+                                           "reason": "FP lab, plan 10A disposition check"})
+        print(f"[+] {status} on {node}:", json.dumps(out)[:200], flush=True)
+    ev = call("get_finding_evidence", {"projectId": project_id, "findingId": sink})
+    quote = next((ln.strip() for ln in str(ev.get("evidence", "")).splitlines() if len(ln.strip()) > 20), "")[:200]
+    out, err = mcp.call("submit_finding_review", {
+        "projectId": project_id, "findingId": sink, "evidenceHash": ev.get("evidenceHash"),
+        "verdict": "false_positive", "evidenceQuote": quote,
+        "why": "Lab check: an agent calls this sink noise; the finding must stay a candidate."})
+    if err and "triage:review" in json.dumps(out):
+        # As with triage:run: the case is then not exercised, and D-08 says so.
+        print("[!] this MCP token lacks the triage:review scope: no agent review was made", flush=True)
+    elif err:
+        raise SystemExit(f"[!] submit_finding_review failed: {json.dumps(out)[:800]}")
+    else:
+        print(f"[+] false_positive review on {sink}:", json.dumps(out)[:200], flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rerun", metavar="PROJECT_ID")
@@ -258,9 +294,14 @@ def main():
                     help="create the plan-09 per-host coverage project instead of the main one")
     ap.add_argument("--coverage-clean", action="store_true",
                     help="create the plan-09 project where JS Recon finds nothing")
+    ap.add_argument("--disposition-decide", metavar="PROJECT_ID",
+                    help="plan 10A: make three decisions on a scanned project, then exit")
     args = ap.parse_args()
 
     mcp.init()
+    if args.disposition_decide:
+        disposition_decide(args.disposition_decide)
+        return
     reset_lab()
     if args.rerun:
         project_id = args.rerun
