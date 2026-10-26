@@ -497,6 +497,10 @@ Found a vulnerability? See our [Security Policy](SECURITY.md) for private disclo
 
 ### Reconnaissance Pipeline
 
+<p align="center">
+  <a href="https://www.redamon.org/how-the-recon-pipeline-works"><img height="34" src="https://img.shields.io/badge/%E2%96%B6_Interactive_Walkthrough-Inside_the_Recon_Pipeline-A01025?style=for-the-badge&labelColor=000000" alt="Interactive walkthrough: Inside the Recon Pipeline"/></a>
+</p>
+
 A fully automated, end-to-end **external attack-surface mapper** running inside a Kali Linux container. Give it one input (a root domain, a subdomain list, IP/CIDR ranges, or a Domain batch: a list of hostnames grouped by domain and scanned one group after another into a single graph) and the pipeline returns a complete, structured picture of the target: every subdomain, every live host, every open port, every HTTP service with its technology stack, every crawled endpoint and discovered parameter, every CVE the target is likely vulnerable to, plus dedicated scanners for **GraphQL APIs**, **subdomain takeovers**, **hidden virtual hosts** behind reverse proxies, **web cache poisoning & deception**, and an **Adversarial AI Surface** layer that tags AI runtimes / vector DBs / LLM frontends / proxies / MCP servers / chat / completion / embedding / RAG endpoints and prompt-injectable parameters using header / favicon / title / path / parameter-name signatures, then **actively confirms** them with a dedicated **AI Surface Recon** module (benign chat-shape probes, MCP handshake + tool-poisoning scan, vector-DB reads — no LLM calls).
 
 Everything runs on a **fan-out / fan-in** architecture: each phase fires as many tools in parallel as the work allows, then converges before the next phase begins. **40+ industry tools** integrate into one coordinated workflow, wildcard DNS poisoning is filtered out automatically with puredns, and **stealth mode** keeps the entire pipeline running on passive sources only when active probing is off-limits. Findings stream into the **Neo4j knowledge graph** on a background thread so the scan never blocks on database writes, and the raw JSON is preserved for download. The detailed tool-by-tool breakdown is in the matrix below.
@@ -591,6 +595,10 @@ It is **deterministic** (seeds, fixed bounds, pinned tool versions) and runs wit
 > **[Wiki: GVM Vulnerability Scanning](https://github.com/samugit83/redamon/wiki/GVM-Vulnerability-Scanning)** | **[Technical: README.GVM.md](docs/readmes/README.GVM.md)**
 
 ### AI Agent Orchestrator
+
+<p align="center">
+  <a href="https://www.redamon.org/how-the-agent-works"><img height="34" src="https://img.shields.io/badge/%E2%96%B6_Interactive_Walkthrough-Inside_RedAmon_Agent-A01025?style=for-the-badge&labelColor=000000" alt="Interactive walkthrough: Inside RedAmon Agent"/></a>
+</p>
 
 A **LangGraph-based autonomous agent** implementing the ReAct pattern. It progresses through three phases: **Informational** (intelligence gathering, graph queries, Shodan, Google dorking), **Exploitation** (Metasploit, Hydra credential testing, social engineering simulation), and **Post-Exploitation** (enumeration, lateral movement). The agent executes 14 security tools via MCP servers inside a Kali sandbox, supports parallel tool execution via **Wave Runner**, and provides real-time chat interaction with guidance, stop/resume, and approval workflows. **Deep Think** mode enables structured strategic analysis before acting.
 
@@ -982,6 +990,7 @@ flowchart TB
 | Resource | Link |
 |----------|------|
 | **Full Wiki** (user guide) | **[github.com/samugit83/redamon/wiki](https://github.com/samugit83/redamon/wiki)** |
+| **Interactive walkthroughs** (redamon.org) | **[Inside RedAmon Agent](https://www.redamon.org/how-the-agent-works)** · **[Inside the Recon Pipeline](https://www.redamon.org/how-the-recon-pipeline-works)** |
 | **Bug Bounty Coverage Audit** (397 classes, PDF) | **[Wiki: The Full Taxonomy Audit](https://raw.githubusercontent.com/wiki/samugit83/redamon/docs/RedAmon_Bug_Bounty_Coverage.pdf)** |
 | Server Deployment (single-host) | **[Wiki: Deploying to a Server](https://github.com/samugit83/redamon/wiki/Deploying-to-a-Server)** · [tooling/deploy/single-host/README.md](tooling/deploy/single-host/README.md) |
 | **Security Posture** (defense-in-depth catalog) | **[docs/readmes/README.SECURITY_POSTURE.md](docs/readmes/README.SECURITY_POSTURE.md)** |
