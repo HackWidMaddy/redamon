@@ -229,6 +229,16 @@ tools:
     phase: standalone
     traffic: active
     form_section: "BruteForceSection"
+  ip_attribution:
+    title: "IP attribution"
+    phase: http_probe
+    traffic: active
+    enabled_key: "IP_ATTRIBUTION_ENABLED"
+    module: "recon.main_recon_modules.ip_attribution"
+    isolated_fn: "run_ip_attribution_isolated"
+    graph_writer: "update_graph_from_ip_attribution"
+    partial_recon_module: "ip_attribution"
+    form_section: "IpAttributionSection"
   js_recon:
     title: "JS recon"
     phase: js_recon
@@ -4525,6 +4535,39 @@ fields:
     group: identity
     meaning: >-
       The project's primary key. Row identity, not configuration.
+  ipAttributionEnabled:
+    tool: ip_attribution
+    runtime_key: "IP_ATTRIBUTION_ENABLED"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Whether IP attribution runs. After the HTTP probe it tags every IP of the
+      run shared_edge (a CDN edge serving many tenants), dedicated (the
+      certificate it presents without SNI covers a target domain) or unknown,
+      never "not ours". Vhost/SNI skips its wordlist on a shared edge, origin
+      discovery never reports one as an origin, Shodan and Netlas write no CVE
+      on one, and the Priority Board caps the reach of findings on one. Off, IPs
+      keep no tag and those consumers fall back to their own CDN checks.
+  ipAttributionTlsMaxProbes:
+    tool: ip_attribution
+    runtime_key: "IP_ATTRIBUTION_TLS_MAX_PROBES"
+    unit: count
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    bounds: { min: 0, max: 5000 }
+    zero_means: disabled
+    stealth: { set: 0 }
+    meaning: >-
+      The most TLS handshakes without SNI IP attribution makes in one run, one per
+      IP where port 443 was found open, to read the certificate the IP falls back
+      to. 0 means no handshake at all: the tag then uses only the CDN signals the
+      run already holds. The handshakes skip RoE-excluded hosts and are paced at
+      the engagement rate ceiling, and stealth mode sets this to 0.
   ipMode:
     tool: targeting
     runtime_key: "IP_MODE"

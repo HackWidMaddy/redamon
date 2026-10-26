@@ -45,6 +45,11 @@ except Exception:  # pragma: no cover - dependency guaranteed by the image
 from recon.main_recon_modules.ip_filter import is_non_routable_ip, is_url_safe_to_probe
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.helpers.cdn_ranges import edge_cdn_for_ip, edge_from_headers, is_reliable_edge_cdn_name
+from recon.helpers.peer_cert import (
+    cert_covers as _cert_covers,
+    tls_failure_reason as _tls_failure_reason,
+    tls_handshake_cert as _tls_handshake_cert,
+)
 from recon.helpers.public_suffix import org_domain
 
 import urllib3
@@ -961,60 +966,12 @@ def _response_has_waf_headers(resp: dict) -> bool:
     return edge_from_headers(resp.get("headers")) is not None
 
 
-def _tls_handshake_cert(host_or_ip: str, sni: Optional[str], port: int, timeout: int) -> Optional[dict]:
-    """TLS-dial host_or_ip:port, return {serial, cn, sans}. sni None sends no SNI.
-
-    Raises the socket / TLS error, so a caller can say why the dial failed.
-    """
-    ctx_ssl = ssl.create_default_context()
-    ctx_ssl.check_hostname = False
-    ctx_ssl.verify_mode = ssl.CERT_NONE
-    with socket.create_connection((host_or_ip, port), timeout=timeout) as sock:
-        with ctx_ssl.wrap_socket(sock, server_hostname=sni) as ssock:
-            der = ssock.getpeercert(binary_form=True)
-            cert = ssock.getpeercert()
-    # getpeercert() returns {} with CERT_NONE, so parse the DER for the fields.
-    return _parse_cert_der(der, cert)
-
-
 def _fetch_peer_cert(host_or_ip: str, sni: str, port: int, timeout: int) -> Optional[dict]:
     """TLS-dial host_or_ip:port with SNI=sni, return {serial, cn, sans} or None."""
     try:
         return _tls_handshake_cert(host_or_ip, sni, port, timeout)
     except (OSError, ssl.SSLError, ValueError):
         return None
-
-
-def _parse_cert_der(der: bytes, decoded: dict) -> Optional[dict]:
-    serial = None
-    cn = None
-    sans: Set[str] = set()
-    # decoded is usually {} under CERT_NONE; fall back to a DER parse via cryptography
-    try:
-        from cryptography import x509
-        from cryptography.hazmat.backends import default_backend
-        c = x509.load_der_x509_certificate(der, default_backend())
-        serial = str(c.serial_number)
-        try:
-            cn = c.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
-        except Exception:
-            cn = None
-        try:
-            ext = c.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-            sans = {n.lower() for n in ext.value.get_values_for_type(x509.DNSName)}
-        except Exception:
-            sans = set()
-    except Exception:
-        if decoded:
-            serial = decoded.get("serialNumber")
-            for tup in decoded.get("subject", ()):
-                for k, v in tup:
-                    if k == "commonName":
-                        cn = v
-            sans = {v.lower() for (k, v) in decoded.get("subjectAltName", ()) if k == "DNS"}
-    if serial is None and cn is None and not sans:
-        return None
-    return {"serial": serial, "cn": cn, "sans": sans}
 
 
 def _compare_certs(host: str, ip: str, port: int, ctx: _RunCtx) -> float:
@@ -1037,27 +994,6 @@ def _compare_certs(host: str, ip: str, port: int, ctx: _RunCtx) -> float:
 # A candidate whose default certificate is not the target's is likely a shared
 # edge serving the brand by name: never above Medium (severity is High at 80).
 _SHARED_EDGE_MAX_CONFIDENCE = 79.0
-
-
-def _cert_covers(cert: dict, domain: str) -> bool:
-    names = {cert.get("cn") or ""} | set(cert.get("sans") or ())
-    for name in names:
-        name = str(name).strip().lower().rstrip(".")
-        if name.startswith("*."):
-            name = name[2:]
-        if name and (name == domain or name.endswith("." + domain)):
-            return True
-    return False
-
-
-def _tls_failure_reason(exc: BaseException, port: int) -> str:
-    if isinstance(exc, (socket.timeout, TimeoutError)):
-        return "timeout"
-    if isinstance(exc, ConnectionRefusedError):
-        return f"port {port} closed"
-    if isinstance(exc, ssl.SSLError):
-        return "TLS error"
-    return "connection failed"
 
 
 def _default_cert_check(host: str, ip: str, port: int, ctx: _RunCtx) -> Tuple[str, str]:

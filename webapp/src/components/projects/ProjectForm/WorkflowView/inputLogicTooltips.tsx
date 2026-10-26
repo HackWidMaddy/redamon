@@ -400,6 +400,28 @@ const Httpx = (
 // RESOURCE ENUMERATION
 // ============================================================================
 
+const IpAttribution = (
+  <div style={wrapperStyle}>
+    <div style={firstSectionTitleStyle}>How input is generated</div>
+    <p style={paraStyle}>
+      IP Attribution reads every <strong>IP</strong> node linked to an in-scope Subdomain (via <span style={codeStyle}>RESOLVES_TO</span>), with its open <strong>Port</strong> nodes and the CDN name a scanner already put on it.
+    </p>
+    <p style={paraStyle}>
+      The only traffic is one TLS handshake without SNI to port 443 of each IP with 443 open, to read the certificate the IP presents when no name is asked for. It is capped per scan, paced at the engagement rate ceiling, never sent to a host the rules of engagement exclude, and skipped in stealth mode. There is no custom input: the step tags IPs already in the graph.
+    </p>
+
+    <div style={sectionTitleStyle}>How output transforms the graph</div>
+    <ul style={listStyle}>
+      <li>Each <strong>IP</strong> node gets an ownership tag: shared edge (a CDN edge serving many companies), dedicated (its default certificate covers a target domain) or unknown, with the reasons, the default certificate&apos;s names and how many names resolve to it.</li>
+      <li>A shared edge is also marked as a CDN on the IP node, without clearing a tag another scanner set.</li>
+      <li>No node is created: an IP not already in the graph is not tagged.</li>
+    </ul>
+    <p style={{ ...paraStyle, margin: 0 }}>
+      Vhost/SNI, origin discovery, the Shodan and Netlas CVE writers and the Priority Board read the tag.
+    </p>
+  </div>
+)
+
 const Katana = (
   <div style={wrapperStyle}>
     <div style={firstSectionTitleStyle}>How input is generated</div>
@@ -1093,6 +1115,7 @@ export const INPUT_LOGIC_TOOLTIPS: Record<string, ReactNode> = {
   Tlsx,
   // HTTP probing
   Httpx,
+  IpAttribution,
   // Resource enumeration
   Katana,
   ZapAjaxSpider,

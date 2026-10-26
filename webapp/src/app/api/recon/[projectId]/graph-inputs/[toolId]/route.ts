@@ -193,6 +193,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   Masscan: SUBDOMAINS_IPS_TOOL,
   Shodan: SUBDOMAINS_IPS_TOOL,
   OsintEnrichment: SUBDOMAINS_IPS_TOOL,
+  IpAttribution: SUBDOMAINS_IPS_TOOL,
   Nmap: PORTS_TOOL,
   Tlsx: PORTS_TOOL,
   Katana: BASEURL_TOOL,

@@ -136,6 +136,10 @@ export const reconPresetSchema = z.object({
   httpProbeAiTitleDetectionEnabled: bool,
   httpProbeAiWappalyzerEnabled: bool,
 
+  // -- IP attribution (shared edge / dedicated / unknown per IP) --
+  ipAttributionEnabled: bool,
+  ipAttributionTlsMaxProbes: int,
+
   // -- Wappalyzer --
   wappalyzerEnabled: bool,
   wappalyzerMinConfidence: int,
@@ -708,6 +712,10 @@ export const RECON_PARAMETER_CATALOG = `
 - httpProbeAiFaviconHashEnabled: boolean - Match captured favicon MMH3 hash against the AI frontend catalogue (Open WebUI, LibreChat, Flowise, Dify, Gradio, Streamlit, ComfyUI, …) and set BaseURL.ai_frontend_product_guess
 - httpProbeAiTitleDetectionEnabled: boolean - Regex page title against AI frontend products; fills BaseURL.ai_frontend_product_guess when favicon hash is unknown
 - httpProbeAiWappalyzerEnabled: boolean - Local Wappalyzer fingerprint additions for AI frameworks (LangChain JS marker, vLLM cookie, TGI route, …); rides existing Wappalyzer pass
+
+## IP Attribution
+- ipAttributionEnabled: boolean - After the HTTP probe, tag every IP shared_edge (a CDN edge serving many tenants), dedicated (its default certificate covers a target domain) or unknown. Vhost/SNI, origin discovery, the Shodan/Netlas CVE writers and the Priority Board read the tag. Keep true; it costs one TLS handshake per IP with 443 open
+- ipAttributionTlsMaxProbes: integer - 0-5000. Most TLS handshakes without SNI per scan, one per IP with 443 open, paced at the engagement rate ceiling. 0 means no handshake (the tag then uses only CDN signals already collected); stealth presets should use 0
 
 ## Technology Fingerprinting - Wappalyzer
 - wappalyzerEnabled: boolean

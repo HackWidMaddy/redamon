@@ -5818,6 +5818,46 @@
    "unit": "none",
    "validator": "free_text"
   },
+  "ipAttributionEnabled": {
+   "default": true,
+   "form_section": "IpAttributionSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Whether IP attribution runs. After the HTTP probe it tags every IP of the run shared_edge (a CDN edge serving many tenants), dedicated (the certificate it presents without SNI covers a target domain) or unknown, never \"not ours\". Vhost/SNI skips its wordlist on a shared edge, origin discovery never reports one as an origin, Shodan and Netlas write no CVE on one, and the Priority Board caps the reach of findings on one. Off, IPs keep no tag and those consumers fall back to their own CDN checks.",
+   "optional": false,
+   "phase": "http_probe",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "IP_ATTRIBUTION_ENABLED",
+   "tool": "ip_attribution",
+   "traffic": "active",
+   "type": "boolean",
+   "unit": "none"
+  },
+  "ipAttributionTlsMaxProbes": {
+   "bounds": {
+    "min": 0,
+    "max": 5000
+   },
+   "default": 500,
+   "form_section": "IpAttributionSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "The most TLS handshakes without SNI IP attribution makes in one run, one per IP where port 443 was found open, to read the certificate the IP falls back to. 0 means no handshake at all: the tag then uses only the CDN signals the run already holds. The handshakes skip RoE-excluded hosts and are paced at the engagement rate ceiling, and stealth mode sets this to 0.",
+   "optional": false,
+   "phase": "http_probe",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "IP_ATTRIBUTION_TLS_MAX_PROBES",
+   "stealth": {
+    "set": 0
+   },
+   "tool": "ip_attribution",
+   "traffic": "active",
+   "type": "int",
+   "unit": "count",
+   "zero_means": "disabled"
+  },
   "ipMode": {
    "default": false,
    "form_section": "TargetSection",
@@ -15766,6 +15806,18 @@
    "form_section": "BruteForceSection",
    "phase": "standalone",
    "title": "Hydra",
+   "traffic": "active"
+  },
+  "ip_attribution": {
+   "enabled_key": "IP_ATTRIBUTION_ENABLED",
+   "form_section": "IpAttributionSection",
+   "graph_writer": "update_graph_from_ip_attribution",
+   "isolated_fn": "run_ip_attribution_isolated",
+   "module": "recon.main_recon_modules.ip_attribution",
+   "partial_recon_module": "ip_attribution",
+   "phase": "http_probe",
+   "produces": [],
+   "title": "IP attribution",
    "traffic": "active"
   },
   "js_recon": {

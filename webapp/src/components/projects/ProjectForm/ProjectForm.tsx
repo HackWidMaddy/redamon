@@ -47,6 +47,7 @@ import { MasscanSection } from './sections/MasscanSection'
 import { NmapSection } from './sections/NmapSection'
 import { TlsxSection } from './sections/TlsxSection'
 import { HttpxSection } from './sections/HttpxSection'
+import { IpAttributionSection } from './sections/IpAttributionSection'
 import { NucleiSection } from './sections/NucleiSection'
 import { KatanaSection } from './sections/KatanaSection'
 import { OpenApiSection } from './sections/OpenApiSection'
@@ -1329,7 +1330,10 @@ export function ProjectForm({
         )}
 
         {activeTab === 'http' && viewMode === 'tabs' && (
-          <HttpxSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Httpx') : undefined} />
+          <>
+            <HttpxSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Httpx') : undefined} />
+            <IpAttributionSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('IpAttribution') : undefined} />
+          </>
         )}
 
         {activeTab === 'resource' && viewMode === 'tabs' && (

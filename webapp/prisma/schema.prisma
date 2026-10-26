@@ -636,6 +636,13 @@ model Project {
   httpProbeAiTitleDetectionEnabled Boolean @default(true) @map("http_probe_ai_title_detection_enabled")
   httpProbeAiWappalyzerEnabled     Boolean @default(true) @map("http_probe_ai_wappalyzer_enabled")
 
+  // ========== IP ATTRIBUTION ==========
+  // Tags every IP shared_edge / dedicated / unknown after http_probe. Its one
+  // active check, a TLS handshake without SNI to :443, is capped per run and is
+  // off in stealth mode.
+  ipAttributionEnabled        Boolean  @default(true) @map("ip_attribution_enabled")
+  ipAttributionTlsMaxProbes   Int      @default(500)  @map("ip_attribution_tls_max_probes")
+
   // ========== WAPPALYZER ==========
   wappalyzerEnabled           Boolean  @default(true) @map("wappalyzer_enabled")
   wappalyzerMinConfidence     Int      @default(50) @map("wappalyzer_min_confidence")

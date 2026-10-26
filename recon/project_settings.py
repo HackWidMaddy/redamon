@@ -166,6 +166,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'HTTP_PROBE_AI_TITLE_DETECTION_ENABLED': True,
     'HTTP_PROBE_AI_WAPPALYZER_ENABLED': True,
 
+    # IP attribution: shared_edge / dedicated / unknown per IP, after http_probe.
+    # The cap bounds its one active check, a TLS handshake without SNI to :443.
+    'IP_ATTRIBUTION_ENABLED': True,
+    'IP_ATTRIBUTION_TLS_MAX_PROBES': 500,
+
     # Wappalyzer
     'WAPPALYZER_ENABLED': True,
     'WAPPALYZER_MIN_CONFIDENCE': 50,
@@ -1561,6 +1566,9 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['HTTP_PROBE_AI_FAVICON_HASH_ENABLED'] = project.get('httpProbeAiFaviconHashEnabled', DEFAULT_SETTINGS['HTTP_PROBE_AI_FAVICON_HASH_ENABLED'])
     settings['HTTP_PROBE_AI_TITLE_DETECTION_ENABLED'] = project.get('httpProbeAiTitleDetectionEnabled', DEFAULT_SETTINGS['HTTP_PROBE_AI_TITLE_DETECTION_ENABLED'])
     settings['HTTP_PROBE_AI_WAPPALYZER_ENABLED'] = project.get('httpProbeAiWappalyzerEnabled', DEFAULT_SETTINGS['HTTP_PROBE_AI_WAPPALYZER_ENABLED'])
+
+    settings['IP_ATTRIBUTION_ENABLED'] = project.get('ipAttributionEnabled', DEFAULT_SETTINGS['IP_ATTRIBUTION_ENABLED'])
+    settings['IP_ATTRIBUTION_TLS_MAX_PROBES'] = project.get('ipAttributionTlsMaxProbes', DEFAULT_SETTINGS['IP_ATTRIBUTION_TLS_MAX_PROBES'])
 
     # Wappalyzer
     settings['WAPPALYZER_ENABLED'] = project.get('wappalyzerEnabled', DEFAULT_SETTINGS['WAPPALYZER_ENABLED'])

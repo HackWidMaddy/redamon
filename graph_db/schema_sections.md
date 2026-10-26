@@ -154,9 +154,13 @@ Additional properties present on this node type, not yet described:
 - uncover_source_counts (string): JSON-encoded dict of engine->result count
 - uncover_total_raw (integer): total raw results before deduplication
 - uncover_total_deduped (integer): total results after deduplication
-- is_cdn (boolean): a CDN, WAF or cloud front end serves this address, by naabu's or httpx's CDN check or by the issuer of the certificate tlsx grabbed on it. A cloud label (cdn_name "aws", "google") does not make the address a shared edge. Only ever set true by tlsx and httpx, never cleared by them
+- is_cdn (boolean): a CDN, WAF or cloud front end serves this address, by naabu's or httpx's CDN check or by the issuer of the certificate tlsx grabbed on it. A cloud label (cdn_name "aws", "google") does not make the address a shared edge: `ownership` is the attribution. Only ever set true by tlsx, httpx and IP attribution, never cleared by them
 - cdn_name (string): the CDN that is_cdn names (e.g. "cloudflare"); the first tool to name one keeps it
-- cdn_source (string): "tlsx" or "httpx" when the CDN tag came from that tool (tlsx: the certificate issuer) and no other tool had tagged the address first; absent when naabu tagged it
+- cdn_source (string): "tlsx", "httpx" or "ip_attribution" when the CDN tag came from that tool (tlsx: the certificate issuer; ip_attribution: a published edge range, an edge's headers or an edge-only ASN) and no other tool had tagged the address first; absent when naabu tagged it
+- ownership (string): "shared_edge" (a CDN edge serving many tenants), "dedicated" (the certificate the address presents without SNI covers a target domain) or "unknown" (neither can be shown). Written by IP attribution after the HTTP probe; never "not ours", since a real server on a cloud provider has a generic PTR and the cloud's whois. Absent on an IP no run has attributed yet: read it as unknown
+- ownership_reasons (list[string]): why `ownership` says what it says, sorted, e.g. ["default certificate covers no target domain", "in a published CDN edge range"]; "default certificate not checked (stealth mode)" when no handshake was made
+- default_cert_names (list[string]): the CN and SANs of the certificate the address presents to a TLS client that sends no SNI, sorted; absent when no handshake read one
+- current_dns_names (int): how many names in the scan's own DNS results resolved to the address; 0 means no current name points at it (the address may have left the target). An IP-mode target is listed by address, so 0 says nothing there
 Additional properties present on this node type, not yet described:
 - ip_mode (boolean)
 - origin_discovery_enriched (boolean)

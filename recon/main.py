@@ -819,6 +819,49 @@ def _reachcheck_shodan_cves(combined_result: dict, settings: dict) -> None:
           f"{counts['closed']} closed, {counts['unknown']} not scanned")
 
 
+def _without_shodan_cves(combined_result: dict) -> dict:
+    """The run's data with Shodan's CVEs held back for _write_shodan_cves.
+
+    Shodan's hosts, ports and names are written at GROUP 3 as before; its CVEs
+    wait for IP attribution, which runs after http_probe and decides which IPs
+    are a shared edge.
+    """
+    shodan = combined_result.get("shodan")
+    if not isinstance(shodan, dict) or not shodan.get("cves"):
+        return combined_result
+    return {**combined_result, "shodan": {**shodan, "cves": []}}
+
+
+def _write_shodan_cves(combined_result: dict) -> None:
+    """Queue the graph write of the Shodan CVEs held back at GROUP 3."""
+    shodan = combined_result.get("shodan")
+    if not isinstance(shodan, dict) or not shodan.get("cves"):
+        return
+    _graph_update_bg("update_graph_from_shodan", {**combined_result, "shodan": {"cves": shodan["cves"]}},
+                     USER_ID, PROJECT_ID)
+
+
+def _run_ip_attribution(combined_result: dict, settings: dict, output_file) -> None:
+    """Tag every IP of the run shared_edge / dedicated / unknown. Never raises.
+
+    After the port scan, tlsx and http_probe, whose CDN flags, ASN and headers
+    it reads; before vhost/SNI, origin discovery and the Shodan CVE write, which
+    read the tag.
+    """
+    if not settings.get('IP_ATTRIBUTION_ENABLED', True):
+        print("\n[-][IpAttribution] Disabled via settings -- skipping")
+        return
+    try:
+        from recon.main_recon_modules.ip_attribution import run_ip_attribution
+        run_ip_attribution(combined_result, settings)
+        combined_result["metadata"]["modules_executed"].append("ip_attribution")
+        save_recon_file(combined_result, output_file)
+        _graph_update_bg("update_graph_from_ip_attribution", combined_result, USER_ID, PROJECT_ID)
+    except Exception as e:  # noqa: BLE001 - the tag is optional; the run is not
+        print(f"[!][IpAttribution] failed: {type(e).__name__}")
+        combined_result["metadata"].setdefault("phase_errors", {})["ip_attribution"] = str(e)
+
+
 def _apply_nmap_detail(ps_pd: dict, nmap_pd: dict) -> None:
     if nmap_pd.get("product"):
         ps_pd["product"] = nmap_pd["product"]
@@ -1263,7 +1306,8 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         save_recon_file(combined_result, output_file)
 
         if "shodan" in combined_result:
-            _graph_update_bg("update_graph_from_shodan", combined_result, USER_ID, PROJECT_ID)
+            _graph_update_bg("update_graph_from_shodan", _without_shodan_cves(combined_result),
+                             USER_ID, PROJECT_ID)
 
         if "port_scan" in combined_result:
             _graph_update_bg("update_graph_from_port_scan", combined_result, USER_ID, PROJECT_ID)
@@ -1388,6 +1432,9 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                 combined_result["metadata"].setdefault("phase_errors", {})["http_probe"] = str(e)
                 _note_phase_error("http_probe")
                 save_recon_file(combined_result, output_file)
+
+    _run_ip_attribution(combined_result, settings, output_file)
+    _write_shodan_cves(combined_result)
 
     # Check if active scans should be skipped
     skip_active_scans, skip_reason = should_skip_active_scans(combined_result)
@@ -1931,7 +1978,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
 
         # Background graph updates for Shodan + port scan
         if "shodan" in combined_result:
-            _graph_update_bg("update_graph_from_shodan", combined_result, USER_ID, PROJECT_ID)
+            _graph_update_bg("update_graph_from_shodan", _without_shodan_cves(combined_result),
+                             USER_ID, PROJECT_ID)
 
         if "port_scan" in combined_result:
             _graph_update_bg("update_graph_from_port_scan", combined_result, USER_ID, PROJECT_ID)
@@ -2106,6 +2154,10 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                 save_recon_file(combined_result, output_file)
         except Exception as e:
             print(f"[!][Pipeline] certificate SAN feedback failed: {e}")
+
+    # After the SAN feedback: a name it resolved counts as a current DNS name.
+    _run_ip_attribution(combined_result, _settings, output_file)
+    _write_shodan_cves(combined_result)
 
     # Check if we should skip active scanning modules (resource_enum, vuln_scan)
     # These require live targets from http_probe to work

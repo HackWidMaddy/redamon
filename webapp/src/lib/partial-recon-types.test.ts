@@ -82,6 +82,10 @@ describe('PARTIAL_RECON_SUPPORTED_TOOLS', () => {
     expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('OriginDiscovery')).toBe(true)
   })
 
+  test('contains IpAttribution', () => {
+    expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('IpAttribution')).toBe(true)
+  })
+
   test('contains Urlscan', () => {
     expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('Urlscan')).toBe(true)
   })

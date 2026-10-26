@@ -398,6 +398,9 @@ def _dispatch(tool_id: str, config: dict):
         return run_tlsx(config)
     elif tool_id == "Httpx":
         return run_httpx(config)
+    elif tool_id == "IpAttribution":
+        from recon.partial_recon_modules.ip_attribution import run_ip_attribution_partial
+        return run_ip_attribution_partial(config)
     elif tool_id == "Katana":
         return run_katana(config)
     elif tool_id == "Hakrawler":
