@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { ChevronDown, Network, Play } from 'lucide-react'
-import { Toggle } from '@/components/ui'
+import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
@@ -33,6 +33,7 @@ export function IpAttributionSection({ data, updateField, onRun }: IpAttribution
           <Network size={16} />
           IP Attribution
           <NodeInfoTooltip section="IpAttribution" />
+          <WikiInfoButton target="IpAttribution" />
           <span className={styles.badgeActive}>Active</span>
         </h2>
         <div className={styles.sectionHeaderRight}>

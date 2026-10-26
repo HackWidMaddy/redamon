@@ -639,11 +639,45 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 | **GROUP 3** | Shodan Enrichment + Port Scan (Naabu) | 2 parallel tasks | Needs IPs from GROUP 1 + GROUP 2b |
 | **GROUP 3b** | OSINT Enrichment (Censys + FOFA + OTX + Netlas + VirusTotal + ZoomEye + CriminalIP) | 7 parallel tasks | Needs IPs/domains from GROUP 1; runs concurrently with GROUP 3 |
 | **GROUP 4** | HTTP Probe (httpx) | Sequential (internally parallel) | Needs ports from GROUP 3 |
+| *IP attribution* | Tags every IP `shared_edge` / `dedicated` / `unknown` (`main_recon_modules/ip_attribution.py`), then writes the Shodan CVEs and the Netlas data GROUP 3/3b held back | Sequential; the TLS handshakes without SNI in a small pool, paced at the RoE ceiling | After GROUP 4 and the certificate SAN feedback; before GROUP 5 and 6. Runs if `IP_ATTRIBUTION_ENABLED` |
 | **GROUP 5** | Resource Enum (Katana + GAU + Kiterunner, then OpenAPI) | 3 tools internally parallel | Needs live URLs from GROUP 4 |
 | **GROUP 5b** | JS Recon Scanner (100 regex patterns, key validation, source maps, dependency confusion, endpoint extraction, DOM sinks) | 5 analyzers parallel per file | Needs JS files from GROUP 5; runs if `JS_RECON_ENABLED` |
 | **GROUP 5.5** | Supply-Chain Recon (black-box package harvest + offline OSV verdict, retire.js over served JS, optional GuardDog; then incident enrichment, malicious-host correlation and typosquat detection) | Sequential; dispatches the DIRTY analyzer | Needs JS files from GROUP 5b; runs if `SUPPLY_CHAIN_RECON_ENABLED` |
 | **GROUP 6 Phase A** | Vuln Scan (Nuclei) ∥ GraphQL Security Testing ∥ Subdomain Takeover ∥ VHost & SNI Enumeration | 4 parallel tasks (ThreadPoolExecutor, `_isolated` wrappers) | Needs endpoints from GROUP 5/5b |
 | **GROUP 6 Phase B** | MITRE Enrichment (CWE + CAPEC) | Sequential | Needs CVEs from Phase A (Nuclei) |
+
+### IP attribution
+
+`run_ip_attribution` labels every IP of the run once, so the modules that ask
+"is this IP the target's?" stop guessing on their own. The rule
+(`ownership_tag`, pure):
+
+- `shared_edge`: `cdn_ranges.classify_ip` fires on a published edge prefix,
+  an edge-only CDN name naabu, tlsx or httpx reported, or an edge's response
+  header; or on an edge-only ASN (`CDN_ASNS`) while the default certificate
+  does not cover a target domain;
+- `dedicated`: the certificate the IP presents to a TLS client that sends no
+  SNI covers a target domain (the org of every project root; IP mode has none);
+- `unknown`: otherwise. Never "not ours": a cloud label is no signal.
+
+Its one active check is that handshake (`recon/helpers/peer_cert.py`, shared
+with origin discovery), only where :443 was found open. It skips RoE-excluded,
+loopback and link-local addresses and hosts `host_health` marks down, is paced
+at `min(10 rps, ROE_GLOBAL_MAX_RPS)`, and is capped per run by
+`IP_ATTRIBUTION_TLS_MAX_PROBES` (stealth sets 0). A failed handshake is never
+evidence: the reasons say "default certificate not checked (<why>)". The step
+never raises; an IP it could not attribute is `unknown` with the reason.
+
+Output: `combined_result["ip_attribution"]["by_ip"]`, written by
+`update_graph_from_ip_attribution` to the existing IP (`ownership`,
+`ownership_reasons`, `default_cert_names`, `current_dns_names`, plus the CDN
+tag on a shared edge). Consumers read it through `shared_edge_ips()`:
+vhost/SNI (`_shared_edge_ips`, plan 07's CDN check as the fallback for an
+untagged IP), origin discovery (`_cdn_flagged_ips`), the Shodan CVE write
+(`_write_shodan_cves`) and the Netlas write (`_write_netlas`, both held back
+until the step runs), and the Priority Board (`ip_ownership` fact). A partial
+run loads the graph's tag with `attach_graph_ownership`. The step writes no
+finding, so it has nothing for the prune to keep.
 
 ### Background Graph DB Updates
 

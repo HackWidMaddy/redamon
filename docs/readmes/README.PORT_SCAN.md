@@ -261,6 +261,14 @@ Shows which CDN provider protects each host in the output: `cdn` is Naabu's `cdn
 - Google Cloud CDN, Azure CDN, Incapsula
 - MaxCDN, KeyCDN, StackPath, and more
 
+Naabu's flag is one of several that reach `IP.is_cdn`: tlsx adds a CDN named
+by a certificate issuer, httpx its own `-cdn` result, and IP attribution a
+shared edge it recognised from a published prefix, a response header or an
+edge-only ASN (`cdn_source` names the tool when it was not naabu; none of them
+ever clears the flag). A cloud label (`aws`, `google`) is not a shared edge.
+The attribution itself is `IP.ownership` (see README.RECON.md, "IP
+attribution"): later modules read that tag rather than `is_cdn`.
+
 ---
 
 #### `NAABU_SKIP_HOST_DISCOVERY` - Skip Ping Check (`-Pn`)
