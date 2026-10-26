@@ -11,7 +11,39 @@
  *
  * `nextRunAt` is advanced whatever the outcome, so a scan that cannot start does
  * not pin the schedule to a due state and hot-loop the worker.
+ *
+ * A live agent session holds the run, as it holds a queued full recon at
+ * dispatch: the scan would clear the graph the agent is working on. The check
+ * runs BEFORE startFullScan (which would freeze a version first) and fails
+ * closed on an unverified session; the occurrence becomes a queue row, never
+ * a second one while a full recon is already queued or running.
  */
+
+/** A full recon of this project already waiting or running in the queue. */
+async function openFullReconJob(projectId: string) {
+  return prisma.jobQueue.findFirst({
+    where: { projectId, kind: 'full_recon', status: { in: ['queued', 'dispatching', 'running', 'needs_review'] } },
+    select: { id: true, status: true },
+  })
+}
+
+/** Queue the occurrence unless a full recon is already queued or running. */
+async function enqueueOccurrence(schedule: { id: string; projectId: string; userId: string }, mode: string) {
+  const open = await openFullReconJob(schedule.projectId)
+  if (open) return { ok: true, id: open.id as string | undefined, alreadyQueued: true }
+  const enq = await enqueueJob({
+    projectId: schedule.projectId,
+    userId: schedule.userId,
+    kind: 'full_recon',
+    payload: { mode },
+    priority: 0, // scheduled
+    scheduleId: schedule.id,
+  }).catch(err => {
+    console.error('[scanScheduler] could not enqueue deferred scheduled run:', err)
+    return { ok: false, status: 500, error: String(err), id: undefined as string | undefined }
+  })
+  return { ok: enq.ok, id: enq.id, alreadyQueued: false }
+}
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
@@ -21,6 +53,7 @@ import { parseScanMode, createScanJob } from '@/lib/scanTimeline'
 import { classifyStartFailure } from '@/lib/scanStartOutcome'
 import { enqueueJob } from '@/lib/enqueueJob'
 import { writeAudit } from '@/lib/audit'
+import { checkAgentSessions, describeAgentSessionState } from '@/lib/agentSessions'
 
 export const runtime = 'nodejs'
 
@@ -44,6 +77,38 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const mode = parseScanMode(schedule.scanMode) ?? 'new'
     const now = new Date()
+    // A one-off schedule is spent after it fires; recurring ones roll forward.
+    // `enabled` is never written back for a recurring one: the value read above
+    // predates the start, and a pause made meanwhile (a rescope that widened the
+    // batch, or a person) must survive it.
+    const nextRunAt = computeNextRun(schedule, now)
+    const advance = () => prisma.scanSchedule.update({
+      where: { id: scheduleId },
+      data: {
+        lastRunAt: now,
+        nextRunAt,
+        ...(schedule.mode === 'once' ? { enabled: false } : {}),
+      },
+    })
+
+    const agent = describeAgentSessionState(await checkAgentSessions(schedule.projectId))
+    if (agent) {
+      await advance()
+      const enq = await enqueueOccurrence(schedule, mode)
+      console.info(
+        `[scanScheduler] schedule ${scheduleId} held: ${agent}; ` +
+        `${enq.alreadyQueued ? 'a full recon is already queued' : 'enqueued'} as ${enq.id ?? 'none'}`
+      )
+      return NextResponse.json(
+        {
+          ok: false, queued: enq.ok, jobId: enq.id ?? null, blockedCode: 'agent_running',
+          error: `${agent} for this project; a full recon would wipe its graph`,
+          ...(enq.alreadyQueued ? { alreadyQueued: true } : {}),
+          nextRunAt,
+        },
+        { status: 200 },
+      )
+    }
 
     const result = await startFullScan({
       projectId: schedule.projectId,
@@ -55,19 +120,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       quietTransient: true,
     })
 
-    // A one-off schedule is spent after it fires; recurring ones roll forward.
-    // `enabled` is never written back for a recurring one: the value read above
-    // predates the start, and a pause made meanwhile (a rescope that widened the
-    // batch, or a person) must survive it.
-    const nextRunAt = computeNextRun(schedule, now)
-    await prisma.scanSchedule.update({
-      where: { id: scheduleId },
-      data: {
-        lastRunAt: now,
-        nextRunAt,
-        ...(schedule.mode === 'once' ? { enabled: false } : {}),
-      },
-    })
+    await advance()
 
     if (!result.ok) {
       const cls = classifyStartFailure(result.status, {
@@ -98,23 +151,17 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       // the dispatcher runs when resources free up. This replaces the old
       // defer-and-retry-every-tick path.
       if (cls.temporary) {
-        const enq = await enqueueJob({
-          projectId: schedule.projectId,
-          userId: schedule.userId,
-          kind: 'full_recon',
-          payload: { mode },
-          priority: 0, // scheduled
-          scheduleId: schedule.id,
-        }).catch(err => {
-          console.error('[scanScheduler] could not enqueue deferred scheduled run:', err)
-          return { ok: false, status: 500, error: String(err), id: undefined as string | undefined }
-        })
+        const enq = await enqueueOccurrence(schedule, mode)
         console.info(
           `[scanScheduler] schedule ${scheduleId} refused (${cls.blockedCode || 'temporary'}); ` +
-          `enqueued as ${enq.id ?? 'none'}`
+          `${enq.alreadyQueued ? 'a full recon is already queued' : 'enqueued'} as ${enq.id ?? 'none'}`
         )
         return NextResponse.json(
-          { ok: false, queued: enq.ok, jobId: enq.id ?? null, blockedCode: cls.blockedCode, error: result.error, nextRunAt },
+          {
+            ok: false, queued: enq.ok, jobId: enq.id ?? null, blockedCode: cls.blockedCode, error: result.error,
+            ...(enq.alreadyQueued ? { alreadyQueued: true } : {}),
+            nextRunAt,
+          },
           { status: 200 },
         )
       }

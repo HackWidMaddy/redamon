@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
   createJob: vi.fn(),
   enqueue: vi.fn(),
   audit: vi.fn(),
+  agent: vi.fn(),
+  jqFindFirst: vi.fn(),
 }))
 
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => h.isInternal(...a) }))
@@ -35,7 +37,12 @@ vi.mock('@/lib/prisma', () => ({
     },
     scanJob: { count: (...a: unknown[]) => h.countJobs(...a) },
     project: { findMany: (...a: unknown[]) => h.projectFindMany(...a) },
+    jobQueue: { findFirst: (...a: unknown[]) => h.jqFindFirst(...a) },
   },
+}))
+vi.mock('@/lib/agentSessions', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/agentSessions')>()),
+  checkAgentSessions: (...a: unknown[]) => h.agent(...a),
 }))
 vi.mock('@/lib/startFullScan', () => ({ startFullScan: (...a: unknown[]) => h.start(...a) }))
 vi.mock('@/lib/enqueueJob', () => ({ enqueueJob: (...a: unknown[]) => h.enqueue(...a) }))
@@ -70,6 +77,8 @@ beforeEach(() => {
   h.start.mockResolvedValue({ ok: true, versionId: 'v3', versionSeq: 3, scanJobId: 'job1', frozenVersionId: 'v2' })
   h.createJob.mockResolvedValue({ id: 'job1' })
   h.enqueue.mockResolvedValue({ ok: true, status: 201, id: 'jq1' })
+  h.agent.mockResolvedValue('idle')
+  h.jqFindFirst.mockResolvedValue(null)
 })
 
 describe('authentication', () => {
@@ -272,6 +281,66 @@ describe('POST /run', () => {
     const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
     expect(body.queued).toBeUndefined()
     expect(h.enqueue).not.toHaveBeenCalled()
+  })
+
+  describe('an agent session holds the scheduled full recon (plan 12.16)', () => {
+    // A full recon clears the graph the agent is working on. The queue's
+    // dispatch route already waits for the session; the schedule route did not.
+    test('a running session enqueues the occurrence and starts nothing', async () => {
+      h.agent.mockResolvedValue('running')
+      const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
+      expect(h.start).not.toHaveBeenCalled()
+      expect(h.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+        projectId: 'p1', kind: 'full_recon', payload: { mode: 'new' }, priority: 0, scheduleId: 's1',
+      }))
+      expect(body).toMatchObject({ ok: false, queued: true, jobId: 'jq1', blockedCode: 'agent_running' })
+      expect(body.nextRunAt).toBeTruthy()
+      const data = h.updateSchedule.mock.calls[0][0].data
+      expect(data.lastRunAt).toBeInstanceOf(Date)
+      expect(data.nextRunAt).toBeInstanceOf(Date)
+    })
+
+    test('an unverified session also holds it (fail closed)', async () => {
+      h.agent.mockResolvedValue('unverified')
+      const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
+      expect(h.start).not.toHaveBeenCalled()
+      expect(body).toMatchObject({ queued: true, blockedCode: 'agent_running' })
+    })
+
+    test('a one-off schedule is still spent', async () => {
+      h.agent.mockResolvedValue('running')
+      h.findSchedule.mockResolvedValue({ ...SCHEDULE, mode: 'once', intervalMinutes: null })
+      await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))
+      expect(h.updateSchedule.mock.calls[0][0].data.enabled).toBe(false)
+    })
+
+    test('a second occurrence while one is queued adds no row', async () => {
+      h.agent.mockResolvedValue('running')
+      h.jqFindFirst.mockResolvedValue({ id: 'jq-earlier', status: 'queued' })
+      const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
+      expect(h.enqueue).not.toHaveBeenCalled()
+      expect(body).toMatchObject({ queued: true, jobId: 'jq-earlier', alreadyQueued: true })
+      expect(h.jqFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({
+          projectId: 'p1', kind: 'full_recon',
+          status: { in: ['queued', 'dispatching', 'running', 'needs_review'] },
+        }),
+      }))
+    })
+
+    test('the temporary-refusal branch does not pile up either', async () => {
+      h.start.mockResolvedValue({ ok: false, status: 429, error: 'no memory', limit: { limitType: 'ram' } })
+      h.jqFindFirst.mockResolvedValue({ id: 'jq-earlier', status: 'queued' })
+      const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
+      expect(h.enqueue).not.toHaveBeenCalled()
+      expect(body).toMatchObject({ queued: true, jobId: 'jq-earlier', alreadyQueued: true })
+    })
+
+    test('an idle project starts as before', async () => {
+      await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))
+      expect(h.start).toHaveBeenCalled()
+      expect(h.agent).toHaveBeenCalledWith('p1')
+    })
   })
 
   test('a disabled schedule is not run', async () => {
