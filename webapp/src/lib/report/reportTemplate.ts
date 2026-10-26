@@ -11,6 +11,10 @@ import type { ReportData, VulnFinding, CveChain, ExploitRecord, JsReconCoverage 
 import { type ScopeGroup, groupLabel, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
 import { projectTargetLabel } from '@/lib/projectSummary'
 import { validationLabel } from '@/lib/secrets/validationStatus'
+import {
+  DISPOSITION_LABELS, DISPOSITION_MEANINGS, SCANNER_SEVERITY_LABEL, topBlockers,
+  type DispositionSummary,
+} from '@/lib/triage/disposition'
 
 // ── Narrative types (from LLM summarizer) ──────────────────────────────────
 
@@ -628,15 +632,49 @@ function renderTOC(data: ReportData): string {
 </div>`
 }
 
+const DISPOSITION_BORDER = { reportable: '#16a34a', candidate: '#2563eb', info: '#6b7280' } as const
+
+/**
+ * The report's headline: what is ready to report, what is stuck and why, and
+ * what has no impact. Candidates are grouped by their blocker, the largest
+ * first, so the reader sees what work would turn them into findings.
+ */
+function renderDispositionSummary(d: DispositionSummary): string {
+  const shown = ['reportable', 'candidate', 'info'] as const
+  const cards = shown.map(k =>
+    `<div class="metric-card-sm" style="border-left:3px solid ${DISPOSITION_BORDER[k]}" title="${esc(DISPOSITION_MEANINGS[k])}">` +
+    `<div class="metric-value-sm" data-testid="disposition-${k}">${d[k]}</div>` +
+    `<div class="metric-label-sm">${DISPOSITION_LABELS[k]}</div></div>`).join('')
+  const legend = shown.map(k => `${DISPOSITION_LABELS[k]}: ${DISPOSITION_MEANINGS[k]}`).join(' ')
+  const { top, otherCount, otherBlockers } = topBlockers(d.blockers)
+  const rows = top.map(b => `<tr><td>${esc(b.blocker)}</td><td>${b.count}</td></tr>`).join('') +
+    (otherBlockers > 0
+      ? `<tr><td>${otherBlockers} other blocker${otherBlockers === 1 ? '' : 's'}</td><td>${otherCount}</td></tr>`
+      : '')
+  return `
+  <div data-testid="disposition-summary" style="margin-bottom:12px">
+    <h3 style="margin-top:8px">Can it go in this report?</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${cards}</div>
+    <p style="font-size:11px;color:#6b7280;margin:6px 0">${esc(legend)}</p>
+    ${d.candidate > 0 && rows ? `<table class="data-table">
+      <thead><tr><th>Candidates by blocker</th><th>Count</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : ''}
+  </div>`
+}
+
 function renderExecutiveSummary(data: ReportData, narrative?: string): string {
   const m = data.metrics
+  // Unreadable or older data keeps the old headline rather than printing zeros.
+  const disposition = data.disposition ?? null
   return `
 <div class="page-break"></div>
 <div class="section" id="executive-summary">
   <h2 class="section-title">1. Executive Summary</h2>
   ${narrative ? `<div class="narrative">${esc(narrative)}</div>` : ''}
+  ${disposition ? renderDispositionSummary(disposition) : ''}
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-    <div class="metric-card-sm" style="border-left:3px solid #6366f1"><div class="metric-value-sm">${m.totalCves + m.totalVulnerabilities}</div><div class="metric-label-sm">Total Findings</div></div>
+    ${disposition ? '' : `<div class="metric-card-sm" style="border-left:3px solid #6366f1"><div class="metric-value-sm">${m.totalCves + m.totalVulnerabilities}</div><div class="metric-label-sm">Total Findings</div></div>`}
     <div class="metric-card-sm" style="border-left:3px solid ${riskScoreColor(m.riskScore)}"><div class="metric-value-sm">${riskScoreBadge(m.riskScore, m.riskLabel)}</div><div class="metric-label-sm">Risk Score</div></div>
     <div class="metric-card-sm"><div class="metric-value-sm">${m.exploitableCount}</div><div class="metric-label-sm">Confirmed Exploits</div></div>
     <div class="metric-card-sm"><div class="metric-value-sm">${m.cvssAverage}</div><div class="metric-label-sm">Avg CVSS</div></div>
@@ -656,7 +694,7 @@ function renderExecutiveSummary(data: ReportData, narrative?: string): string {
       </div>
     </div>
     <div>
-      <h3 style="margin-top:8px">Other Vulnerabilities (${m.totalVulnerabilities})</h3>
+      <h3 style="margin-top:8px">Other Vulnerabilities (${m.totalVulnerabilities}) · ${SCANNER_SEVERITY_LABEL}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <div class="metric-card-sm" style="border-left:3px solid #dc2626"><div class="metric-value-sm">${m.criticalCount}</div><div class="metric-label-sm">Critical</div></div>
         <div class="metric-card-sm" style="border-left:3px solid #ea580c"><div class="metric-value-sm">${m.highCount}</div><div class="metric-label-sm">High</div></div>
@@ -874,7 +912,8 @@ function renderRiskSummary(data: ReportData, narrative?: string): string {
       </table>` : ''}
     </div>
     <div>
-      <h3>Other Vulnerabilities Severity Distribution</h3>
+      <h3>${SCANNER_SEVERITY_LABEL}</h3>
+      <p style="font-size:11px;color:#6b7280;margin:0 0 6px">Other vulnerabilities that are reportable or candidates. Findings with no impact are left out.</p>
       <table class="data-table">
         <thead><tr><th>Severity</th><th>Count</th><th>%</th></tr></thead>
         <tbody>${sevRows}</tbody>

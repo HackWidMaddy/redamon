@@ -8,7 +8,7 @@
  *
  * @vitest-environment node
  */
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi } from 'vitest'
 import vectors from './disposition.vectors.json'
 import {
   BLOCKER_AI_FALSE_POSITIVE,
@@ -18,13 +18,19 @@ import {
   INFO_SEVERITIES,
   TIER_RULE_NO_IMPACT,
   TIER_RULE_PROVEN,
+  TOP_BLOCKERS,
   blockerCypher,
   disposition,
   dispositionCypher,
   dispositionText,
+  inSeverityBreakdown,
+  queryDispositionSummary,
   readDisposition,
+  topBlockers,
 } from './disposition'
 import { PUBLIC_CLIENT_KEY_TYPES } from '@/lib/secrets/publicClientKeys'
+import { MUTEABLE_FINDING_LABELS } from '@/lib/mcp/findingLabels'
+import { agentCandidateConfirmedOrNA, notMuted } from '@/lib/graphMute'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -154,5 +160,91 @@ describe('the Cypher half', () => {
 
   test('the blocker is null outside candidates', () => {
     expect(blockerCypher('n')).toMatch(/^CASE WHEN .* = 'candidate' THEN .* END$/s)
+  })
+
+  test('the severity breakdowns keep reportable and candidate findings only', () => {
+    expect(inSeverityBreakdown('v')).toBe(`${dispositionCypher('v')} IN ['reportable', 'candidate']`)
+  })
+})
+
+describe('queryDispositionSummary: the report and Insights headline', () => {
+  const row = (disposition: string, blocker: string | null, total: unknown) => ({
+    get: (k: string) => ({ disposition, blocker, total })[k],
+  })
+  const sessionReturning = (records: unknown[]) => {
+    const run = vi.fn().mockResolvedValue({ records })
+    return { run }
+  }
+
+  test('counts each disposition and groups candidates by blocker, largest first', async () => {
+    const s = sessionReturning([
+      row('reportable', null, 2),
+      row('candidate', BLOCKER_NOT_TRIAGED, { low: 5, high: 0 }),
+      row('candidate', 'credible, with impact worth planning for', 9),
+      row('candidate', BLOCKER_AI_FALSE_POSITIVE, 1),
+      row('info', null, 7),
+      row('excluded', null, 3),
+    ])
+    expect(await queryDispositionSummary(s, 'p1')).toEqual({
+      reportable: 2, candidate: 15, info: 7, excluded: 3,
+      blockers: [
+        { blocker: 'credible, with impact worth planning for', count: 9 },
+        { blocker: BLOCKER_NOT_TRIAGED, count: 5 },
+        { blocker: BLOCKER_AI_FALSE_POSITIVE, count: 1 },
+      ],
+    })
+  })
+
+  test('equal blocker counts are ordered by name, so two renders agree', async () => {
+    const s = sessionReturning([row('candidate', 'b rule', 2), row('candidate', 'a rule', 2)])
+    expect((await queryDispositionSummary(s, 'p1'))!.blockers.map((b) => b.blocker)).toEqual(['a rule', 'b rule'])
+  })
+
+  test('the query covers every finding label, unmuted, without unconfirmed serialized candidates', async () => {
+    const s = sessionReturning([])
+    await queryDispositionSummary(s, 'p1')
+    const [query, params] = s.run.mock.calls[0]
+    for (const label of MUTEABLE_FINDING_LABELS) expect(query).toContain(label)
+    expect(query).toContain(notMuted('n'))
+    expect(query).toContain(agentCandidateConfirmedOrNA('n'))
+    expect(query).toContain(dispositionCypher('n'))
+    expect(query).toContain(blockerCypher('n'))
+    expect(params).toEqual({ pid: 'p1' })
+  })
+
+  test('an empty project is an honest zero', async () => {
+    expect(await queryDispositionSummary(sessionReturning([]), 'p1')).toEqual({
+      reportable: 0, candidate: 0, info: 0, excluded: 0, blockers: [],
+    })
+  })
+
+  test('a failed read is null, never zeros: a reader must not print "0 reportable"', async () => {
+    const s = { run: vi.fn().mockRejectedValue(new Error('neo4j down')) }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await queryDispositionSummary(s, 'p1')).toBeNull()
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  test('an unknown disposition from a drifted query is not counted anywhere', async () => {
+    const s = sessionReturning([row('weird', null, 4), row('reportable', null, 1)])
+    const got = (await queryDispositionSummary(s, 'p1'))!
+    expect(got.reportable + got.candidate + got.info + got.excluded).toBe(1)
+  })
+})
+
+describe('topBlockers', () => {
+  const blockers = [9, 8, 7, 6, 5, 4, 3].map((count, i) => ({ blocker: `rule ${i}`, count }))
+
+  test('keeps the first TOP_BLOCKERS and sums the rest', () => {
+    const { top, otherCount, otherBlockers } = topBlockers(blockers)
+    expect(TOP_BLOCKERS).toBe(5)
+    expect(top.map((b) => b.count)).toEqual([9, 8, 7, 6, 5])
+    expect(otherCount).toBe(7)
+    expect(otherBlockers).toBe(2)
+  })
+
+  test('nothing left over says so', () => {
+    expect(topBlockers(blockers.slice(0, 2))).toEqual({ top: blockers.slice(0, 2), otherCount: 0, otherBlockers: 0 })
   })
 })

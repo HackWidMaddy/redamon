@@ -15,7 +15,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest'
 import neo4j, { type Driver, type Session } from 'neo4j-driver'
 import vectors from './disposition.vectors.json'
-import { blockerCypher, disposition, dispositionCypher } from './disposition'
+import { blockerCypher, disposition, dispositionCypher, queryDispositionSummary } from './disposition'
 
 const URI = process.env.NEO4J_URI || 'bolt://localhost:7687'
 const USER = process.env.NEO4J_USER || 'neo4j'
@@ -66,5 +66,18 @@ describe('TS/Cypher parity of disposition', () => {
       blocker: r.get('blocker') as string | null,
     }))
     expect(got).toEqual(ROWS.map((p) => disposition(p)))
+  })
+
+  test('the project summary tallies exactly what the TypeScript half decides', async (ctx) => {
+    if (!alive || !session) ctx.skip()
+    const summary = await queryDispositionSummary(session!, PID)
+    const want = { reportable: 0, candidate: 0, info: 0, excluded: 0 }
+    const blockers = new Map<string, number>()
+    for (const r of ROWS.map((p) => disposition(p))) {
+      want[r.disposition] += 1
+      if (r.blocker) blockers.set(r.blocker, (blockers.get(r.blocker) ?? 0) + 1)
+    }
+    expect(summary).toMatchObject(want)
+    expect(new Map(summary!.blockers.map((b) => [b.blocker, b.count]))).toEqual(blockers)
   })
 })

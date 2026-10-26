@@ -3,6 +3,7 @@ import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
 import { queryJudgedFindings, reportCountable } from '@/lib/triage/reportable'
+import { inSeverityBreakdown, queryDispositionSummary } from '@/lib/triage/disposition'
 import { githubSecretCounts, githubSecretCountsCypher } from '@/lib/secrets/githubSecretCounts'
 
 function toNum(val: unknown): number {
@@ -20,10 +21,12 @@ export async function GET(request: NextRequest) {
 
   const session = getGraphSession()
   try {
-    // Q1: Vulnerability severity distribution
+    // Q1: Vulnerability severity distribution, as the report's: what scanners
+    // claimed about reportable and candidate findings.
     const sevResult = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid})
        WHERE ${notMuted('v')} AND ${reportCountable('v')} AND ${agentCandidateConfirmedOrNA('v')}
+         AND ${inSeverityBreakdown('v')}
        RETURN v.severity AS severity, count(v) AS count`,
       { pid: projectId }
     )
@@ -193,8 +196,10 @@ export async function GET(request: NextRequest) {
 
     // Findings the board set aside, for the "not counted above" lines.
     const judged = await queryJudgedFindings(session, projectId)
+    const disposition = await queryDispositionSummary(session, projectId)
 
     return NextResponse.json({
+      disposition,
       severityDistribution,
       vulnTypes,
       findings,

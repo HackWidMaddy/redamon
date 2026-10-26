@@ -1,4 +1,5 @@
 import type { JudgedFindingCounts } from '@/lib/triage/reportable'
+import type { DispositionSummary } from '@/lib/triage/disposition'
 
 export interface GraphOverviewData {
   nodeCounts: { label: string; count: number }[]
@@ -69,6 +70,8 @@ export interface VulnerabilityData {
   gvmRemediation: { status: string; count: number }[]
   /** Findings the Priority Board set aside; null when they could not be read. */
   judged?: JudgedFindingCounts | null
+  /** Every unmuted finding by disposition; null when it could not be read. */
+  disposition?: DispositionSummary | null
 }
 
 export interface AttackSurfaceData {

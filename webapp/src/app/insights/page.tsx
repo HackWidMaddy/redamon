@@ -42,6 +42,7 @@ import { ExploitsCard } from './components/ExploitsCard'
 import { FindingsBySource } from './components/FindingsBySource'
 import { FindingsByCategory } from './components/FindingsByCategory'
 import { VulnSourcePie } from './components/VulnSourcePie'
+import { DispositionBreakdown } from './components/DispositionBreakdown'
 import { CweBreakdownBar } from './components/CweBreakdownBar'
 import { VulnTargetsBar } from './components/VulnTargetsBar'
 import { GvmRemediationPie } from './components/GvmRemediationPie'
@@ -66,6 +67,7 @@ import { AttackChainSankey } from './components/AttackChainSankey'
 import { VulnAccumulationArea } from './components/VulnAccumulationArea'
 import { formatNumber } from './utils/formatters'
 import { type RiskFinding } from '@/lib/projectRisk'
+import { SCANNER_SEVERITY_LABEL } from '@/lib/triage/disposition'
 import styles from './page.module.css'
 
 /**
@@ -270,10 +272,10 @@ export default function InsightsPage() {
       <div className={styles.section}>
         <div className={styles.sectionTitle}>Vulnerabilities & CVE Intelligence</div>
         <div className={styles.grid4}>
-          <SeverityDonut data={vulns.data?.severityDistribution} isLoading={vulns.isLoading} title="Vulnerability Severity" />
+          <DispositionBreakdown data={vulns.data?.disposition} isLoading={vulns.isLoading} />
+          <SeverityDonut data={vulns.data?.severityDistribution} isLoading={vulns.isLoading} title={SCANNER_SEVERITY_LABEL} />
           <SeverityDonut data={vulns.data?.cveSeverity} isLoading={vulns.isLoading} title="CVE Severity" />
           <CvssHistogram data={vulns.data?.cvssHistogram} isLoading={vulns.isLoading} />
-          <VulnSourcePie data={vulns.data?.findings} isLoading={vulns.isLoading} />
         </div>
         <JudgedFindingsNote judged={vulns.data?.judged} />
         <div className={styles.grid4}>
@@ -286,10 +288,11 @@ export default function InsightsPage() {
           <TechCveBar data={vulns.data?.cveChains} isLoading={vulns.isLoading} />
           <AttackPatternsBar data={vulns.data?.cveChains} isLoading={vulns.isLoading} />
         </div>
-        <div className={styles.grid3}>
+        <div className={styles.grid4}>
           <CvssExploitScatter cveChains={vulns.data?.cveChains} exploits={vulns.data?.exploits} isLoading={vulns.isLoading} />
           <VulnCategoryRose data={vulns.data?.findings} isLoading={vulns.isLoading} />
           <TopVulnTechBubble data={vulns.data?.cveChains} isLoading={vulns.isLoading} />
+          <VulnSourcePie data={vulns.data?.findings} isLoading={vulns.isLoading} />
         </div>
         {/* Conditional row: Exploits + GVM Remediation + CISA KEV */}
         {((vulns.data?.exploits?.length ?? 0) > 0 || (vulns.data?.gvmRemediation?.length ?? 0) > 0) && (

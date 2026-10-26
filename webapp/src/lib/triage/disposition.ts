@@ -22,6 +22,8 @@
  * half names the `Muted` label or binds a parameter, so any query can carry it.
  */
 import { reportBucket, reportBucketCypher, reportCountable, type ReportTriageProps } from './reportable'
+import { agentCandidateConfirmedOrNA, notMuted } from '@/lib/graphMute'
+import { MUTEABLE_FINDING_LABELS } from '@/lib/mcp/findingLabels'
 import { isPublicClientKey, publicClientKeyCypher } from '@/lib/secrets/publicClientKeys'
 
 export const DISPOSITIONS = ['reportable', 'candidate', 'info', 'excluded'] as const
@@ -153,4 +155,74 @@ export function blockerCypher(v: string): string {
     `CASE WHEN ${reportBucketCypher(v)} = 'ai_flagged' THEN '${BLOCKER_AI_FALSE_POSITIVE}' ` +
     `WHEN ${rule} <> '' THEN ${v}.triage_tier_rule ELSE '${BLOCKER_NOT_TRIAGED}' END END`
   )
+}
+
+/**
+ * A WHERE fragment for the severity breakdowns: a finding with no impact (info)
+ * says nothing about how severe the open work is, so they count reportable and
+ * candidate findings only. ANDed with `reportCountable`, which already drops
+ * the excluded ones.
+ */
+export function inSeverityBreakdown(v: string): string {
+  return `${dispositionCypher(v)} IN ['reportable', 'candidate']`
+}
+
+export interface DispositionSummary {
+  reportable: number
+  candidate: number
+  info: number
+  excluded: number
+  /** Candidates by blocker, largest first. */
+  blockers: { blocker: string; count: number }[]
+}
+
+/** How many blockers a summary names before it sums the rest. */
+export const TOP_BLOCKERS = 5
+
+export function topBlockers(blockers: DispositionSummary['blockers']) {
+  const top = blockers.slice(0, TOP_BLOCKERS)
+  const rest = blockers.slice(TOP_BLOCKERS)
+  return { top, otherCount: rest.reduce((s, b) => s + b.count, 0), otherBlockers: rest.length }
+}
+
+function toCount(val: unknown): number {
+  if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
+  return typeof val === 'number' ? val : 0
+}
+
+/**
+ * Every unmuted finding of a project, by disposition, for the headline of the
+ * report and Insights. The same finding set as `queryJudgedFindings`. Null,
+ * never zeros, when the query fails: "0 reportable" would be a claim.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function queryDispositionSummary(session: any, pid: string): Promise<DispositionSummary | null> {
+  try {
+    const res = await session.run(
+      `MATCH (n:${MUTEABLE_FINDING_LABELS.join('|')})
+       WHERE n.project_id = $pid AND ${notMuted('n')} AND ${agentCandidateConfirmedOrNA('n')}
+       WITH ${dispositionCypher('n')} AS disposition, ${blockerCypher('n')} AS blocker
+       RETURN disposition, blocker, count(*) AS total`,
+      { pid }
+    )
+    const summary: DispositionSummary = { reportable: 0, candidate: 0, info: 0, excluded: 0, blockers: [] }
+    const byBlocker = new Map<string, number>()
+    for (const r of res.records) {
+      const d = r.get('disposition')
+      if (!(DISPOSITIONS as readonly unknown[]).includes(d)) continue
+      const total = toCount(r.get('total'))
+      summary[d as Disposition] += total
+      const blocker = r.get('blocker')
+      if (d === 'candidate' && typeof blocker === 'string') {
+        byBlocker.set(blocker, (byBlocker.get(blocker) ?? 0) + total)
+      }
+    }
+    summary.blockers = [...byBlocker.entries()]
+      .map(([blocker, count]) => ({ blocker, count }))
+      .sort((a, b) => b.count - a.count || a.blocker.localeCompare(b.blocker))
+    return summary
+  } catch (e) {
+    console.warn('[triage] disposition counts could not be read:', e)
+    return null
+  }
 }

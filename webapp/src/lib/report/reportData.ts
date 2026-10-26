@@ -8,6 +8,7 @@ import { getGraphSession } from '@/app/api/graph/neo4j'
 import { RISK_TOP_N, projectRisk } from '@/lib/projectRisk'
 import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
 import { type JudgedFindingCounts, queryJudgedFindings, reportCountable } from '@/lib/triage/reportable'
+import { type DispositionSummary, inSeverityBreakdown, queryDispositionSummary } from '@/lib/triage/disposition'
 import { DECLARED_ONLY } from '@/lib/declaredOnly'
 import { publicClientKeyCypher } from '@/lib/secrets/publicClientKeys'
 import { githubSecretCounts, githubSecretCountsCypher } from '@/lib/secrets/githubSecretCounts'
@@ -306,6 +307,12 @@ export interface ReportData {
    *  newest scan: the report reads the live row, so a RoE replaced after the
    *  scans would otherwise be printed as the terms those scans ran under. */
   roeProvenance?: RoeProvenance | null
+
+  /** Every unmuted finding by disposition (reportable / candidate / info /
+   *  excluded), the report's headline. Null when it could not be read, and
+   *  absent from data built before it existed: the template then keeps the
+   *  older "Total Findings" headline rather than printing zeros. */
+  disposition?: DispositionSummary | null
 
   // Graph Overview
   graphOverview: {
@@ -721,6 +728,9 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
   const triageRisks = await withSession(s => queryTriageRisks(s, projectId))
     .catch(() => [])
 
+  const disposition = await withSession(s => queryDispositionSummary(s, projectId))
+    .catch(() => null)
+
   const coverageLimitations = await withSession(s => queryCoverageLimitations(s, projectId, currentScanRoots(project)))
     .catch(() => [])
 
@@ -965,6 +975,7 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
       generatedAt: new Date().toISOString(),
       coverageLimitations,
       roeProvenance,
+      disposition,
       graphOverview,
       attackSurface,
       vulnerabilities: vulnData,
@@ -1302,6 +1313,7 @@ export async function queryVulnerabilities(session: any, pid: string) {
   const sevRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid})
     WHERE ${notMuted('v')} AND ${reportCountable('v')} AND ${agentCandidateConfirmedOrNA('v')}
+      AND ${inSeverityBreakdown('v')}
      RETURN v.severity AS severity, count(v) AS count`,
     { pid }
   )

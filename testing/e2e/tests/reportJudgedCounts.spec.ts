@@ -50,7 +50,7 @@ async function openInsights(page: Page, judged: unknown) {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...VULNS, judged }) }),
   )
   await page.goto(`/insights?project=${PROJECT}`)
-  await expect(page.getByText('Vulnerability Severity').first()).toBeVisible()
+  await expect(page.getByText('Scanner severity (not yet verified)').first()).toBeVisible()
 }
 
 const note = (page: Page) => page.getByRole('list', { name: 'Findings the Priority Board judged' })

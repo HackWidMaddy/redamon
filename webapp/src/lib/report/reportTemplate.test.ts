@@ -635,6 +635,82 @@ describe('Findings the Priority Board judged: three scope lines', () => {
   })
 })
 
+describe('Disposition leads the executive summary (plan 10.2)', () => {
+  const summary = (over: Partial<NonNullable<ReportData['disposition']>> = {}): NonNullable<ReportData['disposition']> => ({
+    reportable: 12, candidate: 340, info: 900, excluded: 6,
+    blockers: [
+      { blocker: 'not triaged yet', count: 200 },
+      { blocker: 'credible, with impact worth planning for', count: 100 },
+      { blocker: 'AI review: likely false positive', count: 20 },
+      { blocker: 'no rule placed this higher', count: 10 },
+      { blocker: 'KEV-listed, confidently detected and reachable', count: 6 },
+      { blocker: 'likely real, likely exploited, real impact, reachable', count: 3 },
+      { blocker: 'an older rule', count: 1 },
+    ],
+    ...over,
+  })
+  const executive = (html: string) =>
+    html.slice(html.indexOf('id="executive-summary"'), html.indexOf('id="scope"'))
+
+  test('reportable, candidate and info lead, in the shared labels', () => {
+    const exec = executive(generateReportHtml(makeReportData({ disposition: summary() }), null))
+    expect(exec).toContain('data-testid="disposition-summary"')
+    expect(exec).toMatch(/data-testid="disposition-reportable">12<.*Reportable/s)
+    expect(exec).toMatch(/data-testid="disposition-candidate">340<.*Candidate/s)
+    expect(exec).toMatch(/data-testid="disposition-info">900<.*Info/s)
+    // It comes before any severity count.
+    expect(exec.indexOf('disposition-summary')).toBeLessThan(exec.indexOf('Known CVEs'))
+  })
+
+  test('candidates are grouped by blocker: the top five, then the rest summed', () => {
+    const exec = executive(generateReportHtml(makeReportData({ disposition: summary() }), null))
+    for (const name of ['not triaged yet', 'credible, with impact worth planning for',
+      'AI review: likely false positive', 'no rule placed this higher',
+      'KEV-listed, confidently detected and reachable']) {
+      expect(exec).toContain(`<td>${name}</td>`)
+    }
+    expect(exec).not.toContain('likely real, likely exploited, real impact, reachable</td>')
+    expect(exec).toContain('<tr><td>2 other blockers</td><td>4</td></tr>')
+  })
+
+  test('the raw "Total Findings" headline gives way to the disposition', () => {
+    const html = generateReportHtml(makeReportData({ disposition: summary() }), null)
+    expect(html).not.toContain('Total Findings')
+  })
+
+  test('no candidates, no blocker table', () => {
+    const html = generateReportHtml(makeReportData({ disposition: summary({ candidate: 0, blockers: [] }) }), null)
+    expect(html).toContain('data-testid="disposition-summary"')
+    expect(html).not.toContain('Candidates by blocker')
+  })
+
+  test('a blocker is escaped like every other value', () => {
+    const html = generateReportHtml(makeReportData({
+      disposition: summary({ blockers: [{ blocker: '<img src=x onerror=alert(1)>', count: 1 }] }),
+    }), null)
+    expect(html).not.toContain('<img src=x')
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
+  })
+
+  test('counts that could not be read print no summary, never zeros, and keep the old headline', () => {
+    for (const disposition of [null, undefined]) {
+      const html = generateReportHtml(makeReportData({ disposition }), null)
+      expect(html).not.toContain('data-testid="disposition-summary"')
+      expect(html).toContain('Total Findings')
+    }
+  })
+
+  test('both severity breakdowns are relabelled as the scanners\' unverified claim', () => {
+    const data = makeReportData({ disposition: summary() })
+    data.vulnerabilities.severityDistribution = [{ severity: 'high', count: 3 }]
+    const html = generateReportHtml(data, null)
+    const risk = html.slice(html.indexOf('id="risk-summary"'))
+    expect(executive(html)).toContain('Scanner severity (not yet verified)')
+    expect(risk).toContain('<h3>Scanner severity (not yet verified)</h3>')
+    expect(html).not.toContain('Other Vulnerabilities Severity Distribution')
+  })
+})
+
 describe('HTML Escaping / XSS Prevention', () => {
   test('an apostrophe is escaped, so a single-quoted attribute cannot be closed', () => {
     const data = makeReportData()
