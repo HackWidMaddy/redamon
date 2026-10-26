@@ -833,20 +833,42 @@ def _without_shodan_cves(combined_result: dict) -> dict:
 
 
 def _write_shodan_cves(combined_result: dict) -> None:
-    """Queue the graph write of the Shodan CVEs held back at GROUP 3."""
+    """Queue the graph write of the Shodan CVEs held back at GROUP 3, minus
+    those on a shared edge. The prune then removes an earlier run's CVE on such
+    an IP: the lookup did re-check it."""
     shodan = combined_result.get("shodan")
     if not isinstance(shodan, dict) or not shodan.get("cves"):
         return
-    _graph_update_bg("update_graph_from_shodan", {**combined_result, "shodan": {"cves": shodan["cves"]}},
-                     USER_ID, PROJECT_ID)
+    from recon.main_recon_modules.ip_attribution import shared_edge_ips
+    from recon.main_recon_modules.shodan_enrich import drop_shared_edge_cves
+    dropped = drop_shared_edge_cves(shodan, shared_edge_ips(combined_result))
+    if dropped:
+        print(f"[*][Shodan] Dropped {dropped} passive CVE(s) on shared edge IP(s)")
+    if shodan["cves"]:
+        _graph_update_bg("update_graph_from_shodan", {**combined_result, "shodan": {"cves": shodan["cves"]}},
+                         USER_ID, PROJECT_ID)
+
+
+def _write_netlas(combined_result: dict) -> None:
+    """Queue the Netlas graph write held back at GROUP 3b, its shared edge rows
+    marked so the writer gives them no CVE finding."""
+    netlas = combined_result.get("netlas")
+    if not isinstance(netlas, dict) or not netlas.get("results"):
+        return
+    from recon.main_recon_modules.ip_attribution import shared_edge_ips
+    from recon.main_recon_modules.netlas_enrich import retag_shared_edge
+    retagged = retag_shared_edge(netlas, shared_edge_ips(combined_result))
+    if retagged:
+        print(f"[*][Netlas] {retagged} row(s) on shared edge IP(s) get no CVE finding")
+    _graph_update_bg("update_graph_from_netlas", combined_result, USER_ID, PROJECT_ID)
 
 
 def _run_ip_attribution(combined_result: dict, settings: dict, output_file) -> None:
     """Tag every IP of the run shared_edge / dedicated / unknown. Never raises.
 
     After the port scan, tlsx and http_probe, whose CDN flags, ASN and headers
-    it reads; before vhost/SNI, origin discovery and the Shodan CVE write, which
-    read the tag.
+    it reads; before vhost/SNI, origin discovery and the Shodan CVE and Netlas
+    writes, which read the tag.
     """
     if not settings.get('IP_ATTRIBUTION_ENABLED', True):
         print("\n[-][IpAttribution] Disabled via settings -- skipping")
@@ -1411,6 +1433,8 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                     _note_phase_error(name)
         save_recon_file(combined_result, output_file)
         for name, (_, _, _, graph_method) in enabled_ip_osint.items():
+            if name == "netlas":
+                continue  # written after IP attribution (_write_netlas)
             if name in combined_result:
                 _graph_update_bg(graph_method, combined_result, USER_ID, PROJECT_ID)
 
@@ -1435,6 +1459,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
 
     _run_ip_attribution(combined_result, settings, output_file)
     _write_shodan_cves(combined_result)
+    _write_netlas(combined_result)
 
     # Check if active scans should be skipped
     skip_active_scans, skip_reason = should_skip_active_scans(combined_result)
@@ -2103,6 +2128,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
 
         # Queue graph updates for completed OSINT tools
         for name, (_, _, _, graph_method) in enabled_osint.items():
+            if name == "netlas":
+                continue  # written after IP attribution (_write_netlas)
             if name in combined_result:
                 _graph_update_bg(graph_method, combined_result, USER_ID, PROJECT_ID)
 
@@ -2158,6 +2185,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     # After the SAN feedback: a name it resolved counts as a current DNS name.
     _run_ip_attribution(combined_result, _settings, output_file)
     _write_shodan_cves(combined_result)
+    _write_netlas(combined_result)
 
     # Check if we should skip active scanning modules (resource_enum, vuln_scan)
     # These require live targets from http_probe to work

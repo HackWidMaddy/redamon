@@ -217,10 +217,13 @@ def _attribute_rows(rows: list[dict], dns_ips, combined_result: dict) -> None:
     IP may be another tenant's machine now, and an IP node would put it in
     later scans' targets. A row for a CDN or shared edge IP is `shared_edge`:
     its ports are the provider's, and its CVEs describe the provider and its
-    other tenants, so it gets no CVE finding.
+    other tenants, so it gets no CVE finding. In a partial run that includes
+    the IPs the graph's IP attribution tag names (the full run applies the tag
+    later, with retag_shared_edge).
     """
+    from recon.main_recon_modules.ip_attribution import shared_edge_ips
     current = set(dns_ips)
-    cdn = collect_cdn_ips(combined_result)
+    cdn = collect_cdn_ips(combined_result) | shared_edge_ips(combined_result)
     for row in rows:
         ip = row.get("ip")
         if ip not in current:
@@ -228,6 +231,23 @@ def _attribute_rows(rows: list[dict], dns_ips, combined_result: dict) -> None:
         elif (ip in cdn or in_published_cdn_range(ip)
               or is_shared_edge_org(f"{row.get('isp') or ''} {row.get('asn_name') or ''}")):
             row["attribution"] = "shared_edge"
+
+
+def retag_shared_edge(netlas_data: dict, edge_ips) -> int:
+    """Mark the rows of the IPs IP attribution tagged shared_edge. Returns how many.
+
+    In a full run Netlas answers before http_probe, so _attribute_rows could
+    not see the tag; the pipeline holds the write back and applies it here. A
+    `historical` row stays historical: it never reaches the graph at all.
+    """
+    edge_ips = set(edge_ips or ())
+    marked = 0
+    for row in netlas_data.get("results") or []:
+        if (isinstance(row, dict) and row.get("ip") in edge_ips
+                and row.get("attribution") not in ("historical", "shared_edge")):
+            row["attribution"] = "shared_edge"
+            marked += 1
+    return marked
 
 
 def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> dict:

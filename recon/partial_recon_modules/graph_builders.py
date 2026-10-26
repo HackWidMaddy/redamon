@@ -484,6 +484,50 @@ def graph_target_hosts(user_id: str, project_id: str, domains, domain_groups,
     return sorted(hosts)
 
 
+def _recon_data_ips(recon_data: dict) -> list:
+    ips = set(((recon_data.get("port_scan") or {}).get("by_ip")) or {})
+    dns = recon_data.get("dns") or {}
+    for entry in [dns.get("domain") or {}, *((dns.get("subdomains") or {}).values())]:
+        ip_lists = (entry or {}).get("ips") or {}
+        ips.update(ip_lists.get("ipv4") or [])
+        ips.update(ip_lists.get("ipv6") or [])
+    return sorted(ip for ip in ips if ip)
+
+
+def attach_graph_ownership(recon_data: dict, user_id: str, project_id: str) -> None:
+    """Load the IP attribution tag (IP.ownership) of the run's IPs from the graph.
+
+    A partial run does not re-run IP attribution, so the consumers that read
+    its tag (vhost/SNI, origin discovery, the Shodan and Netlas CVE writers)
+    read the last one written, in the shape the full run leaves in memory. An
+    IP with no tag is absent, and the consumers fall back to their own CDN
+    checks. Never raises: on any failure nothing is loaded.
+    """
+    ips = _recon_data_ips(recon_data)
+    if not ips:
+        return
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if not graph_client.verify_connection():
+                return
+            with graph_client.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (i:IP {user_id: $uid, project_id: $pid})
+                    WHERE i.address IN $ips AND i.ownership IS NOT NULL
+                    RETURN i.address AS ip, i.ownership AS ownership
+                    """,
+                    ips=ips, uid=user_id, pid=project_id,
+                )
+                by_ip = {r["ip"]: {"ownership": r["ownership"]} for r in rows if r["ip"]}
+    except Exception as e:  # noqa: BLE001 - no tag only means the CDN fallbacks apply
+        print(f"[!][Partial Recon] Could not read the IP attribution tags: {type(e).__name__}")
+        return
+    if by_ip:
+        recon_data["ip_attribution"] = {"by_ip": by_ip, "source": "graph"}
+
+
 def _build_recon_data_from_graph(domains, user_id: str, project_id: str,
                                  include_root_domain: bool = False,
                                  domain_groups: list = None) -> dict:

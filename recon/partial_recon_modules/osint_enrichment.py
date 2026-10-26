@@ -20,7 +20,10 @@ from recon.partial_recon_modules.helpers import (
     run_per_root,
     scope_roots,
 )
-from recon.partial_recon_modules.graph_builders import _build_recon_data_from_graph
+from recon.partial_recon_modules.graph_builders import (
+    _build_recon_data_from_graph,
+    attach_graph_ownership,
+)
 
 
 def _root_recon_data(root: str, roots: list, config: dict, settings: dict,
@@ -47,6 +50,9 @@ def _root_recon_data(root: str, roots: list, config: dict, settings: dict,
             },
         }
     recon_data["domains"] = list(roots)
+    # Shodan and Netlas write no CVE on an IP the graph's IP attribution tagged
+    # shared_edge.
+    attach_graph_ownership(recon_data, user_id, project_id)
     return recon_data
 
 
@@ -145,6 +151,10 @@ def run_shodan(config: dict) -> dict:
         if not shodan_data:
             print(f"[-][Partial Recon] Shodan returned no data")
             return STATUS_NO_RESULTS
+        from recon.main_recon_modules.ip_attribution import shared_edge_ips
+        from recon.main_recon_modules.shodan_enrich import drop_shared_edge_cves
+        if drop_shared_edge_cves(shodan_data, shared_edge_ips(combined_result)):
+            print(f"[*][Partial Recon] Dropped passive CVEs on shared edge IP(s)")
 
         print(f"[+][Partial Recon] Shodan hosts enriched: {len(shodan_data.get('hosts', []))}")
         print(f"[+][Partial Recon] Reverse DNS entries: {len(shodan_data.get('reverse_dns', {}))}")

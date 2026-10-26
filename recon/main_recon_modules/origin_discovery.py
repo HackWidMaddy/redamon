@@ -377,12 +377,15 @@ def _ip_in_cdn_ranges(ip: str) -> bool:
 
 
 def _cdn_flagged_ips(combined_result: dict) -> Set[str]:
-    """IPs naabu, httpx or tlsx flagged with an edge CDN this run.
+    """IPs naabu, httpx or tlsx flagged with an edge CDN this run, and those IP
+    attribution tagged shared_edge: a shared edge is never anyone's origin.
 
     A label for plain cloud hosting (aws, azure, gcp) does not count: those IPs
     serve the application themselves and are exactly where origins are found.
     """
-    flagged: Set[str] = set()
+    by_ip = ((combined_result.get("ip_attribution") or {}).get("by_ip")) or {}
+    flagged: Set[str] = {ip for ip, entry in by_ip.items()
+                         if isinstance(entry, dict) and entry.get("ownership") == "shared_edge"}
     for ip, info in (((combined_result.get("port_scan") or {}).get("by_ip")) or {}).items():
         if isinstance(info, dict) and info.get("is_cdn") and _is_edge_cdn_label(info.get("cdn")):
             flagged.add(ip)

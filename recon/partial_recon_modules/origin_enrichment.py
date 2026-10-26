@@ -23,6 +23,7 @@ from recon.partial_recon_modules.helpers import (
 from recon.partial_recon_modules.graph_builders import (
     _GraphScope,
     _build_vuln_scan_data_from_graph,
+    attach_graph_ownership,
 )
 from recon.main_recon_modules.origin_discovery import _is_edge_cdn_label
 
@@ -144,6 +145,8 @@ def run_origin_discovery(config: dict) -> None:
         }
 
     recon_data.setdefault("http_probe", {}).setdefault("by_url", {})
+    # A candidate the graph's IP attribution tagged shared_edge is never an origin.
+    attach_graph_ownership(recon_data, user_id, project_id)
 
     # The reused graph builder reconstructs http_probe.by_url from BaseURL nodes,
     # but is_cdn/favicon_hash live on the Endpoint node — so it never flags a host

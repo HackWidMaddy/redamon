@@ -4589,11 +4589,15 @@ class TestRunOsintEnrichment(unittest.TestCase):
             # Patch _build_recon_data_from_graph at the submodule level (where it's actually called)
             _orig_build_recon = _osint_enrichment_mod._build_recon_data_from_graph
             _osint_enrichment_mod._build_recon_data_from_graph = MagicMock(return_value=recon_data)
+            # The IP attribution tag read has its own tests; these count the graph update.
+            _orig_ownership = _osint_enrichment_mod.attach_graph_ownership
+            _osint_enrichment_mod.attach_graph_ownership = MagicMock()
 
             try:
                 pr.run_osint_enrichment(config)
             finally:
                 _osint_enrichment_mod._build_recon_data_from_graph = _orig_build_recon
+                _osint_enrichment_mod.attach_graph_ownership = _orig_ownership
         finally:
             for name, mod in saved.items():
                 if mod is None:

@@ -1375,13 +1375,23 @@ def _collect_ip_targets(combined_result: dict) -> dict[str, list[dict]]:
 
 
 def _shared_edge_ips(combined_result: dict, ips: Iterable[str]) -> set[str]:
-    """The target IPs a known edge CDN serves: flagged by naabu, httpx or tlsx
-    with an edge-only CDN name, or inside a CDN's published edge prefix. Plain
-    cloud-hosting labels (aws, azure, gcp) do not count; those IPs serve the
-    application itself."""
+    """The target IPs IP attribution tagged shared_edge.
+
+    An IP with no tag (the step was off, or a graph written before it) falls
+    back to the CDN checks: flagged by naabu, httpx or tlsx with an edge-only
+    CDN name, or inside a CDN's published edge prefix. Plain cloud-hosting
+    labels (aws, azure, gcp) do not count; those IPs serve the application
+    itself.
+    """
     from recon.helpers.cdn_ranges import collect_reliable_edge_ips, edge_cdn_for_ip
     ips = set(ips)
-    return (collect_reliable_edge_ips(combined_result) & ips) | {ip for ip in ips if edge_cdn_for_ip(ip)}
+    by_ip = ((combined_result.get("ip_attribution") or {}).get("by_ip")) or {}
+    tags = {ip: by_ip[ip].get("ownership") for ip in ips
+            if isinstance(by_ip.get(ip), dict) and by_ip[ip].get("ownership")}
+    untagged = ips - set(tags)
+    fallback = ((collect_reliable_edge_ips(combined_result) & untagged)
+                | {ip for ip in untagged if edge_cdn_for_ip(ip)})
+    return {ip for ip, tag in tags.items() if tag == "shared_edge"} | fallback
 
 
 def _scheme_for_port(port: int) -> str:

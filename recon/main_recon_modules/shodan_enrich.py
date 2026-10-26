@@ -784,6 +784,22 @@ def drop_cdn_ips(shodan_data: dict, combined_result: dict) -> int:
     return len(dropped)
 
 
+def drop_shared_edge_cves(shodan_data: dict, edge_ips) -> int:
+    """Drop the CVEs on the IPs IP attribution tagged shared_edge. Returns how many.
+
+    A shared edge's CVEs describe the provider and its other tenants, not the
+    target. Only the CVEs go: in a full run the hosts, ports and names were
+    written at GROUP 3, before the tag existed.
+    """
+    edge_ips = set(edge_ips or ())
+    cves = shodan_data.get("cves") or []
+    if not edge_ips or not cves:
+        return 0
+    kept = [c for c in cves if c.get("ip") not in edge_ips]
+    shodan_data["cves"] = kept
+    return len(cves) - len(kept)
+
+
 def reachcheck_cves(shodan_data: dict, covers, *, clear_unknown: bool = True) -> dict:
     """Set each CVE's `port_confirmed` from `covers(ip, port)`. No traffic.
 
