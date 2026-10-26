@@ -1844,6 +1844,8 @@ model JobQueue {
   notBefore     DateTime? @map("not_before")
 
   /// ram | hard | busy | activating | agent_running | disk | settings_changed
+  /// | transient (an answered 5xx: retried with backoff, spending attempts)
+  /// | start_unknown (the orchestrator did not answer: needs_review)
   blockedCode   String   @default("") @map("blocked_code")
   blockedReason String   @default("") @map("blocked_reason")
 

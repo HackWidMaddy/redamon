@@ -247,6 +247,21 @@ def _fetch_project_for_preflight(project_id: str, refusal: str = "Refusing to st
         )
 
 
+def _refuse_failed_spawn(state) -> None:
+    """A start whose container could not be created is a refusal: 500 with code
+    `spawn_failed`, never a 200 carrying `status: error`. The webapp would
+    otherwise run retention, keep the prepared version and record a running
+    ScanJob for a scan that never began. The queue treats the code as
+    permanent: a missing image or a refused mount fails every retry.
+    """
+    if state.status in (ReconStatus.ERROR, PartialReconStatus.ERROR):
+        raise HTTPException(
+            status_code=500,
+            detail={"detail": f"The scan container could not be started: {state.error}",
+                    "code": "spawn_failed"},
+        )
+
+
 def _check_roe_time_window(project: dict) -> None:
     """Enforce the RoE time-window. Raises 403 outside the window.
 
@@ -1206,12 +1221,13 @@ async def start_recon(project_id: str, request: ReconStartRequest):
             custom_templates_path=CUSTOM_TEMPLATES_PATH,
             scan_mode=request.mode,
         )
-        return state
     except ValueError as e:
         raise _value_error_http(e)
     except Exception as e:
         logger.error(f"Error starting recon: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    _refuse_failed_spawn(state)
+    return state
 
 
 @app.get("/recon/{project_id}/status", response_model=ReconState)
@@ -1425,12 +1441,13 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
         logger.info(
             f"Partial recon run {state.run_id}: project {project_id}, "
             f"tool {request.tool_id}, roots {', '.join(roots)}")
-        return state
     except ValueError as e:
         raise _value_error_http(e)
     except Exception as e:
         logger.error(f"Error starting partial recon: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    _refuse_failed_spawn(state)
+    return state
 
 
 @app.get("/recon/{project_id}/partial/all", response_model=PartialReconListResponse)
@@ -1659,9 +1676,12 @@ async def start_ai_attack_surface(project_id: str, request: AiAttackSurfaceStart
     if not container_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
     if not AI_ATTACK_SURFACE_PATH:
+        # A configuration error, not a passing outage: the queue must not
+        # retry it as transient, so it carries a code.
         raise HTTPException(
             status_code=503,
-            detail="AI Attack Surface source not mounted into the orchestrator",
+            detail={"detail": "AI Attack Surface source not mounted into the orchestrator",
+                     "code": "not_configured"},
         )
 
     run_config = {

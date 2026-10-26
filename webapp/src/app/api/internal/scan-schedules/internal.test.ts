@@ -126,8 +126,11 @@ describe('POST /run', () => {
   test('starts through the shared start path, tagged as scheduled', async () => {
     const res = await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))
     expect(res.status).toBe(200)
+    // quietTransient: a schedule fires headless and enqueues a transient refusal,
+    // so the start path must not record a failed ScanJob for it (plan 12.6).
     expect(h.start).toHaveBeenCalledWith({
       projectId: 'p1', mode: 'new', trigger: 'scheduled', actorUserId: 'u1', scheduleId: 's1',
+      quietTransient: true,
     })
     expect((await res.json()).ok).toBe(true)
   })
@@ -239,6 +242,36 @@ describe('POST /run', () => {
     expect(body.paused).toBeUndefined()
     expect(h.updateSchedule).toHaveBeenCalledTimes(1)
     expect(h.audit).not.toHaveBeenCalled()
+  })
+
+  test('an answered 503 is transient: enqueued, with no failed ScanJob for the attempt (plan 12.6)', async () => {
+    h.start.mockResolvedValue({
+      ok: false, status: 503,
+      error: 'Cannot verify scan scope: the webapp is unreachable (URLError). Refusing to start.',
+    })
+    const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
+    expect(body).toMatchObject({ ok: false, queued: true, blockedCode: 'transient' })
+    expect(h.enqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: 'full_recon', scheduleId: 's1' }))
+    expect(h.createJob).not.toHaveBeenCalled()
+  })
+
+  test('an unknown start outcome is not enqueued: the failed ScanJob the start wrote stands (plan 12.6)', async () => {
+    h.start.mockResolvedValue({
+      ok: false, status: 503, startOutcome: 'unknown', scanJobId: 'sj-unknown',
+      error: 'The orchestrator did not answer, so it is unknown whether the scan started.',
+    })
+    const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
+    expect(body).toMatchObject({ ok: false, startOutcome: 'unknown', scanJobId: 'sj-unknown' })
+    expect(body.queued).toBeUndefined()
+    expect(h.enqueue).not.toHaveBeenCalled()
+    expect(h.createJob).not.toHaveBeenCalled()
+  })
+
+  test('a failed spawn is permanent: recorded, not enqueued (plan 12.9)', async () => {
+    h.start.mockResolvedValue({ ok: false, status: 500, code: 'spawn_failed', error: 'image missing', scanJobId: 'sj3' })
+    const body = await (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1'))).json()
+    expect(body.queued).toBeUndefined()
+    expect(h.enqueue).not.toHaveBeenCalled()
   })
 
   test('a disabled schedule is not run', async () => {

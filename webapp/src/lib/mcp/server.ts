@@ -1024,8 +1024,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'mode.\n\n' +
         'Three things to know. A queued job can wait minutes or hours - poll it with ' +
         'get_project_activity, never by queueing again. A job that becomes "needs_review" is ' +
-        'PARKED because the project settings changed after it was queued, and only a person can ' +
-        'release it; no tool here can. And a queued job OUTLIVES this token: revoking the token ' +
+        'PARKED, because the project settings changed after it was queued or because its start ' +
+        'got no answer (the scan may have started), and only a person can release it; no tool ' +
+        'here can. A start that fails on a passing orchestrator error is retried with backoff. ' +
+        'And a queued job OUTLIVES this token: revoking the token ' +
         'does not cancel it, only cancel_queued_scan does.\n\n' +
         'One full recon can be queued per project at a time.',
       annotations: {

@@ -1153,6 +1153,8 @@ class ContainerManager:
         except Exception as e:
             state.status = ReconStatus.ERROR
             state.error = str(e)
+            # Nothing runs, so the reservation goes back now, not at the reaper.
+            self.ledger.release_nowait(self._scan_key("full_recon", project_id))
             logger.error(f"Failed to start recon for {project_id}: {e}")
 
         return state
@@ -2346,6 +2348,7 @@ class ContainerManager:
         except Exception as e:
             state.status = PartialReconStatus.ERROR
             state.error = str(e)
+            self.ledger.release_nowait(self._scan_key(partial_kind, project_id, run_id))
             logger.error(f"Failed to start partial recon for {project_id}/{run_id}: {e}")
 
         return state

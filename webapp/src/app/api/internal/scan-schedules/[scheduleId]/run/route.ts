@@ -51,6 +51,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       trigger: 'scheduled',
       actorUserId: schedule.userId,
       scheduleId: schedule.id,
+      // A transient refusal becomes a queue row below, so no failed run for it.
+      quietTransient: true,
     })
 
     // A one-off schedule is spent after it fires; recurring ones roll forward.
@@ -73,10 +75,25 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         limit: result.limit as { limitType?: string } | undefined,
         activationInProgress: result.activationInProgress,
         busy: result.busy,
-      })
+        snapshotFailed: result.snapshotFailed,
+        startOutcome: result.startOutcome,
+        code: result.code,
+      }, { orchestratorAnswered: result.startOutcome !== 'unknown' })
 
-      // Phase 4: a TEMPORARY refusal (RAM/hard limit, activation, or the graph is
-      // busy) must NOT burn the occurrence. Advancing nextRunAt above is correct
+      // The orchestrator did not answer: a scan may be running. Queueing the
+      // occurrence could start a second one, so it is not enqueued; the failed
+      // ScanJob startFullScan wrote ("start outcome unknown") is the record.
+      if (cls.kind === 'unknown') {
+        console.warn(`[scanScheduler] schedule ${scheduleId}: ${result.error}`)
+        return NextResponse.json(
+          { ok: false, startOutcome: 'unknown', error: result.error, scanJobId: result.scanJobId ?? null, nextRunAt },
+          { status: 200 },
+        )
+      }
+
+      // Phase 4: a TEMPORARY refusal (RAM/hard limit, activation, the graph is
+      // busy, or a transient error the orchestrator answered) must NOT burn the
+      // occurrence. Advancing nextRunAt above is correct
       // precisely because the occurrence becomes a durable queue row here, which
       // the dispatcher runs when resources free up. This replaces the old
       // defer-and-retry-every-tick path.
