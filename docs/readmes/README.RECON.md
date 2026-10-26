@@ -795,6 +795,20 @@ What follows from that:
   `graph_db/node_filters/normalize.py` and `webapp/src/lib/secrets/publicClientKeys.ts`;
   tests pin all five equal. Readers decide on the flag OR the name, for nodes
   written before the flag.
+- **The legacy path (domain discovery off) keeps what it does not run.**
+  `_run_pipeline` clears the graph, then `run_domain_group`'s legacy branch
+  reloads the previous run's file and re-runs only HTTP probing, resource
+  enumeration, AI Surface, JS Recon and vuln_scan on it. Every other recon
+  source (Shodan, InternetDB, Netlas, Criminal IP, nmap NSE, GraphQL,
+  takeover, VHost/SNI, cache poisoning, WCVS, origin discovery, serialized
+  scan) is noted degraded first (`_note_legacy_unrun_sources`), so the prune
+  keeps its findings. The branch rebuilds the Domain and Subdomain nodes from
+  the file (`_write_legacy_domain_nodes`, synchronous, after the RoE filter,
+  which covers `subdomains`, `subdomain_status_map` and `dns.subdomains`),
+  resets the graph writer so its background writes land, and drains it before
+  the coverage record. The file can carry the previous run's
+  `technology_cves` when the CVE lookup does not run this time, and IP
+  attribution is not re-run on this path.
 - **A stopped scan runs step 3, never step 2.** Python is PID 1 in the recon
   container, so it installs its own SIGTERM handler before anything else
   (`recon/helpers/shutdown.py`, from the top of `main.py` and

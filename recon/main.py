@@ -2997,6 +2997,65 @@ def _run_pipeline():
     return rc
 
 
+# What run_domain_group's legacy branch (domain_discovery off) can re-check:
+# http_probe, resource_enum (with jsluice), AI Surface, JS Recon and vuln_scan
+# with its security checks. Every other recon source is never run there.
+_LEGACY_PATH_SOURCES = frozenset({
+    "http_probe", "resource_enum", "jsluice", "ai_surface_recon", "js_recon",
+    "nuclei", "security_check", "vuln_scan",
+})
+
+
+def _note_legacy_unrun_sources() -> None:
+    """Keep the findings of every recon source the legacy path does not run:
+    they were not re-checked, so the prune must not read them as gone."""
+    unrun = [s for s in RECON_FINDING_SOURCES if s not in _LEGACY_PATH_SOURCES]
+    if not unrun:
+        return
+    print(f"[*][Pipeline] Domain discovery is off: {len(unrun)} finding source(s) this "
+          f"path does not run keep their earlier findings")
+    try:
+        from recon.helpers import circuit_breaker
+        circuit_breaker.note_degraded("legacy_pipeline", sources=unrun,
+                                      reason="not run: domain discovery is off")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _drop_roe_excluded_subdomains(domain_result: dict, excluded: list) -> None:
+    """Remove RoE-excluded hosts from a loaded recon file, wherever it lists them."""
+    subs = (domain_result.get('dns') or {}).get('subdomains') or {}
+    status_map = domain_result.get('subdomain_status_map') or {}
+    listed = domain_result.get('subdomains') or []
+    dropped = {h for h in [*subs, *listed, *status_map] if _is_roe_excluded(h, excluded)}
+    if not dropped:
+        return
+    for host in dropped:
+        subs.pop(host, None)
+        status_map.pop(host, None)
+    domain_result['subdomains'] = [h for h in listed if h not in dropped]
+    if 'subdomain_count' in domain_result:
+        domain_result['subdomain_count'] = len(domain_result['subdomains'])
+    print(f"[RoE] Removed {len(dropped)} excluded subdomain(s) from loaded recon file")
+
+
+def _write_legacy_domain_nodes(domain_result: dict) -> None:
+    """Rebuild the Domain and Subdomain nodes from the loaded file. Synchronous,
+    like the legacy path's other writes; never raises."""
+    if not UPDATE_GRAPH_DB:
+        return
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if not graph_client.verify_connection():
+                print("[!][graph-db] Could not connect to Neo4j - Domain and subdomains not rebuilt")
+                return
+            graph_client.update_graph_from_domain_discovery(domain_result, USER_ID, PROJECT_ID)
+            print("[+][graph-db] Domain and subdomains rebuilt from the loaded recon file")
+    except Exception as e:  # noqa: BLE001
+        print(f"[!][graph-db] Could not rebuild the Domain and subdomains: {e}")
+
+
 def run_domain_group(group: dict, start_time=None) -> int:
     """Run the whole domain pipeline for ONE scope group: a single-domain
     project's one group, or one group of a Domain batch.
@@ -3116,23 +3175,27 @@ def run_domain_group(group: dict, start_time=None) -> int:
         )
         _stamp_project_roots(domain_result)
     else:
-        # Load existing recon file if domain_discovery not in modules
+        # The legacy path: domain_discovery is off, so the previous run's file
+        # is reloaded and a few phases run on it, after _run_pipeline cleared the
+        # graph. Its graph writes go through the background writer like the
+        # main pipeline's, and before anything can let the prune run, the recon
+        # sources this path never runs keep their findings.
+        _graph_reset()
+        _note_legacy_unrun_sources()
         if output_file.exists():
             with open(output_file, 'r') as f:
                 domain_result = json.load(f)
             _stamp_project_roots(domain_result)
             print(f"[*][Pipeline] Loaded existing recon file: {output_file}")
 
-            # RoE: filter excluded hosts from loaded recon data
+            # RoE: filter excluded hosts from every place the loaded file lists
+            # them; the domain writer reads the top-level list.
             if _settings.get('ROE_ENABLED') and _settings.get('ROE_EXCLUDED_HOSTS'):
-                roe_excluded = _settings['ROE_EXCLUDED_HOSTS']
-                dns_data = domain_result.get('dns', {})
-                subs = dns_data.get('subdomains', {})
-                excluded_subs = [s for s in subs if _is_roe_excluded(s, roe_excluded)]
-                for s in excluded_subs:
-                    del subs[s]
-                if excluded_subs:
-                    print(f"[RoE] Removed {len(excluded_subs)} excluded subdomain(s) from loaded recon file")
+                _drop_roe_excluded_subdomains(domain_result, _settings['ROE_EXCLUDED_HOSTS'])
+
+            # The clear removed the Domain and Subdomain nodes, and no other
+            # writer on this path MERGEs them (they only MATCH).
+            _write_legacy_domain_nodes(domain_result)
         else:
             print(f"[!][Pipeline] No existing recon file found: {output_file}")
             print(f"[!][Pipeline] Add 'domain_discovery' to SCAN_MODULES to create it first")
@@ -3447,7 +3510,9 @@ def run_domain_group(group: dict, start_time=None) -> int:
 
     # The prune is run-level (see _run_pipeline / run_domain_batch): a batch
     # group that pruned here would delete the later groups' findings before
-    # they were rescanned.
+    # they were rescanned. The group's queued writes land first, so the record
+    # is stamped on what they wrote (the legacy path's Domain included).
+    _graph_wait_all()
     _write_coverage_record(root_domain, coverage_group)
 
     return 0
