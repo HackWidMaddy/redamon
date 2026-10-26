@@ -279,7 +279,7 @@ export type { JudgedFindingCounts }
 
 export interface SubdomainMapping {
   subdomain: string
-  ips: { address: string; version: string | null; isCdn: boolean; cdnName: string | null }[]
+  ips: { address: string; version: string | null; isCdn: boolean; cdnName: string | null; ownership: string | null }[]
   openPorts: number
 }
 
@@ -289,6 +289,8 @@ export interface IpMapping {
   isCdn: boolean
   cdnName: string | null
   asn: string | null
+  /** IP attribution tag: shared_edge | dedicated | unknown; null when no run attributed it. */
+  ownership: string | null
   hostnames: string[]
   openPorts: number
 }
@@ -1082,7 +1084,8 @@ export async function queryGraphOverview(session: any, pid: string) {
      OPTIONAL MATCH (s)-[:RESOLVES_TO]->(ip:IP)
      OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)
      RETURN s.name AS subdomain,
-            collect(DISTINCT {address: ip.address, version: ip.version, isCdn: ip.is_cdn, cdnName: ip.cdn_name}) AS ips,
+            collect(DISTINCT {address: ip.address, version: ip.version, isCdn: ip.is_cdn, cdnName: ip.cdn_name,
+                              ownership: ip.ownership}) AS ips,
             count(DISTINCT port) AS openPorts
      ORDER BY subdomain`,
     { pid }
@@ -1093,7 +1096,7 @@ export async function queryGraphOverview(session: any, pid: string) {
      OPTIONAL MATCH (s:Subdomain {project_id: $pid})-[:RESOLVES_TO]->(ip)
      OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)
      RETURN ip.address AS ip, ip.version AS version, ip.is_cdn AS isCdn,
-            ip.cdn_name AS cdnName, ip.asn AS asn,
+            ip.cdn_name AS cdnName, ip.asn AS asn, ip.ownership AS ownership,
             collect(DISTINCT s.name) AS hostnames,
             count(DISTINCT port) AS openPorts
      ORDER BY ip`,
@@ -1117,6 +1120,7 @@ export async function queryGraphOverview(session: any, pid: string) {
       version: ip.version as string | null,
       isCdn: ip.isCdn === true,
       cdnName: ip.cdnName as string | null,
+      ownership: (ip.ownership as string | null) ?? null,
     })),
     openPorts: toNum(r.get('openPorts')),
   }))
@@ -1127,6 +1131,7 @@ export async function queryGraphOverview(session: any, pid: string) {
     isCdn: r.get('isCdn') === true,
     cdnName: r.get('cdnName') as string | null,
     asn: r.get('asn') as string | null,
+    ownership: (r.get('ownership') as string | null) ?? null,
     hostnames: (r.get('hostnames') as any[]).filter((h: any) => h != null),
     openPorts: toNum(r.get('openPorts')),
   }))

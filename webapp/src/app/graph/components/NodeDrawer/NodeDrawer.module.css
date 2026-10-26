@@ -124,6 +124,12 @@
   white-space: pre-wrap;
 }
 
+/* A sentence, not an identifier: wrap at spaces on a narrow drawer. */
+.proseValue {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
 .propertyBadge {
   display: inline-block;
   padding: var(--space-0-5) var(--space-2);

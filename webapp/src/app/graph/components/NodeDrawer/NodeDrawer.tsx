@@ -8,6 +8,7 @@ import { COVERAGE_STAMP_PROPERTIES, coverageLines, recordedCoverageModules } fro
 import { copyText } from '@/lib/copyText'
 import { muteableLabel } from '@/lib/muteTarget'
 import { dispositionText, readDisposition } from '@/lib/triage/disposition'
+import { OWNERSHIP_PROPERTIES, ownershipLine } from '@/lib/ipOwnership'
 import { GraphData, GraphNode } from '../../types'
 import { badgeColors, buildNodeContext, getNodeColor, getNodeUrl, nodeLabel } from '../../utils'
 import { domainScopeRoots, scanRootBadge } from '../../utils/scopeRootsForNode'
@@ -116,7 +117,12 @@ export function NodeDrawer({
     ? coverageLines(displayNode.properties ?? {}, recordedModules)
     : []
 
-  const hiddenKeys = ['project_id', 'user_id', ...(coverage.length ? COVERAGE_STAMP_PROPERTIES : [])]
+  const isIp = displayNode?.type === 'IP'
+  const hiddenKeys: string[] = [
+    'project_id', 'user_id',
+    ...(coverage.length ? COVERAGE_STAMP_PROPERTIES : []),
+    ...(isIp ? OWNERSHIP_PROPERTIES : []),
+  ]
   const sortedProperties = displayNode
     ? Object.entries(displayNode.properties || {})
         .filter(([key]) => !hiddenKeys.includes(key))
@@ -274,6 +280,14 @@ export function NodeDrawer({
                 })()}
               </span>
             </div>
+            {isIp && (
+              <div className={styles.propertyRow} data-testid="drawer-ownership">
+                <span className={styles.propertyKey}>Ownership</span>
+                <span className={`${styles.propertyValue} ${styles.proseValue}`}>
+                  {ownershipLine(displayNode.properties)}
+                </span>
+              </div>
+            )}
             {disposition && (
               <div className={styles.propertyRow} data-testid="drawer-disposition">
                 <span className={styles.propertyKey}>Disposition</span>

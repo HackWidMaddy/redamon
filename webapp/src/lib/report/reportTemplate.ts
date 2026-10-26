@@ -11,6 +11,7 @@ import type { ReportData, VulnFinding, CveChain, ExploitRecord, JsReconCoverage 
 import { type ScopeGroup, groupLabel, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
 import { projectTargetLabel } from '@/lib/projectSummary'
 import { validationLabel } from '@/lib/secrets/validationStatus'
+import { ownershipLabel } from '@/lib/ipOwnership'
 import {
   DISPOSITION_LABELS, DISPOSITION_MEANINGS, SCANNER_SEVERITY_LABEL, topBlockers,
   type DispositionSummary,
@@ -707,7 +708,7 @@ function renderExecutiveSummary(data: ReportData, narrative?: string): string {
 </div>`
 }
 
-function renderScope(data: ReportData, narrative?: string): string {
+export function renderScope(data: ReportData, narrative?: string): string {
   const { project, graphOverview } = data
   const p = project as any
   const isIpMode = p.ipMode === true
@@ -748,7 +749,11 @@ function renderScope(data: ReportData, narrative?: string): string {
               const cdn = ip.isCdn && ip.cdnName
                 ? ` <span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;background:#dbeafe;color:#1d4ed8">${esc(ip.cdnName)}</span>`
                 : ''
-              return `${esc(ip.address)}${cdn}`
+              // An unknown or missing tag says nothing worth a client's attention here.
+              const owner = ip.ownership === 'shared_edge' || ip.ownership === 'dedicated'
+                ? ` <span style="color:#6b7280;font-size:10px">${esc(ownershipLabel(ip.ownership).toLowerCase())}</span>`
+                : ''
+              return `${esc(ip.address)}${cdn}${owner}`
             }).join('<br/>')
           : '<span style="color:#9ca3af;font-style:italic">Unresolved</span>'
         const ports = m.ips.length > 0 ? String(m.openPorts) : '<span style="color:#9ca3af">-</span>'
@@ -774,12 +779,12 @@ function renderScope(data: ReportData, narrative?: string): string {
         const cdn = m.isCdn && m.cdnName
           ? `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;background:#dbeafe;color:#1d4ed8">${esc(m.cdnName)}</span>`
           : '<span style="color:#9ca3af">-</span>'
-        return `<tr><td>${esc(m.ip)}</td><td>${esc(m.version || '')}</td><td>${hostnames}</td><td>${cdn}</td><td>${m.openPorts}</td></tr>`
+        return `<tr><td>${esc(m.ip)}</td><td>${esc(m.version || '')}</td><td>${hostnames}</td><td>${cdn}</td><td>${esc(ownershipLabel(m.ownership))}</td><td>${m.openPorts}</td></tr>`
       }).join('')
       mappingTable = `
   <h3>IP Target Map</h3>
   <table class="data-table">
-    <thead><tr><th>IP Address</th><th>Version</th><th>Hostnames</th><th>CDN</th><th>Open Ports</th></tr></thead>
+    <thead><tr><th>IP Address</th><th>Version</th><th>Hostnames</th><th>CDN</th><th>Ownership</th><th>Open Ports</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`
     } else {

@@ -276,3 +276,38 @@ describe('NodeDrawer disposition line (plan 10.2b)', () => {
     expect(screen.queryByTestId('drawer-disposition')).toBeNull()
   })
 })
+
+describe('NodeDrawer ownership line (plan 11.4)', () => {
+  const ip = (properties: Record<string, unknown>): GraphNode =>
+    ({ id: '9', type: 'IP', name: '198.51.100.20', properties })
+
+  it('an IP says whose it is, and why', () => {
+    renderDrawer({ node: ip({
+      ownership: 'shared_edge', cdn_name: 'cloudflare',
+      ownership_reasons: ['default certificate covers no target domain', 'in a published CDN edge range'],
+    }) })
+    const row = screen.getByTestId('drawer-ownership')
+    expect(row).toHaveTextContent('Ownership')
+    expect(row).toHaveTextContent(
+      'Shared edge (Cloudflare): default certificate covers no target domain; in a published CDN edge range')
+  })
+
+  it('an IP no run attributed yet says not checked yet', () => {
+    renderDrawer({ node: ip({ address: '198.51.100.20' }) })
+    expect(screen.getByTestId('drawer-ownership')).toHaveTextContent('not checked yet')
+  })
+
+  it('the raw keys leave the property list, the other IP properties stay', () => {
+    renderDrawer({ node: ip({ ownership: 'dedicated', ownership_reasons: ['default certificate covers example.com'],
+      current_dns_names: 2 }) })
+    const props = screen.getByRole('heading', { name: 'Properties' }).parentElement!
+    expect(within(props).queryByText('ownership')).toBeNull()
+    expect(within(props).queryByText('ownership_reasons')).toBeNull()
+    expect(within(props).getByText('current_dns_names')).toBeInTheDocument()
+  })
+
+  it('a node that is not an IP has no ownership line', () => {
+    renderDrawer()
+    expect(screen.queryByTestId('drawer-ownership')).toBeNull()
+  })
+})

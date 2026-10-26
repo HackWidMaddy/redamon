@@ -174,6 +174,21 @@ describe('computeReconDelta', () => {
     expect(VOLATILE_PROPERTIES.has('last_seen')).toBe(true)
   })
 
+  test("an IP's ownership tag tracks target state, so a real change shows (plan 11.3)", () => {
+    // The lists are written sorted by recon, so the same state compares equal.
+    const props = { address: '198.51.100.20', ownership: 'unknown', current_dns_names: 1,
+      ownership_reasons: ['default certificate covers no target domain', 'no CDN or edge signal'],
+      default_cert_names: ['a.example.com', 'b.example.com'] }
+    for (const p of ['ownership', 'ownership_reasons', 'default_cert_names', 'current_dns_names']) {
+      expect(VOLATILE_PROPERTIES.has(p)).toBe(false)
+    }
+    const a = graph([node('1', 'IP', props)])
+    expect(computeReconDelta(a, graph([node('2', 'IP', { ...props })])).totals)
+      .toMatchObject({ changed: 0, stable: 1 })
+    const moved = graph([node('3', 'IP', { ...props, ownership: 'shared_edge', current_dns_names: 0 })])
+    expect(computeReconDelta(a, moved).totals).toMatchObject({ changed: 1 })
+  })
+
   test('a BaseURL coverage stamp never registers as a change (plan 09.1)', () => {
     // Every run restamps every host it looked at; the target did not change.
     for (const p of COVERAGE_STAMP_PROPERTIES) expect(VOLATILE_PROPERTIES.has(p)).toBe(true)
