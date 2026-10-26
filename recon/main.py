@@ -316,47 +316,13 @@ def _drain_graph_writes(deadline: float) -> None:
               f"before the deadline", flush=True)
 
 
-# RoE excluded-host matching lives in recon.helpers.roe_scope so active scanners
-# (origin_discovery) can enforce it without importing this module. Re-exported
-# here so `from main import _is_roe_excluded/_filter_roe_excluded` still resolves.
-from recon.helpers.roe_scope import _is_roe_excluded, _filter_roe_excluded
+# RoE matching and the time window live in recon.helpers.roe_scope so the
+# modules can enforce them without importing this file (which would re-run its
+# top level as a second module). Re-exported so the old `main` names resolve,
+# and _run_pipeline calls the module-global name, which tests monkeypatch.
+from recon.helpers.roe_scope import _is_roe_excluded, _filter_roe_excluded, _check_roe_time_window
 
 
-def _check_roe_time_window(settings: dict, _now=None) -> tuple[bool, str]:
-    """Check if current time is within the RoE-allowed window.
-
-    Returns (allowed, reason_message). Always returns (True, "") if
-    RoE or its time window is disabled. Pass _now for testing.
-    """
-    if not settings.get('ROE_ENABLED') or not settings.get('ROE_TIME_WINDOW_ENABLED'):
-        return True, ""
-
-    from datetime import datetime as _dt
-    import zoneinfo as _zi
-
-    tz_name = settings.get('ROE_TIME_WINDOW_TIMEZONE', 'UTC')
-    try:
-        tz = _zi.ZoneInfo(tz_name)
-    except Exception:
-        print(f"[RoE] Unknown timezone '{tz_name}', falling back to UTC")
-        tz = _zi.ZoneInfo('UTC')
-
-    now = _now or _dt.now(tz)
-
-    # Check day of week
-    allowed_days = [d.lower() for d in settings.get('ROE_TIME_WINDOW_DAYS', [])]
-    current_day = now.strftime('%A').lower()
-    if current_day not in allowed_days:
-        return False, f"Current day ({current_day}) is not in allowed days: {', '.join(allowed_days)} ({tz_name})"
-
-    # Check time range
-    start = settings.get('ROE_TIME_WINDOW_START_TIME', '09:00')
-    end = settings.get('ROE_TIME_WINDOW_END_TIME', '18:00')
-    current_time = now.strftime('%H:%M')
-    if current_time < start or current_time >= end:
-        return False, f"Current time ({current_time} {tz_name}) is outside allowed window ({start}\u2013{end})"
-
-    return True, ""
 
 
 def _merge_external_domain(aggregated: dict, entry: dict):
@@ -950,136 +916,13 @@ def _run_ip_attribution(combined_result: dict, settings: dict, output_file) -> N
         combined_result["metadata"].setdefault("phase_errors", {})["ip_attribution"] = str(e)
 
 
-def _apply_nmap_detail(ps_pd: dict, nmap_pd: dict) -> None:
-    if nmap_pd.get("product"):
-        ps_pd["product"] = nmap_pd["product"]
-    if nmap_pd.get("version"):
-        ps_pd["version"] = nmap_pd["version"]
-    if nmap_pd.get("cpe"):
-        ps_pd["cpe"] = nmap_pd["cpe"]
-    if nmap_pd.get("scripts"):
-        ps_pd["scripts"] = nmap_pd["scripts"]
-
-
-def _add_nmap_confirmed_ports(nmap_data: dict, port_scan: dict) -> list:
-    """Add the open ports nmap confirmed that the port scan did not report.
-
-    nmap probes every IP with the union of all IPs' ports, so it can confirm a
-    port naabu/masscan missed on one of them. Each one joins by_ip, every
-    by_host entry on that IP, all_ports and the summary counts in naabu's
-    shape, and is returned for the graph writer, which creates its Port node.
-    A CDN edge is skipped: NAABU_EXCLUDE_CDN limits those to 80/443 on purpose,
-    and an edge's other ports belong to the CDN, not to the target.
-    """
-    from recon.main_recon_modules.nmap_scan import normalize_ip
-
-    by_ip = port_scan.get("by_ip") or {}
-    by_host = port_scan.get("by_host") or {}
-    ip_keys = {normalize_ip(ip): ip for ip in by_ip}
-    hosts_on: dict = {}
-    for entry in by_host.values():
-        if isinstance(entry, dict) and entry.get("ip"):
-            hosts_on.setdefault(normalize_ip(entry["ip"]), []).append(entry)
-
-    added = []
-    for nmap_host in (nmap_data.get("by_host") or {}).values():
-        ip = normalize_ip(nmap_host.get("ip"))
-        if not ip:
-            continue
-        ip_entry = by_ip.get(ip_keys.get(ip))
-        if not isinstance(ip_entry, dict):
-            ip_entry = None
-        if ip_entry is not None and ip_entry.get("is_cdn"):
-            continue
-        entries = hosts_on.get(ip, [])
-        known = set((ip_entry or {}).get("ports") or [])
-        for entry in entries:
-            known.update(entry.get("ports") or [])
-
-        for nmap_pd in nmap_host.get("port_details", []):
-            port = nmap_pd.get("port")
-            if not port or port in known or nmap_pd.get("state", "open") != "open":
-                continue
-            known.add(port)
-            protocol = nmap_pd.get("protocol") or "tcp"
-            service = nmap_pd.get("service") or ""
-            if ip_entry is not None:
-                ip_entry.setdefault("ports", []).append(port)
-                ip_entry["ports"].sort()
-                if isinstance(ip_entry.get("port_details"), list):
-                    ip_entry["port_details"].append(
-                        {"port": port, "protocol": protocol, "service": service})
-            for entry in entries:
-                entry.setdefault("ports", []).append(port)
-                entry["ports"].sort()
-                detail = {"port": port, "protocol": protocol, "service": service}
-                _apply_nmap_detail(detail, nmap_pd)
-                entry.setdefault("port_details", []).append(detail)
-                entry["port_details"].sort(key=lambda x: x["port"])
-            added.append({"ip": ip_keys.get(ip) or nmap_host.get("ip"), "port": port,
-                          "protocol": protocol, "service": service})
-
-    if added:
-        all_ports = sorted(set(port_scan.get("all_ports") or []) | {a["port"] for a in added})
-        port_scan["all_ports"] = all_ports
-        summary = port_scan.get("summary")
-        if isinstance(summary, dict):
-            if "total_open_ports" in summary:
-                summary["total_open_ports"] = sum(len(h.get("ports", [])) for h in by_host.values())
-            if "hosts_with_open_ports" in summary:
-                summary["hosts_with_open_ports"] = len([h for h in by_host.values() if h.get("ports")])
-            if "unique_ports" in summary:
-                summary["unique_ports"] = all_ports
-            if "unique_port_count" in summary:
-                summary["unique_port_count"] = len(all_ports)
-    return added
-
-
-def merge_nmap_into_port_scan(combined_result: dict) -> None:
-    """
-    Merge Nmap service version data into port_scan.port_details.
-
-    Enriches existing port_details entries (from Naabu/Masscan) with Nmap's
-    product, version, CPE, and NSE script results, and adds the open ports nmap
-    confirmed that the port scan missed (listed in nmap_scan.new_open_ports).
-    """
-    from recon.main_recon_modules.nmap_scan import normalize_ip
-
-    nmap_data = combined_result.get("nmap_scan", {})
-    port_scan = combined_result.get("port_scan", {})
-    if not nmap_data or not port_scan:
-        return
-
-    enriched_count = 0
-
-    for host, nmap_host in nmap_data.get("by_host", {}).items():
-        ps_host = port_scan.get("by_host", {}).get(host)
-        if not ps_host:
-            continue
-        # A hostname can front several IPs; never copy one IP's versions onto another's ports.
-        if (ps_host.get("ip") and nmap_host.get("ip")
-                and normalize_ip(ps_host["ip"]) != normalize_ip(nmap_host["ip"])):
-            continue
-        for nmap_pd in nmap_host.get("port_details", []):
-            for ps_pd in ps_host.get("port_details", []):
-                if ps_pd.get("port") == nmap_pd.get("port"):
-                    _apply_nmap_detail(ps_pd, nmap_pd)
-                    enriched_count += 1
-                    break
-
-    added = _add_nmap_confirmed_ports(nmap_data, port_scan)
-    if added:
-        nmap_data["new_open_ports"] = added
-        print(f"[+][Nmap] Added {len(added)} open port(s) the port scan did not report")
-
-    # Update scan_metadata to include nmap
-    scanners = port_scan.get("scan_metadata", {}).get("scanners", [])
-    if "nmap" not in scanners:
-        scanners.append("nmap")
-        port_scan.get("scan_metadata", {})["scanners"] = scanners
-
-    if enriched_count:
-        print(f"[+][Nmap] Enriched {enriched_count} port(s) with service version data")
+# The Nmap merge lives in recon.helpers.nmap_merge, so partial recon reaches it
+# without importing this file.
+from recon.helpers.nmap_merge import (  # noqa: E402
+    _add_nmap_confirmed_ports,
+    _apply_nmap_detail,
+    merge_nmap_into_port_scan,
+)
 
 
 def _merge_isolated_result(combined: dict, key: str, result) -> None:

@@ -1522,8 +1522,10 @@ class TestRunNmap(unittest.TestCase):
         mock_nmap_mod = MagicMock()
         mock_nmap_mod.run_nmap_scan = mock_nmap_scan
 
-        mock_main_mod = MagicMock()
-        mock_main_mod.merge_nmap_into_port_scan = mock_merge
+        # run_nmap takes the merge from recon.helpers.nmap_merge (plan 12.15:
+        # importing recon.main re-ran the pipeline's top level).
+        mock_merge_mod = MagicMock()
+        mock_merge_mod.merge_nmap_into_port_scan = mock_merge
 
         mock_graph_db = MagicMock()
         mock_graph_db.Neo4jClient = mock_neo4j_cls
@@ -1533,7 +1535,7 @@ class TestRunNmap(unittest.TestCase):
         modules_to_mock = {
             'recon.project_settings': mock_project_settings,
             'recon.main_recon_modules.nmap_scan': mock_nmap_mod,
-            'recon.main': mock_main_mod,
+            'recon.helpers.nmap_merge': mock_merge_mod,
             'graph_db': mock_graph_db,
         }
         for name, mod in modules_to_mock.items():
@@ -1724,8 +1726,8 @@ class TestRunNmapStructuredTargets(unittest.TestCase):
         mock_nmap_mod = MagicMock()
         mock_nmap_mod.run_nmap_scan = mock_nmap_scan
 
-        mock_main_mod = MagicMock()
-        mock_main_mod.merge_nmap_into_port_scan = mock_merge
+        mock_merge_mod = MagicMock()
+        mock_merge_mod.merge_nmap_into_port_scan = mock_merge
 
         mock_graph_db = MagicMock()
         mock_graph_db.Neo4jClient = mock_neo4j_cls
@@ -1734,7 +1736,7 @@ class TestRunNmapStructuredTargets(unittest.TestCase):
         modules_to_mock = {
             'recon.project_settings': mock_project_settings,
             'recon.main_recon_modules.nmap_scan': mock_nmap_mod,
-            'recon.main': mock_main_mod,
+            'recon.helpers.nmap_merge': mock_merge_mod,
             'graph_db': mock_graph_db,
         }
         for name, mod in modules_to_mock.items():
