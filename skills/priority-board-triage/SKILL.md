@@ -78,12 +78,15 @@ For the Cypher itself, also follow `graph-db-writes`; for a new MCP tool,
   an upgrade adopts an unchanged review-v1 review through `build_bundle_legacy`,
   and unmute applies the same cleanup to muted nodes. Readers that branch on this:
   `score_model.finding_state`, `reportData.ts`, `projectRisk.ts`,
-  `webapp/src/lib/triage/reportable.ts`, `tooling/scripts/triage_eval.py`.
+  `webapp/src/lib/triage/reportable.ts`, `webapp/src/lib/triage/disposition.ts`,
+  `tooling/scripts/triage_eval.py`.
 - **An AI review never removes a finding from a deliverable.** The report,
   Insights and the MCP analytics count through `reportable.ts`: only a person's
   `likely_noise` (with `triage_source = 'human'`) or a resolved state takes a
   finding out of their numbers. A reviewer reads target-controlled text, so its
-  `false_positive` stays counted and is labelled.
+  `false_positive` stays counted and is labelled. The same holds for a finding's
+  disposition (`disposition.ts`, built on `reportable.ts`): an AI false positive
+  is a `candidate` with a blocker, never `excluded` and never `reportable`.
 - **A new stored `triage_*` property goes in `TRIAGE_PROPS`** (triage_mixin.py),
   which feeds `triage_graph_migrate.py`, and in `TRIAGE_PROPERTIES`
   (`webapp/src/lib/triage/properties.ts`), which keeps it out of the Recon Delta.
