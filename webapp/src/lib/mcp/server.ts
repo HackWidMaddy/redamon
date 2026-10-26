@@ -106,6 +106,7 @@ import {
 import { MUTEABLE_FINDING_LABELS } from '@/lib/mcp/findingLabels'
 import { listGraphViews, runGraphView } from '@/lib/mcp/viewTools'
 import { FINDING_SECTIONS, listFindings, listMuted } from '@/lib/mcp/findingTools'
+import { DISPOSITIONS } from '@/lib/triage/disposition'
 import { compareScanVersions, listScanVersions } from '@/lib/mcp/versionTools'
 import { startRecon, stopRecon, updateReconSettings } from '@/lib/mcp/writeTools'
 import {
@@ -501,6 +502,14 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'that review still describes the evidence. get_finding_triage says why a finding ranks ' +
         'where it does. `decidedBy`, `reviewedVia` and `reviewCurrent` filter in the graph, so ' +
         'their `total` is exact.\n\n' +
+        '`disposition` answers "can this go in a report?", as the RedAmon report counts it. ' +
+        'Report ONLY `reportable` findings (proven by an exploit or a validator, or confirmed by ' +
+        'a person). Treat `candidate` as "verify first": its `blocker` says what is missing ' +
+        '(not triaged yet, the tier rule that held it back, or an AI review that called it a ' +
+        'likely false positive, which is NOT a person\'s verdict). `info` has no impact even if ' +
+        'real; `excluded` was judged a false positive by a person, or resolved. The ' +
+        '`disposition`, `severity` and `section` filters apply to the highest-ranked window this ' +
+        'tool reads; `totalIsPartial` says when that window was full.\n\n' +
         'With the separate mute permission, hide noise you have independent evidence for with ' +
         'mute_findings (it takes either id).\n\n' +
         `${UNTRUSTED_DATA_NOTE}`,
@@ -513,6 +522,8 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         severity: z.string().optional().describe('critical | high | medium | low | info.'),
         section: z.enum(FINDING_SECTIONS as [string, ...string[]]).optional()
           .describe('Narrow to one board section.'),
+        disposition: z.enum(DISPOSITIONS).optional()
+          .describe('Narrow to one disposition: reportable | candidate | info | excluded.'),
         decidedBy: z.enum(['person', 'review', 'rules']).optional()
           .describe('Only findings whose final score this layer set.'),
         reviewedVia: z.enum(['builtin', 'mcp', 'none']).optional()
@@ -528,7 +539,7 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
       'list_findings',
       a => listFindings(ctx, a.projectId, {
         limit: a.limit, offset: a.offset, severity: a.severity,
-        section: a.section, includeQuotes: a.includeQuotes,
+        section: a.section, disposition: a.disposition, includeQuotes: a.includeQuotes,
         decidedBy: a.decidedBy, reviewedVia: a.reviewedVia, reviewCurrent: a.reviewCurrent,
       }),
       a => a.projectId

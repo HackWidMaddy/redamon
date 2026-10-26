@@ -316,6 +316,7 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
       'Findings are split into sections: `ranked`, `not_triaged`, `likely_false_positive` and `resolved`. `resolved` means a scanner stopped reporting it, NOT that a human fixed it.',
       '`triage_priority_score` is the FINAL score; `triage_math_score` is the rules-only one, and `triage_decided_by` says which layer set the final (`rules`, `review`, `person`). A finding in `likely_false_positive` with `triage_decided_by: review` was called noise by a review, not by a person.',
       'Filter by `decidedBy`, `reviewedVia` or `reviewCurrent` to find the findings a layer decided; those filters give an exact total.',
+      'Report only `disposition: reportable` findings: proven, or confirmed by a person. A `candidate` is unverified; its `blocker` says what to check first. `info` has no impact even if real. An AI review\'s "likely false positive" leaves a finding a `candidate`, never `excluded`.',
       'Suppressed findings are not here at all. Without checking the muted list you cannot tell "nothing found" from "somebody hid it".',
       'A finding carrying `stale_since` was dropped by a later scan but kept because a human had touched it. It is not current, and it is not fixed.',
       'The list is capped. Read the returned and total counts and page, or say the answer is partial.',
@@ -985,7 +986,7 @@ export const WORKFLOWS: Workflow[] = [
     requiredTools: ['graph_summary', 'list_findings', 'list_muted_findings', 'list_remediations'],
     body: [
       '1. `graph_summary`: what exists, and is the graph settled?',
-      '2. `list_findings`: the ranked list, already scored by the product.',
+      '2. `list_findings`: the ranked list, already scored by the product. Its `disposition` says what can go in the report: only `reportable` findings; list `candidate` ones apart, as unverified, by `blocker`.',
       '3. `list_muted_findings`: what a person or a Mute Rule suppressed. Without this you cannot tell "clean" from "hidden".',
       '4. `list_remediations`: the fixes, grouped as they should be ticketed.',
       '5. Report in three buckets that you never merge: found, scanned and not found, and not scanned or could not check.',
