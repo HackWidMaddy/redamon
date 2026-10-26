@@ -27,6 +27,11 @@ Plan 10A, disposition, on the main project after its Priority Board run:
 `--disposition decided`. Each prints CANDIDATES=<n>, the count the report's
 candidate total must equal. These read through list_findings as well.
 
+Plan 10B, the stored disposition, after a v3.10 Priority Board run:
+`--disposition-stored before` and, after the decide step, `--disposition-stored
+decided` on the main project; `--disposition-stored http-layer` on the plan-03
+project. Each prints BLOCKERS=<the candidates per stored blocker>.
+
 Plan 11, IP attribution: `--ip-ownership` on the e2e_fp.py --ip-ownership
 project, `--ip-ownership-stealth <recon.log>` on its stealth twin (the log
 e2e_fp.py --log wrote), `--ip-ownership-nwlab` on the domain-mode project over
@@ -47,7 +52,8 @@ import mcp_client as mcp  # noqa: E402
 USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer"
          " | --passive-cves baseline|partial|unscanned|off | --js-coverage first | --js-coverage capped <n>"
          " | --vhost-origin | --coverage stamps|clean|lost | --coverage import <originalProjectId>"
-         " | --disposition before|decided | --ip-ownership | --ip-ownership-stealth <recon.log>"
+         " | --disposition before|decided | --disposition-stored before|decided|http-layer"
+         " | --ip-ownership | --ip-ownership-stealth <recon.log>"
          " | --ip-ownership-nwlab]")
 if len(sys.argv) not in (2, 3, 4, 5):
     sys.exit(USAGE)
@@ -420,7 +426,7 @@ def disposition_checks(stage):
         check("D-02", public and all(d == "info" for _, d in got_pub),
               f"public client keys: {got_pub} (expect info, whatever their tier)")
         check("D-03", aws and all(d == "candidate" and b for d, b in got_aws),
-              f"AWS keys: {got_aws} (expect candidates with a tier-rule blocker)")
+              f"AWS keys: {got_aws} (expect candidates that name a blocker)")
         sinks = q("""MATCH (f:JsReconFinding) WHERE f.finding_type = 'dom_sink'
                      RETURN f.id AS id, f.severity AS sev""")
         quiet = sorted({by_id.get(r["id"], {}).get("disposition") for r in sinks if r["sev"] == "info"}, key=str)
@@ -458,6 +464,117 @@ EDGE_SCANNER = "a scanner's CDN check named an edge CDN"
 NOT_IN_TARGET = "default certificate covers no target domain"
 STEALTH_SKIP = "default certificate not checked (stealth mode)"
 NO_443 = "default certificate not checked (port 443 not found open)"
+
+
+#: The run's own rule, imported rather than restated: score_model is stdlib-only.
+sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "agentic"))
+from cypherfix_triage import score_model as sm  # noqa: E402
+
+TRIAGED_LABELS = ("Vulnerability", "Secret", "JsReconFinding", "MultiscannerFinding", "GithubSecret",
+                  "GithubSensitiveFile", "ExploitGvm")
+
+
+def _stored():
+    """Every finding a triage run scored, with what the run stored."""
+    rows = []
+    for label in TRIAGED_LABELS:
+        rows += [dict(r, label=label) for r in q(f"""
+            MATCH (n:{label}) WHERE n.triage_run_id IS NOT NULL
+            RETURN n.id AS id, n.source AS source, n.name AS name, n.secret_type AS st,
+                   n.triage_state AS state, n.triage_status AS status, n.triage_source AS src,
+                   n.triage_tier_rule AS rule, n.triage_tier_inputs AS inputs,
+                   n.triage_disposition AS d, n.triage_blocker AS b, n.triage_model_version AS mv,
+                   n.port_confirmed AS pc, n.control_check AS cc, n.evidence AS ev,
+                   coalesce(n.triage_host, '') AS host
+            LIMIT 5000""")]
+    for r in rows:
+        try:
+            r["inputs"] = json.loads(r["inputs"]) if isinstance(r["inputs"], str) else (r["inputs"] or {})
+        except ValueError:
+            r["inputs"] = {}
+        r["gates"] = r["inputs"].get("gates") if isinstance(r["inputs"].get("gates"), dict) else None
+    return rows
+
+
+def _rule_says(r):
+    person = r["status"] if r["src"] == "human" and r["status"] in sm.DECISION_STATUSES else None
+    return sm.disposition_of(r["state"] or "open", r["rule"] or "", person, sm.TierInputs.from_dict(r["inputs"]))
+
+
+def disposition_stored_checks(stage):
+    """Plan 10B, after a v3.10 Priority Board run. `before` and `decided` on the
+    main project (as disposition_checks), `http-layer` on the plan-03 project,
+    whose security checks record a control."""
+    rows = _stored()
+    check("B-00", rows and all(r["mv"] == sm.SCORE_MODEL_VERSION for r in rows),
+          f"{len(rows)} scored findings, model versions {sorted({r['mv'] for r in rows}, key=str)} "
+          f"(expect every one rescored by {sm.SCORE_MODEL_VERSION})")
+    bad = [(r["id"], r["d"], r["b"]) for r in rows if r["d"] not in sm.DISPOSITIONS
+           or bool(r["b"]) != (r["d"] == "candidate") or r["gates"] is None]
+    check("B-01", rows and not bad, f"stored answers missing, malformed or without gates: {bad[:5]}")
+    drift = [(r["id"], (r["d"], r["b"]), _rule_says(r)) for r in rows if (r["d"], r["b"]) != _rule_says(r)]
+    check("B-02", not drift, f"stored answers the rule over the stored inputs disagrees with: {drift[:5]}")
+    listed_rows, _ = listed()
+    by_key = {(x["id"], x["label"]): (x.get("disposition"), x.get("blocker")) for x in listed_rows}
+    differ = [(r["id"], (r["d"], r["b"]), by_key.get((r["id"], r["label"]))) for r in rows
+              if by_key.get((r["id"], r["label"])) != (r["d"], r["b"])]
+    check("B-03", not differ, f"list_findings shows another answer than the stored one: {differ[:5]}")
+
+    counts = {}
+    for r in rows:
+        if r["d"] == "candidate":
+            counts[r["b"]] = counts.get(r["b"], 0) + 1
+    print("BLOCKERS=" + json.dumps(dict(sorted(counts.items(), key=lambda kv: -kv[1]))))
+
+    if stage == "http-layer":
+        api = [r for r in rows if r["source"] == "security_check" and r["cc"] == "passed"]
+        check("B-04", api and all(r["gates"]["controlled"] is True for r in api),
+              f"security checks whose control passed: {[(r['name'], r['gates']) for r in api]} "
+              f"(expect controlled true)")
+        return
+    cache = [r for r in rows if r["source"] == "cache_poisoning"]
+    secrets = [r for r in rows if r["label"] == "Secret"]
+    check("B-04", cache and all(r["gates"]["controlled"] is True for r in cache)
+          and secrets and all(r["gates"]["controlled"] is None for r in secrets),
+          f"cache poisoning (control passed): {[(r['name'], r['gates']['controlled'], r['b']) for r in cache]}; "
+          f"JS secrets (no control): {sorted({str(r['gates']['controlled']) for r in secrets})} "
+          f"(expect true for the first, null for the second)")
+    shodan = [r for r in rows if (r["source"] or "").lower() in sm.PASSIVE_CVE_SOURCES]
+    pairs = sorted({(str(r["pc"]), str(r["gates"]["reachable_now"]), r["d"]) for r in shodan})
+    want = {("True", "True"), ("False", "False"), ("None", "None")}
+    check("B-05", shodan and all((p, g) in want for p, g, _ in pairs)
+          and all(d == "excluded" for p, _, d in pairs if p == "False"),
+          f"Shodan CVEs (port_confirmed, reachable now, disposition): {pairs} (expect the port scan to "
+          f"decide: confirmed reachable, closed excluded, unscanned unknown)")
+    tags = _ownership(sorted({sm._gate_name(r["host"]) for r in rows
+                              if sm._gate_name(r["host"]).startswith(NET + ".")}))
+    off = []
+    for r in rows:
+        tag = (tags.get(sm._gate_name(r["host"])) or {}).get("own")
+        want = (False if tag == "shared_edge" else True if tag in ("unknown", "dedicated") else None)
+        if r["host"] and sm._gate_name(r["host"]) in tags and r["gates"]["attributed"] is not want:
+            off.append((r["id"], r["host"], tag, r["gates"]["attributed"]))
+    check("B-06", tags and not off, f"findings whose attributed gate disagrees with their IP's tag "
+                                    f"({sorted({(t or {}).get('own') for t in tags.values()}, key=str)}): {off[:5]}")
+    if stage == "before":
+        early = [(r["id"], r["d"]) for r in rows if r["d"] == "reportable"]
+        check("B-07", not early, f"stored reportable with no proof and no verdict: {early[:5]} (expect none)")
+    else:
+        mine = {(x["id"], x["label"]): x for x in listed_rows}
+        real = [(r["id"], r["d"]) for r in rows if r["src"] == "human" and r["status"] == "confirmed"]
+        noise = [(r["id"], r["d"], r["b"]) for r in rows if r["src"] == "human" and r["status"] == "likely_noise"]
+        ai = [(r["id"], r["d"], r["b"]) for r in rows
+              if (mine.get((r["id"], r["label"])) or {}).get("reviewedBy") == "mcp" and r["state"] == "false_positive"]
+        check("B-07", real and all(d == "reportable" for _, d in real)
+              and noise and all(d == "excluded" and b is None for _, d, b in noise)
+              and all(d == "candidate" and b == sm.BLOCKER_AI_FALSE_POSITIVE for _, d, b in ai),
+              f"stored after the decisions: Real {real}, False positive {noise}, agent's FP review {ai} "
+              f"(expect reportable; excluded with no blocker; a candidate blocked by the AI review)")
+    out, err = mcp.call("graph_schema", {})
+    text = json.dumps(out)
+    names = ("triage_disposition", "triage_blocker", "reachable_now")
+    check("B-08", not err and all(n in text for n in names),
+          f"graph_schema mentions {[n for n in names if n in text]} (expect all of {list(names)})")
 
 
 def _ownership(addresses):
@@ -590,6 +707,10 @@ if len(sys.argv) > 2:
         sys.exit(report())
     if sys.argv[2] == "--disposition" and sys.argv[3:4] in (["before"], ["decided"]) and len(sys.argv) == 4:
         disposition_checks(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--disposition-stored" and sys.argv[3:4] in (["before"], ["decided"], ["http-layer"]) \
+            and len(sys.argv) == 4:
+        disposition_stored_checks(sys.argv[3])
         sys.exit(report())
     sys.exit(USAGE)
 

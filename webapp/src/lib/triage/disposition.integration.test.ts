@@ -6,7 +6,8 @@
  * board and MCP `list_findings` decide with `disposition`. Every shared vector
  * is written as a node and evaluated by both.
  *
- * Skipped unless a Neo4j answers. To run it:
+ * Skipped unless a Neo4j answers; the scanned-project check also needs
+ * REDAMON_DISPOSITION_PROJECT (add `-e REDAMON_DISPOSITION_PROJECT=<id>`). To run it:
  *   docker run --rm --network host -v "$PWD/webapp:/app" -w /app \
  *     -e NEO4J_URI=bolt://localhost:7687 -e NEO4J_USER -e NEO4J_PASSWORD \
  *     --entrypoint sh redamon-webapp -c \
@@ -15,7 +16,9 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest'
 import neo4j, { type Driver, type Session } from 'neo4j-driver'
 import vectors from './disposition.vectors.json'
-import { blockerCypher, disposition, dispositionCypher, queryDispositionSummary } from './disposition'
+import { blockerCypher, disposition, dispositionCypher, queryDispositionSummary, readSideDisposition } from './disposition'
+import { agentCandidateConfirmedOrNA, notMuted } from '@/lib/graphMute'
+import { MUTEABLE_FINDING_LABELS } from '@/lib/mcp/findingLabels'
 
 const URI = process.env.NEO4J_URI || 'bolt://localhost:7687'
 const USER = process.env.NEO4J_USER || 'neo4j'
@@ -77,6 +80,59 @@ describe('TS/Cypher parity of disposition', () => {
       want[r.disposition] += 1
       if (r.blocker) blockers.set(r.blocker, (blockers.get(r.blocker) ?? 0) + 1)
     }
+    expect(summary).toMatchObject(want)
+    expect(new Map(summary!.blockers.map((b) => [b.blocker, b.count]))).toEqual(blockers)
+  })
+})
+
+/**
+ * Plan 10.E, phase B: on a project a v3.10 Priority Board run scored (a lab
+ * project, by id in REDAMON_DISPOSITION_PROJECT), what the run stored on every
+ * finding is what the read-side rules compute from the same props.
+ */
+describe('the stored disposition equals the read-side one, on a scanned project', () => {
+  const project = process.env.REDAMON_DISPOSITION_PROJECT || ''
+
+  test('every finding the run scored', async (ctx) => {
+    if (!alive || !session || !project) ctx.skip()
+    const res = await session!.run(
+      `MATCH (n:${MUTEABLE_FINDING_LABELS.join('|')})
+       WHERE n.project_id = $pid AND ${notMuted('n')} AND n.triage_run_id IS NOT NULL
+       RETURN coalesce(n.id, n.finding_id) AS id, properties(n) AS props`,
+      { pid: project },
+    )
+    expect(res.records.length).toBeGreaterThan(0)
+    const differ: unknown[] = []
+    for (const r of res.records) {
+      const props = r.get('props') as Record<string, unknown>
+      const stored = { disposition: props.triage_disposition, blocker: props.triage_blocker ?? null }
+      const { triage_disposition: _d, triage_blocker: _b, ...rest } = props
+      if (JSON.stringify(readSideDisposition(rest)) !== JSON.stringify(stored) ||
+          JSON.stringify(disposition(props)) !== JSON.stringify(stored)) {
+        differ.push({ id: r.get('id'), stored, readSide: readSideDisposition(rest) })
+      }
+    }
+    console.info(`[disposition] ${res.records.length} findings of ${project} compared`)
+    expect(differ).toEqual([])
+  })
+
+  test('the report and Insights headline counts what the board and MCP show', async (ctx) => {
+    if (!alive || !session || !project) ctx.skip()
+    const res = await session!.run(
+      `MATCH (n:${MUTEABLE_FINDING_LABELS.join('|')})
+       WHERE n.project_id = $pid AND ${notMuted('n')} AND ${agentCandidateConfirmedOrNA('n')}
+       RETURN properties(n) AS props`,
+      { pid: project },
+    )
+    const want = { reportable: 0, candidate: 0, info: 0, excluded: 0 }
+    const blockers = new Map<string, number>()
+    for (const r of res.records) {
+      const d = disposition(r.get('props') as Record<string, unknown>)
+      want[d.disposition] += 1
+      if (d.blocker) blockers.set(d.blocker, (blockers.get(d.blocker) ?? 0) + 1)
+    }
+    const summary = await queryDispositionSummary(session!, project)
+    console.info(`[disposition] headline ${JSON.stringify(summary)}`)
     expect(summary).toMatchObject(want)
     expect(new Map(summary!.blockers.map((b) => [b.blocker, b.count]))).toEqual(blockers)
   })

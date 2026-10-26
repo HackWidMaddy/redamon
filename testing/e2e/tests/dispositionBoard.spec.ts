@@ -15,6 +15,10 @@ import { mintToken, signIn } from './auth'
  * else the project's newest stored report; REDAMON_EXPECT_CANDIDATES, when set,
  * is the candidate total it must print.
  *
+ * Plan 10.5: a stubbed row shows the blocker a run stored over its tier rule,
+ * and with REDAMON_EXPECT_STORED=1 (after a v3.10 Priority Board run) every
+ * live candidate names the gate, or the AI review, that holds it.
+ *
  * Requires the stack (the built webapp image). Run:
  *   REDAMON_PROJECT=<id> REDAMON_USER=<owner id> npx playwright test dispositionBoard
  */
@@ -60,15 +64,15 @@ test.beforeEach(async ({ context, baseURL }) => {
   })
 })
 
-async function openBoard(page: Page, stub = true) {
+async function openBoard(page: Page, stub = true, rows: Record<string, unknown>[] = ROWS) {
   if (stub) {
     await page.route('**/api/triage/findings?*', route => route.fulfill({
       status: 200, contentType: 'application/json',
-      body: JSON.stringify({ findings: ROWS, total: ROWS.length, latestRunId: 'run-e2e' }),
+      body: JSON.stringify({ findings: rows, total: rows.length, latestRunId: 'run-e2e' }),
     }))
     await page.route('**/api/triage/finding?*', route => {
       const id = new URL(route.request().url()).searchParams.get('findingId')
-      const row = ROWS.find(r => r.id === id)
+      const row = rows.find(r => r.id === id)
       return route.fulfill({
         status: 200, contentType: 'application/json',
         body: JSON.stringify({ row, group: [], detector: { key: '', real: 0, fp: 0 } }),
@@ -146,6 +150,29 @@ test('Board: on the project itself, every live row has a chip', async ({ page })
     els => els.map(e => e.getAttribute('title') ?? ''))) {
     expect(title.length).toBeGreaterThan(0)
   }
+})
+
+// Plan 10.5: a v3.10 run stores the answer, and its blocker names a gate.
+const GATE_BLOCKER = /, blocked by (not reachable now|shared edge|failed its control check|no impact shown|unknown: (reachable now|attributed|controlled|impactful)|AI review: likely false positive)$/
+const EXPECT_STORED = process.env.REDAMON_EXPECT_STORED === '1'
+
+test('Board: the blocker a run stored is shown over the tier rule', async ({ page }) => {
+  const stored = { ...ROWS[1], id: 'e2e-stored', name: 'Banner on a CDN edge',
+    triage_disposition: 'candidate', triage_blocker: 'shared edge' }
+  await openBoard(page, true, [stored])
+  await expect(chipOf(page, 'Banner on a CDN edge')).toHaveAttribute('title', /^Candidate, blocked by shared edge/)
+  await page.getByRole('button', { name: 'Banner on a CDN edge' }).click()
+  await expect(page.getByRole('complementary', { name: 'Finding details' }).getByTestId('disposition-line'))
+    .toHaveText('Disposition: Candidate, blocked by shared edge')
+})
+
+test('Board: on a project a v3.10 run scored, every candidate names the gate that holds it', async ({ page }) => {
+  test.skip(!EXPECT_STORED, 'set REDAMON_EXPECT_STORED=1 after a v3.10 Priority Board run')
+  await openBoard(page, false)
+  const titles = await page.locator('tbody [data-disposition="candidate"]').evaluateAll(
+    els => els.map(e => e.getAttribute('title') ?? ''))
+  expect(titles.length).toBeGreaterThan(0)
+  for (const title of titles) expect(title).toMatch(GATE_BLOCKER)
 })
 
 test('Report: the top summary leads with disposition, and severity is relabelled', async ({ page, playwright, baseURL }) => {

@@ -153,7 +153,31 @@ the host.
     total, and run `testing/e2e/tests/dispositionBoard.spec.ts` with
     `REDAMON_EXPECT_CANDIDATES=<n>`.
 
-11. **IP attribution (plan 11).** With the Shodan stub forwarded (step 1;
+11. **The stored disposition (plan 10B).** With a v3.10 agent, on the main
+    project after its Priority Board run, and on the HTTP-layer project (step 4)
+    after its own:
+
+    ```bash
+    python3 validate_e2e.py <id> --disposition-stored before    # prints BLOCKERS={...}
+    python3 e2e_fp.py --disposition-decide <id>
+    python3 validate_e2e.py <id> --disposition-stored decided
+    python3 validate_e2e.py <httpLayerId> --disposition-stored http-layer
+    ```
+
+    Then compare every finding's stored answer with what the webapp's read-side
+    rules compute from the same props, on the live graph:
+
+    ```bash
+    docker run --rm --network redamon-network -v "$PWD/../../../webapp:/app" -w /app \
+      -e NEO4J_URI=bolt://neo4j:7687 -e NEO4J_USER=neo4j -e NEO4J_PASSWORD \
+      -e REDAMON_DISPOSITION_PROJECT=<id> --entrypoint sh redamon-webapp -c \
+      'node_modules/.bin/vitest run src/lib/triage/disposition.integration.test.ts'
+    ```
+
+    and run `testing/e2e/tests/dispositionBoard.spec.ts` with
+    `REDAMON_EXPECT_STORED=1`.
+
+12. **IP attribution (plan 11).** With the Shodan stub forwarded (step 1;
     `e2e_fp.py` refuses to scan otherwise):
 
     ```bash
@@ -245,6 +269,13 @@ the host.
 | `.20` | sourceless DOM sinks beside the high hash sink | D-04 | the info sinks are info; the high and critical sinks are candidates |
 | all | no proof and no verdict in the lab | D-05 | nothing is reportable |
 | `.20` | a person's Real (AWS key), a person's False positive (Zapier hook), an agent's `false_positive` review (high sink), made by `e2e_fp.py --disposition-decide` | D-06/D-07/D-08 | reportable; excluded; the reviewed sink moves to the board's false-positive section but stays a candidate, blocked by "AI review: likely false positive" |
+| all | the Priority Board after a v3.10 run (main project) | B-00..B-03 | every scored finding stores a disposition and its four gates, a blocker on candidates only; the stored answer is the score model's rule over the stored inputs, and `list_findings` returns it; the webapp's read-side rules compute the same answer from the same props (`disposition.integration.test.ts`) |
+| `.15`, `.20` | the cache-poisoned `/home` (its confirmation's control passed) beside the JS secrets (no control at all) | B-04 | `controlled` is true for the first and unknown for the second |
+| `.10`-`.13` | the Shodan stub's CVEs, ports re-checked on 80/443 | B-05 | the port scan decides `reachable_now`: a confirmed port true, a closed one false (and the finding excluded), an unscanned one unknown |
+| all | IP mode: every lab IP is tagged `unknown` (no target domain) | B-06 | `attributed` is true on every IP the attribution step tagged without finding a shared edge |
+| `.20` | before and after the decide step (step 10) | B-07 | nothing stored reportable before; after, the Real is stored reportable, the False positive excluded with no blocker, the agent's false-positive review a candidate blocked by "AI review: likely false positive" |
+| all | MCP `graph_schema` | B-08 | it lists `triage_disposition`, `triage_blocker` and the gates |
+| `.22` | the real JSON API (HTTP-layer project) | B-04 (`http-layer`) | its "API Endpoint Exposed on IP", whose control passed, is `controlled` true |
 
 ## Not covered here
 
