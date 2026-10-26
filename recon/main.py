@@ -737,6 +737,29 @@ def _maybe_run_ai_surface(result: dict, settings: dict, output_file: Path) -> di
     return result
 
 
+def _maybe_run_supply_chain(result: dict, settings: dict, output_file: Path) -> dict:
+    """GROUP 5.5 — Supply-Chain Recon, in both pipelines, after JS Recon.
+
+    It reads js_recon's source maps and work dir, http_probe and the
+    technologies, and judges packages offline (OSV), so it runs even when the
+    active scans are skipped; only the opt-in GuardDog leg downloads packages
+    from public registries. Its findings are not recon prune sources, so a
+    crash records a phase error and nothing else.
+    """
+    if not settings.get('SUPPLY_CHAIN_RECON_ENABLED', False):
+        return result
+    try:
+        from recon.main_recon_modules.supply_chain_recon import run_supply_chain_recon
+        result = run_supply_chain_recon(result, settings=settings)
+        result.setdefault("metadata", {}).setdefault("modules_executed", []).append("supply_chain_recon")
+        save_recon_file(result, output_file)
+        _graph_update_bg("update_graph_from_supply_chain_recon", result, USER_ID, PROJECT_ID)
+    except Exception as e:
+        print(f"[!][SupplyChainRecon] Error: {e}")
+        result.setdefault("metadata", {}).setdefault("phase_errors", {})["supply_chain_recon"] = str(e)
+    return result
+
+
 def merge_port_scan_results(combined_result: dict) -> None:
     """
     Merge masscan_scan results into port_scan for downstream consumers.
@@ -1598,15 +1621,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
 
     # GROUP 5.5 -- Supply-Chain Recon (L2): runs AFTER JS-recon (consumes its
     # source_maps + technologies). Black-box package harvest + offline OSV verdict.
-    if settings.get('SUPPLY_CHAIN_RECON_ENABLED', False):
-        try:
-            from recon.main_recon_modules.supply_chain_recon import run_supply_chain_recon
-            combined_result = run_supply_chain_recon(combined_result, settings=settings)
-            combined_result["metadata"]["modules_executed"].append("supply_chain_recon")
-            save_recon_file(combined_result, output_file)
-            _graph_update_bg("update_graph_from_supply_chain_recon", combined_result, USER_ID, PROJECT_ID)
-        except Exception as e:
-            print(f"[!][SupplyChainRecon] Error: {e}")
+    combined_result = _maybe_run_supply_chain(combined_result, settings, output_file)
 
     if not skip_active_scans:
         if "vuln_scan" in SCAN_MODULES:
@@ -2312,6 +2327,9 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             print(f"[!][SerializedScan] Error: {e}")
             _note_phase_error("serialized_scan")
 
+    # GROUP 5.5 -- Supply-Chain Recon, after JS Recon as in IP mode.
+    combined_result = _maybe_run_supply_chain(combined_result, _settings, output_file)
+
     if not skip_active_scans:
         # ================================================================
         # GROUP 6 Phase A — Parallel active vuln scanners (Nuclei || GraphQL)
@@ -2907,6 +2925,18 @@ def _run_pipeline():
     from recon.helpers import circuit_breaker
     circuit_breaker.announce_mode()
 
+    # RoE: check the time window ONCE, before any target is touched and before
+    # the clear, in both modes. The orchestrator checks it too, but this
+    # container may start late (image pulls) after the window closed. A batch
+    # that starts inside the window runs to completion; re-checking per group
+    # would abandon a run half way through and leave the graph partially
+    # rebuilt.
+    allowed, reason = _check_roe_time_window(_settings)
+    if not allowed:
+        print(f"\n[RoE] BLOCKED: {reason}")
+        print(f"[RoE] Reconnaissance aborted: outside Rules of Engagement time window.")
+        return 1
+
     # IP Mode: skip domain verification and run IP-based recon instead
     if IP_MODE and TARGET_IPS:
         print(f"  [*][Pipeline] MODE:              IP-BASED TARGETING")
@@ -2928,15 +2958,6 @@ def _run_pipeline():
         duration = end_time - start_time
         print(f"\n[✓][Pipeline] Total time: {duration}")
         return 0
-
-    # RoE: check the time window ONCE, before any target is touched. A batch that
-    # starts inside the window runs to completion; re-checking per group would
-    # abandon a run half way through and leave the graph partially rebuilt.
-    allowed, reason = _check_roe_time_window(_settings)
-    if not allowed:
-        print(f"\n[RoE] BLOCKED: {reason}")
-        print(f"[RoE] Reconnaissance aborted: outside Rules of Engagement time window.")
-        return 1
 
     log_scope(_settings)
     groups = _batch_groups()
