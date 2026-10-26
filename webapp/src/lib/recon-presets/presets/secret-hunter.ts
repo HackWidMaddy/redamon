@@ -57,6 +57,7 @@ Bug bounty hunters and red teamers who want to maximize credential and secret di
 
     // httpx
     httpxEnabled: true,
+    ipAttributionEnabled: true,
     httpxThreads: 50,
     httpxTimeout: 15,
     httpxRetries: 2,

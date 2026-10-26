@@ -115,6 +115,7 @@ Pentesters running a final comprehensive sweep on a target they have full author
 
     // --- httpx: all probes maxed ---
     httpxEnabled: true,
+    ipAttributionEnabled: true,
     httpxThreads: 75,
     httpxTimeout: 20,
     httpxRetries: 3,

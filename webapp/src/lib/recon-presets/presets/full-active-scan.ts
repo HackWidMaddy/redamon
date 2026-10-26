@@ -100,6 +100,7 @@ Pentesters with full authorization on an engagement where stealth is irrelevant.
 
     // --- HTTP Probing: all probes maxed ---
     httpxEnabled: true,
+    ipAttributionEnabled: true,
     httpxThreads: 50,
     httpxTimeout: 15,
     httpxRetries: 3,

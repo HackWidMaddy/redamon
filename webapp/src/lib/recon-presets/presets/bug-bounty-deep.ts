@@ -86,6 +86,7 @@ Bug bounty hunters who have already triaged a target (perhaps with the Quick Win
 
     // --- httpx: all probes enabled for full fingerprinting ---
     httpxEnabled: true,
+    ipAttributionEnabled: true,
     httpxThreads: 50,
     httpxTimeout: 15,
     httpxRetries: 2,

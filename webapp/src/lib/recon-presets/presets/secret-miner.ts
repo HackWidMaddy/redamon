@@ -39,6 +39,7 @@ Bug bounty hunters and pentesters targeting modern web applications built with R
   parameters: {
     // Pipeline modules: skip port_scan and vuln_scan
     scanModules: ['domain_discovery', 'http_probe', 'resource_enum'],
+    ipAttributionEnabled: true,
 
     // JS Recon (the main feature - default is false)
     jsReconEnabled: true,

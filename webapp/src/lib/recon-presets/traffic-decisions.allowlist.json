@@ -106,6 +106,8 @@
       "presets": ["stealth-recon"] },
     { "field": "hydraEnabled", "reason": "drift-map #11: decision pending",
       "presets": ["ai-surface-recon", "api-security", "bug-bounty-deep", "bug-bounty-quick", "cloud-exposure", "compliance-audit", "cve-hunter", "directory-discovery", "dns-email-security", "full-active-scan", "full-maximum-scan", "full-passive-scan", "graphql-recon", "infrastructure-mapper", "internal-network", "large-network", "osint-investigator", "parameter-injection", "red-team-operator", "secret-hunter", "secret-miner", "stealth-recon", "subdomain-takeover", "supply-chain-audit", "web-app-pentester", "web-cache-poisoning"] },
+    { "field": "ipAttributionEnabled", "reason": "comment: \"IP attribution stays on with no TLS handshake: it only reads the CDN signals already collected\"",
+      "presets": ["full-passive-scan", "osint-investigator", "stealth-recon"] },
     { "field": "jsluiceEnabled", "reason": "description: \"jsluice on 20 JS files max -- light extraction\"",
       "presets": ["stealth-recon"] },
     { "field": "jsReconAiSdkDetectionEnabled", "reason": "description: \"Every active tool maxed out\"",
