@@ -1498,6 +1498,11 @@ REACHABLE_NOW_MIN_REACH = 0.7
 #: a hit today, so only an older or another writer could store one.
 _CONTROL_CONTRADICTED = frozenset({"canary_on_fresh_slot", "baseline_drift", "not_reproduced"})
 
+#: IP attribution tags (plan 11) that pass the attributed gate. `unknown` is the
+#: step finding no shared edge, which is all a cloud server or an IP-mode
+#: target can show: it is not evidence against the target.
+_ATTRIBUTED_TAGS = frozenset({"dedicated", "unknown"})
+
 
 def _gate_name(host: str) -> str:
     """The host's name or address, lower-case, with no scheme, port or IPv6
@@ -1549,23 +1554,24 @@ def _reachable_now(finding: dict, facts: ProjectFacts, cvss: Cvss, host: str,
 def _attributed(facts: ProjectFacts, host: str, name: str) -> Optional[bool]:
     """Does the finding sit on the target's own server, as far as the IP
     attribution tag (plan 11) shows? False means a shared edge may be what
-    answered, never "not the target's"."""
+    answered, never "not the target's". Unknown until a run has tagged the IP."""
     if not name:
         return None
     tag = facts.ip_ownership.get(name)
     if name in facts.shared_edge_hosts or tag == "shared_edge":
         return False
     if tag is not None:
-        return True if tag == "dedicated" else None
+        return True if tag in _ATTRIBUTED_TAGS else None
     if name in facts.origin_exposed_hosts or host in facts.origin_exposed_hosts:
         return True
     if name in facts.cdn_only_hosts or host in facts.cdn_only_hosts:
         return False
     tags = facts.name_ownership.get(name)
-    if tags == {"dedicated"}:
-        return True
     if tags == {"shared_edge"}:
         return False
+    if tags and tags <= _ATTRIBUTED_TAGS:
+        return True
+    # Untagged, or some of its addresses a shared edge and some not.
     return None
 
 

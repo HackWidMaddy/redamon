@@ -891,8 +891,11 @@ class TestGateFacts(unittest.TestCase):
 
     # ---- 2. attributed ----------------------------------------------------
     def test_an_ip_is_attributed_by_its_tag(self):
+        """Only a shared edge fails: `unknown` is the attribution step finding no
+        edge (a cloud server, an IP-mode target), never evidence against."""
         ip = "203.0.113.9"
-        for tag, want in (("shared_edge", False), ("dedicated", True), ("unknown", None)):
+        for tag, want in (("shared_edge", False), ("dedicated", True), ("unknown", True),
+                          ("something new", None)):
             with self.subTest(tag=tag):
                 facts = sm.ProjectFacts(ip_ownership={ip: tag},
                                         shared_edge_hosts={ip} if tag == "shared_edge" else set())
@@ -905,9 +908,10 @@ class TestGateFacts(unittest.TestCase):
 
     def test_a_name_is_attributed_by_the_ips_it_resolves_to(self):
         name = "app.example.com"
-        for tags, want in (({"dedicated"}, True), ({"shared_edge"}, False),
+        for tags, want in (({"dedicated"}, True), ({"unknown"}, True), ({"dedicated", "unknown"}, True),
+                           ({"shared_edge"}, False),
                            ({"dedicated", "shared_edge"}, None), ({"dedicated", ""}, None),
-                           ({"unknown"}, None)):
+                           ({"something new"}, None)):
             with self.subTest(tags=tags):
                 facts = sm.ProjectFacts(name_ownership={name: set(tags)})
                 self.assertIs(self.gates(finding(host=f"https://{name}"), facts)["attributed"], want)
