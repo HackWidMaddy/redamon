@@ -95,6 +95,23 @@ For the no-`env_file` knob rule, see the recon_orchestrator
   mount, not by string surgery on another path.** If a spawn needs host dir `X`,
   mount `X` into the orchestrator so Docker itself reports its source. A missing
   bind source is not an error to Docker; it silently becomes an empty directory.
+- **NEVER select a run's tool containers by image name. Select them by run
+  label, and always together with `redamon.broker-owned=1`.** The tool
+  containers recon spawns are siblings created through the shared broker, so an
+  image match (the old `SUB_CONTAINER_IMAGES`) also stopped OTHER projects'
+  naabu and nuclei and missed every tool outside the list. A recon or partial
+  container is spawned with `run_labels(...)` (`redamon.project_id`,
+  `redamon.run_id`, `redamon.run_kind`); `recon/entrypoint.sh` names that run to
+  the broker in the `X-Redamon-Run` header the Docker CLI sends, and the broker
+  stamps the same labels on every container it creates (`stamp_run_labels` in
+  [broker.py](../../services/docker_broker/broker.py)). Read a run's id back from
+  its container (`_run_id_of`): `ReconState` has none, and after an orchestrator
+  restart an orphan only has its labels. Run labels are advisory (a compromised
+  recon container can write any label), which is why the broker-owned label is
+  always part of the filter (`_run_tool_containers` in
+  [container_manager.py](../../recon_orchestrator/container_manager.py)).
+  Changing `recon/entrypoint.sh` needs a recon IMAGE rebuild: it is COPY-baked to
+  `/app/entrypoint.sh`, outside the `/app/recon` source mount.
 
 ---
 

@@ -489,7 +489,7 @@ class TestStopPartialRecon:
         assert result.status == PartialReconStatus.IDLE
 
     @pytest.mark.asyncio
-    async def test_stop_does_not_cleanup_sub_containers(self, manager, mock_docker_client):
+    async def test_stop_cleans_up_only_its_own_runs_tool_containers(self, manager, mock_docker_client):
         state = PartialReconState(
             project_id="proj-1", run_id="r1", status=PartialReconStatus.RUNNING,
             container_id="c1",
@@ -499,10 +499,15 @@ class TestStopPartialRecon:
         mock_container = MagicMock()
         mock_container.status = "running"
         mock_docker_client.containers.get.return_value = mock_container
+        mock_docker_client.containers.list.return_value = []
 
         await manager.stop_partial_recon("proj-1", "r1")
-        # _cleanup_sub_containers should NOT be called
-        mock_docker_client.containers.list.assert_not_called()
+        # Selected by its run's label (plan 12.4), so a parallel partial recon's
+        # tools are never in the listing.
+        for call in mock_docker_client.containers.list.call_args_list:
+            assert set(call.kwargs["filters"]["label"]) == {
+                "redamon.broker-owned=1", "redamon.run_id=r1"}
+        assert mock_docker_client.containers.list.called
 
 
 # ---------------------------------------------------------------------------

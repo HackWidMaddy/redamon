@@ -189,7 +189,7 @@ ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 | deleted bundled data stays deleted; `cpe_resolver` reads the cache `http_probe` refreshes | `recon/tests/test_dead_bundled_data.py` |
 | nothing in `agentic/` shadows a file the agent image bakes earlier | `tests/test_agent_image_no_shadowed_copy.py` |
 | broker allowlist <-> every image recon runs, both ways (a broker image recon does not run needs a named caller); the entrypoint `IMAGES` == the `*_DOCKER_IMAGE` defaults | `services/docker_broker/test_image_parity.py` |
-| `SUB_CONTAINER_IMAGES` covers every `*_DOCKER_IMAGE` default; `remove_redamon_images` removes every third-party one (it reads the entrypoint `IMAGES`) | `recon_orchestrator/tests/test_sub_container_images.py`, `tests/redamon_runtime_images_test.sh` |
+| a stop removes its own run's tool containers, of any image, by the broker's run labels (no image list to keep); `remove_redamon_images` removes every third-party image (it reads the entrypoint `IMAGES`) | `recon_orchestrator/tests/test_run_label_cleanup.py`, `services/docker_broker/test_run_labels.py`, `tests/redamon_runtime_images_test.sh` |
 | what `update` rebuilds: every COPY/ADD source of every image compose builds must rebuild it (or restart it under a compose bind mount), derived from the compose file and the Dockerfiles | `tests/redamon_update_map_test.sh` |
 | OSV ecosystems in 4 places (`SEED_MANIFESTS`, `_OSV_SYNC_ECOSYSTEMS`, `OSV_ALL_ECOSYSTEMS`, compose `OSV_DB_ECOSYSTEMS`) | `tests/test_supply_chain_osv_refresh.py` |
 | TruffleHog sources/registry Python <-> TS | `tests/test_trufflehog_registry_parity.py` |
@@ -461,7 +461,7 @@ model reads.
 | Phase strings | `GVM_PHASES`, `GITHUB_HUNT_PHASES`, `TRUFFLEHOG_PHASES` (`recon-types.ts`); `*_PHASE_PATTERNS` (`container_manager.py`); `*State.total_phases` (`models.py`) | TEST (`recon-types.phases.test.ts`, `test_phase_totals.py`) | Agree today: recon has 6 (`RECON_TOTAL_PHASES` in `recon-types.ts`) |
 | Execution groups and their order | `recon/main.py` (GROUP 1..6) | `recon/tests` per group | Docs (`Recon-Pipeline-Workflow.md`, `Running-Reconnaissance.md`, `README.RECON.md`) describe the old order; a renamed heading breaks wiki anchors until the gate's docs test runs |
 | Per-tool explanations in the UI | `WorkflowView/inputLogicTooltips.tsx`, `PartialReconModal.tsx`; `workflowDefinition.ts` traffic badges (5 differ from the registry, 3 of them "both", which the registry cannot express) | NONE | Hand prose on dedup keys, sources, limits |
-| Tool image lists, 5 copies | `*_DOCKER_IMAGE` defaults (`recon/project_settings.py`), `IMAGES` (`recon/entrypoint.sh`), `_DEFAULT_ALLOWED_IMAGES` (broker), `SUB_CONTAINER_IMAGES` (`container_manager.py`), `remove_redamon_images` (reads `IMAGES`); plus `settings.get(...)` fallbacks in modules | TEST (`test_image_parity.py` both ways, `test_sub_container_images.py`, `redamon_runtime_images_test.sh`) | Agree today; every broker image beyond recon's names its caller (`BROKER_IMAGES_BEYOND_RECON`) |
+| Tool image lists, 4 copies | `*_DOCKER_IMAGE` defaults (`recon/project_settings.py`), `IMAGES` (`recon/entrypoint.sh`), `_DEFAULT_ALLOWED_IMAGES` (broker), `remove_redamon_images` (reads `IMAGES`); plus `settings.get(...)` fallbacks in modules. A stop selects tool containers by run label, not by image | TEST (`test_image_parity.py` both ways, `redamon_runtime_images_test.sh`) | Agree today; every broker image beyond recon's names its caller (`BROKER_IMAGES_BEYOND_RECON`) |
 | Red Zone "network initial access" | `PORT_CATEGORY`, `NET_VULN_TYPES` (`netInitAccess/route.ts`) vs `security_checks.py` | TEST (`recon/tests/test_net_init_access_parity.py`) | `cache_purge_exposed` is excluded on purpose (a cache-DoS finding, not an access vector) |
 | Every Red Zone / Insights query | `webapp/src/app/api/analytics/**/route.ts` | PART (route tests with mocked results; `insightsDeclared.test.ts` covers one predicate) | Hard-coded labels, properties and `type` strings |
 | AI hook catalogues | `recon/helpers/ai_signal_catalog.py`, port-scan / JS-SDK / AI-surface catalogues | TEST (`test_ai_*_catalog*.py`) | |
@@ -780,7 +780,7 @@ The rest is done by comparing lists directly. The checks worth repeating:
   Python against the types any `MERGE`/`CREATE` writes; `DROP_LEGACY_CONSTRAINTS`
   names against `schema_keys.py`; duplicate index names.
 - **Images and rebuilds:** `IMAGES`, `*_DOCKER_IMAGE` defaults, the broker list,
-  `SUB_CONTAINER_IMAGES`, `remove_redamon_images`; for each compose service with
+  `remove_redamon_images`; for each compose service with
   a `build`, every COPY/ADD source and whether `cmd_update` rebuilds (not only
   restarts) that service.
 - **WebSocket:** `class MessageType` in `agentic/websocket_api.py` vs `enum

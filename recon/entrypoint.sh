@@ -32,6 +32,28 @@ printf '%s\n' "
 "
 
 # =============================================================================
+# Name this run to the Docker broker
+# =============================================================================
+# The broker labels every tool container with the run named here, so a stop or
+# a pause reaches this run's tools and no other run's. The Docker CLI sends
+# HttpHeaders on every call. The directory is container-local on purpose:
+# /tmp/redamon and /app/recon are host binds shared by concurrent scans.
+if [ -n "${PARTIAL_RECON_RUN_ID:-}" ]; then
+    REDAMON_RUN_KIND=partial_recon
+    REDAMON_RUN_ID="$PARTIAL_RECON_RUN_ID"
+else
+    REDAMON_RUN_KIND=full_recon
+    REDAMON_RUN_ID="${RECON_RUN_ID:-}"
+fi
+if [[ "${PROJECT_ID:-}" =~ ^[A-Za-z0-9_-]{1,128}$ && "$REDAMON_RUN_ID" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+    export DOCKER_CONFIG=/run/redamon-docker
+    mkdir -p "$DOCKER_CONFIG"
+    printf '{"HttpHeaders": {"X-Redamon-Run": "%s:%s:%s"}}\n' \
+        "$REDAMON_RUN_KIND" "$PROJECT_ID" "$REDAMON_RUN_ID" > "$DOCKER_CONFIG/config.json"
+    echo -e "${GREEN}[+] Tool containers will be labelled with run ${REDAMON_RUN_ID}${NC}"
+fi
+
+# =============================================================================
 # Check Docker Socket Access
 # =============================================================================
 echo -e "${YELLOW}[*] Checking Docker socket access...${NC}"

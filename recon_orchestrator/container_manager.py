@@ -160,39 +160,25 @@ CODEFIX_WORK_CONTAINER_BASE = os.environ.get("CODEFIX_WORK_CONTAINER_BASE", "/ap
 # runaway-spawn backstop, not a typical-use limit.
 MAX_PARALLEL_AI_ATTACK = 6
 
-# Tool images recon spawns as sibling containers, without the tag; stop_recon
-# removes every container whose image contains one. One per `*_DOCKER_IMAGE`
-# default in recon/project_settings.py, kept by hand because this image does not
-# import recon; tests/test_sub_container_images.py fails on a missing one. The
-# supply-chain and alpine helper images are left out on purpose: a substring
-# match on them would also remove standalone supply-chain scans and unrelated
-# containers.
-SUB_CONTAINER_IMAGES = [
-    "projectdiscovery/naabu",
-    "projectdiscovery/httpx",
-    "projectdiscovery/katana",
-    "projectdiscovery/nuclei",
-    "projectdiscovery/uncover",
-    "projectdiscovery/subfinder",
-    "projectdiscovery/tlsx",
-    "caffix/amass",
-    "frost19k/puredns",
-    "sxcurity/gau",
-    "jauderho/hakrawler",
-    "dolevf/graphql-cop",
-    "ghcr.io/zaproxy/zaproxy",
-    "redamon-wcvs",
-    "redamon-baddns",
-]
+# The run a recon container and its tool containers belong to. The orchestrator
+# labels the recon/partial container at spawn; the broker labels every tool
+# container from the X-Redamon-Run header recon/entrypoint.sh hands the Docker
+# CLI. Stop and pause select one run's tools by these labels, never by image
+# name: an image match also hit other projects' scans and missed every tool
+# outside the list.
+RUN_ID_LABEL = "redamon.run_id"
+RUN_KIND_LABEL = "redamon.run_kind"
+RUN_PROJECT_LABEL = "redamon.project_id"
+# Set by the broker on every container it creates. Run labels are advisory (a
+# compromised recon container can write any label), so a selection always
+# requires this one too, and a container the broker did not create is never
+# touched by a run's stop.
+BROKER_OWNED_LABEL = "redamon.broker-owned"
 
 
-def sub_container_image_of(image_refs) -> Optional[str]:
-    """The SUB_CONTAINER_IMAGES entry one of `image_refs` (a container's
-    Config.Image and its image tags) contains, or None."""
-    for sub_image in SUB_CONTAINER_IMAGES:
-        if any(sub_image in ref for ref in image_refs if ref):
-            return sub_image
-    return None
+def run_labels(project_id: str, run_id: str, kind: str) -> dict:
+    """The labels a recon or partial-recon container is spawned with."""
+    return {RUN_PROJECT_LABEL: project_id, RUN_KIND_LABEL: kind, RUN_ID_LABEL: run_id}
 
 # Phase patterns to detect from logs
 # Order matters - more specific patterns should come first within each phase
@@ -1112,6 +1098,7 @@ class ContainerManager:
                 pids_limit=self._container_pids_limit(),  # D1: fork-bomb ceiling
                 nano_cpus=self._container_cpu_limit(),  # D1: core-proportional CPU cap
                 **self._scanner_hardening(drop_caps=False),  # S3/E6: cap_drop deferred (breaks writes to host-owned source bind mount; needs CAP_DAC_OVERRIDE)
+                labels=run_labels(project_id, recon_run_id, "full_recon"),
                 command="python /app/recon/main.py",
             )
 
@@ -1320,43 +1307,49 @@ class ContainerManager:
             logger.info(f"[codefix] reaping stale sandbox for job {job_id}")
             self.stop_codefix_sandbox(job_id)
 
-    def _cleanup_sub_containers(self) -> int:
-        """Stop and remove any running sub-containers (naabu, httpx, nuclei, etc.)
-
-        Returns the count of containers cleaned up.
-        """
-        cleaned = 0
+    @staticmethod
+    def _run_id_of(container) -> Optional[str]:
+        """The run a recon/partial container was spawned for, from its labels.
+        None for a container started before run labels existed."""
         try:
-            # Find all running containers
-            containers = self.client.containers.list(all=True)
-            for container in containers:
-                try:
-                    image_tags = container.image.tags if container.image.tags else []
-                    image_name = container.attrs.get("Config", {}).get("Image", "")
-                    sub_image = sub_container_image_of([image_name, *image_tags])
-                    if sub_image is None:
-                        continue
-                    container_name = container.name
-                    container_status = container.status
+            return (container.labels or {}).get(RUN_ID_LABEL) or None
+        except Exception:  # noqa: BLE001
+            return None
 
-                    if container_status in ("running", "paused"):
-                        if container_status == "paused":
-                            logger.info(f"Unpausing sub-container before stop: {container_name} ({sub_image})")
-                            container.unpause()
-                        logger.info(f"Stopping sub-container: {container_name} ({sub_image})")
-                        container.stop(timeout=5)
+    def _run_tool_containers(self, run_id: Optional[str], running_only: bool = False) -> list:
+        """The tool containers the broker created for one run, exited ones too
+        unless `running_only`. Blocking: call through _run_blocking."""
+        if not run_id:
+            return []
+        return self.client.containers.list(
+            all=not running_only,
+            filters={"label": [f"{BROKER_OWNED_LABEL}=1", f"{RUN_ID_LABEL}={run_id}"]},
+        )
 
-                    logger.info(f"Removing sub-container: {container_name} ({sub_image})")
-                    container.remove(force=True)
-                    cleaned += 1
-
-                except Exception as e:
-                    logger.warning(f"Error cleaning up container {container.name}: {e}")
-
-        except Exception as e:
-            logger.error(f"Error listing containers for cleanup: {e}")
-
-        return cleaned
+    def _remove_run_tools_sync(self, run_id: Optional[str]) -> int:
+        """Kill and remove every tool container of one run. Blocking: call
+        through _run_blocking. Returns how many were removed."""
+        if not run_id:
+            return 0
+        removed = 0
+        try:
+            containers = self._run_tool_containers(run_id)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error listing the tool containers of run {run_id}: {e}")
+            return 0
+        for container in containers:
+            try:
+                # A frozen process cannot take the kill a forced remove sends.
+                if container.status == "paused":
+                    container.unpause()
+                container.remove(force=True)
+                removed += 1
+                logger.info(f"Removed tool container {container.name} of run {run_id}")
+            except NotFound:
+                pass
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Error removing tool container {container.name} of run {run_id}: {e}")
+        return removed
 
     async def pause_recon(self, project_id: str) -> ReconState:
         """Pause a running recon process using Docker cgroups freeze"""
@@ -1413,9 +1406,11 @@ class ContainerManager:
 
         state.status = ReconStatus.STOPPING
 
+        run_id = None
         if state.container_id:
             try:
                 container = self.client.containers.get(state.container_id)
+                run_id = self._run_id_of(container)
                 # Unpause before stopping for Docker version compatibility
                 if container.status == "paused":
                     container.unpause()
@@ -1430,10 +1425,9 @@ class ContainerManager:
                 state.status = ReconStatus.ERROR
                 state.error = f"Failed to stop: {e}"
 
-        # Clean up any sub-containers (naabu, httpx, nuclei, etc.)
-        cleaned = self._cleanup_sub_containers()
+        cleaned = await self._run_blocking(self._remove_run_tools_sync, run_id)
         if cleaned > 0:
-            logger.info(f"Cleaned up {cleaned} sub-container(s) for project {project_id}")
+            logger.info(f"Cleaned up {cleaned} tool container(s) for project {project_id}")
 
         # Clean up state
         if project_id in self.running_states:
@@ -2144,6 +2138,7 @@ class ContainerManager:
                 pids_limit=self._container_pids_limit(),  # D1: fork-bomb ceiling
                 nano_cpus=self._container_cpu_limit(),  # D1: core-proportional CPU cap
                 **self._scanner_hardening(drop_caps=False),  # S3/E6: cap_drop deferred (breaks writes to host-owned source bind mount; needs CAP_DAC_OVERRIDE)
+                labels=run_labels(project_id, run_id, "partial_recon"),
                 command="python /app/recon/partial_recon.py",
             ))
 
@@ -2181,9 +2176,9 @@ class ContainerManager:
                 state.status = PartialReconStatus.ERROR
                 state.error = f"Failed to stop: {e}"
 
-        # Note: sub-container cleanup is NOT done here because it would kill
-        # containers from other parallel partial recons. Sub-containers are
-        # short-lived and will exit naturally.
+        cleaned = await self._run_blocking(self._remove_run_tools_sync, run_id)
+        if cleaned > 0:
+            logger.info(f"Cleaned up {cleaned} tool container(s) for partial run {run_id}")
 
         # Remove from state dict
         runs = self.partial_recon_states.get(project_id, {})
