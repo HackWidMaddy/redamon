@@ -241,8 +241,30 @@ agent (`'mcp'`); DECISION only by `set_human_verdict`. A review is valid while i
 `triage_ai_evidence_hash` equals the finding's `triage_evidence_hash`. A run never
 reviews over a valid `mcp` review, and re-reviews its own only after a model or
 prompt change. The final values (`triage_priority_score`, `triage_tier`,
-`triage_state`, `triage_factors`, `triage_decided_by`) come from
-`combine_layers` and nothing else.
+`triage_state`, `triage_factors`, `triage_decided_by`, `triage_disposition`,
+`triage_blocker`) come from `combine_layers` and nothing else.
+
+**Disposition (plan 10).** `Final.disposition` answers "can this go in a
+report?" (`reportable` | `candidate` | `info` | `excluded`) and `Final.blocker`
+says what a candidate lacks. `combine_layers` computes them LAST, with
+`score_model.disposition_of`, from the other final values and the four gate
+facts the run stored in `triage_tier_inputs.gates` (`gate_facts`: reachable now,
+attributed, controlled, impactful, each true / false / null). So:
+
+- a resolved state or a person's False positive is `excluded`; proof or a
+  person's Real is `reportable`; no impact or a key public by design is `info`;
+- a review reaches the answer only through the `false_positive` state it can
+  set, which yields a `candidate` blocked by "AI review: likely false positive",
+  never `excluded`;
+- otherwise the blocker is the first gate that is false, then the first that is
+  null (`unknown: <gate>`), then the tier rule. The gates move no score.
+
+The rules and their words are the webapp's read-side ones
+(`webapp/src/lib/triage/disposition.ts`), which every reader falls back to for
+a node no v3.10 run has rescored; `agentic/tests/test_disposition_parity.py`
+runs the Python half over the webapp's vector files. A base stored before the
+gates (no `gates` key) yields `None` for both, so a verdict on such a node
+leaves the readers computing the answer until the next run.
 
 ### Collection
 
