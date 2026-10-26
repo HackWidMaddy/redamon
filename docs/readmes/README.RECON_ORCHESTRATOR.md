@@ -189,6 +189,24 @@ downloads) is not killed: the run starts no new phase, and the grace bounds it.
 Tool containers of runs started before run labels existed carry none, so a stop
 leaves them to finish.
 
+### Pause and Resume Recon
+
+```
+POST /recon/{projectId}/pause
+POST /recon/{projectId}/resume
+```
+
+Pause freezes the recon container first (it is the one that starts tools), then
+every running tool container labelled with its run: `docker pause` reaches one
+cgroup only, and the tools are siblings. Resume re-checks the project's RoE time
+window first, through the same `_fetch_project_for_preflight` +
+`_check_roe_time_window` a start uses: outside it the answer is 403 with the
+start's message, a webapp outage is 503 (fail closed), and either way nothing is
+unpaused. Inside it, the run's paused tools are unpaused, then the recon
+container; a tool that exited meanwhile is not in the listing. Every Docker call
+goes through `_run_blocking`. A long pause can time out tool connections, so
+circuit breakers may mark hosts degraded after the resume.
+
 ### List Running
 
 ```

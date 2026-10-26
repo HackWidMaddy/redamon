@@ -82,14 +82,21 @@ class FakeContainers:
 
     def list(self, **kwargs):
         self.list_calls.append(kwargs)
-        wanted = (kwargs.get("filters") or {}).get("label", [])
+        filters = kwargs.get("filters") or {}
+        wanted = filters.get("label", [])
         if isinstance(wanted, str):
             wanted = [wanted]
+        statuses = filters.get("status")
+        if isinstance(statuses, str):
+            statuses = [statuses]
         out = []
         for c in self.items.values():
             if c.removed:
                 continue
-            if not kwargs.get("all") and c.status != "running":
+            if statuses is not None:
+                if c.status not in statuses:
+                    continue
+            elif not kwargs.get("all") and c.status != "running":
                 continue
             if all(c.labels.get(k) == v for k, _, v in (w.partition("=") for w in wanted)):
                 out.append(c)

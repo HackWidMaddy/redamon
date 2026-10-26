@@ -281,6 +281,7 @@ export default function GraphPage() {
     pauseRecon,
     resumeRecon,
     getLastStartError,
+    getLastResumeError,
   } = useReconStatus({
     projectId,
     enabled: !!projectId,
@@ -1410,7 +1411,12 @@ export default function GraphPage() {
 
   // Pause/Resume/Stop handlers
   const handlePauseRecon = useCallback(async () => { await pauseRecon() }, [pauseRecon])
-  const handleResumeRecon = useCallback(async () => { await resumeRecon() }, [resumeRecon])
+  // A resume outside the RoE time window is refused and the scan stays paused;
+  // say so, or the button just does nothing.
+  const handleResumeRecon = useCallback(async () => {
+    if (await resumeRecon()) return
+    toast.error(`Resume refused: ${getLastResumeError() ?? 'the scan could not be resumed'}. The scan stays paused.`)
+  }, [resumeRecon, getLastResumeError, toast])
   const handleStopRecon = useCallback(async () => { await stopRecon() }, [stopRecon])
   const handlePauseGvm = useCallback(async () => { await pauseGvm(); toast.info('GVM scan paused') }, [pauseGvm, toast])
   const handleResumeGvm = useCallback(async () => { await resumeGvm(); toast.info('GVM scan resumed') }, [resumeGvm, toast])

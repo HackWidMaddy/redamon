@@ -1395,8 +1395,39 @@ class ContainerManager:
                 logger.warning(f"Error removing tool container {container.name} of run {run_id}: {e}")
         return removed
 
+    def _set_run_tools_paused_sync(self, run_id: Optional[str], paused: bool) -> int:
+        """Pause or unpause one run's tool containers. Blocking: call through
+        _run_blocking. A tool that exited meanwhile is not in the listing."""
+        if not run_id:
+            return 0
+        wanted = "running" if paused else "paused"
+        changed = 0
+        try:
+            containers = self.client.containers.list(filters={
+                "label": [f"{BROKER_OWNED_LABEL}=1", f"{RUN_ID_LABEL}={run_id}"],
+                "status": wanted,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error listing the tool containers of run {run_id}: {e}")
+            return 0
+        for container in containers:
+            try:
+                (container.pause if paused else container.unpause)()
+                changed += 1
+            except NotFound:
+                pass
+            except APIError as e:
+                # It exited, or changed state, between the listing and the call.
+                logger.info(f"Tool container {container.name} of run {run_id} skipped: {e}")
+        return changed
+
     async def pause_recon(self, project_id: str) -> ReconState:
-        """Pause a running recon process using Docker cgroups freeze"""
+        """Freeze a running recon run: the recon container first (it is the one
+        that starts tools), then every running tool container of the run.
+        `docker pause` reaches one cgroup only, and the tools are siblings, so
+        pausing the recon container alone left a Nuclei run probing the target.
+        A long pause can time tool connections out, so circuit breakers may mark
+        hosts degraded after the resume."""
         state = await self.get_status(project_id)
 
         if state.status != ReconStatus.RUNNING:
@@ -1404,11 +1435,14 @@ class ContainerManager:
 
         if state.container_id:
             try:
-                container = self.client.containers.get(state.container_id)
-                container.pause()
+                container = await self._run_blocking(self.client.containers.get, state.container_id)
+                await self._run_blocking(container.pause)
+                frozen = await self._run_blocking(
+                    self._set_run_tools_paused_sync, self._run_id_of(container), True)
                 state.status = ReconStatus.PAUSED
                 self.running_states[project_id] = state
-                logger.info(f"Paused recon container for project {project_id}")
+                logger.info(f"Paused recon container for project {project_id} "
+                            f"and {frozen} tool container(s)")
             except NotFound:
                 state.status = ReconStatus.ERROR
                 state.error = "Container not found"
@@ -1419,7 +1453,9 @@ class ContainerManager:
         return state
 
     async def resume_recon(self, project_id: str) -> ReconState:
-        """Resume a paused recon process"""
+        """Resume a paused recon run: its tools first, then the recon container,
+        so a tool is never still frozen when the pipeline reads its results.
+        The RoE window is the caller's to check (api.resume_recon)."""
         state = await self.get_status(project_id)
 
         if state.status != ReconStatus.PAUSED:
@@ -1427,11 +1463,14 @@ class ContainerManager:
 
         if state.container_id:
             try:
-                container = self.client.containers.get(state.container_id)
-                container.unpause()
+                container = await self._run_blocking(self.client.containers.get, state.container_id)
+                thawed = await self._run_blocking(
+                    self._set_run_tools_paused_sync, self._run_id_of(container), False)
+                await self._run_blocking(container.unpause)
                 state.status = ReconStatus.RUNNING
                 self.running_states[project_id] = state
-                logger.info(f"Resumed recon container for project {project_id}")
+                logger.info(f"Resumed recon container for project {project_id} "
+                            f"and {thawed} tool container(s)")
             except NotFound:
                 state.status = ReconStatus.ERROR
                 state.error = "Container not found"

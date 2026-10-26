@@ -206,7 +206,7 @@ def _trusted_webapp_base() -> str:
     return os.environ.get("WEBAPP_API_URL", "http://webapp:3000").rstrip("/")
 
 
-def _fetch_project_for_preflight(project_id: str) -> dict:
+def _fetch_project_for_preflight(project_id: str, refusal: str = "Refusing to start.") -> dict:
     """Fetch the project settings the guardrail / RoE pre-flight needs.
 
     Fails CLOSED. Any fetch failure or non-200 raises 503 naming the
@@ -231,7 +231,7 @@ def _fetch_project_for_preflight(project_id: str) -> dict:
                     status_code=503,
                     detail=(
                         f"Cannot verify scan scope: the webapp project fetch "
-                        f"returned HTTP {resp.status}. Refusing to start."
+                        f"returned HTTP {resp.status}. {refusal}"
                     ),
                 )
             return json_mod.loads(resp.read().decode())
@@ -242,7 +242,7 @@ def _fetch_project_for_preflight(project_id: str) -> dict:
             status_code=503,
             detail=(
                 f"Cannot verify scan scope: the webapp is unreachable "
-                f"({type(e).__name__}). Refusing to start."
+                f"({type(e).__name__}). {refusal}"
             ),
         )
 
@@ -1251,9 +1251,21 @@ async def pause_recon(project_id: str):
 
 @app.post("/recon/{project_id}/resume", response_model=ReconState)
 async def resume_recon(project_id: str):
-    """Resume a paused recon process"""
+    """Resume a paused recon process, inside the RoE time window only.
+
+    A scan paused before the window closed would otherwise carry on outside
+    it, where a new start is refused. The check fails closed like a start's
+    (503 when the webapp cannot be reached), and a refused resume leaves the
+    scan paused.
+    """
     if not container_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
+
+    state = await container_manager.get_status(project_id)
+    if state.status != ReconStatus.PAUSED:
+        return state
+    project = _fetch_project_for_preflight(project_id, refusal="The scan stays paused.")
+    _check_roe_time_window(project)
 
     state = await container_manager.resume_recon(project_id)
     return state
