@@ -5,6 +5,12 @@
 
 set -e
 
+# Bash is PID 1 until the exec at the end, and PID 1 gets no default action for
+# a signal it has no trap for: without this a stop during the image pulls would
+# wait out the orchestrator's whole grace. Bash runs a trap only between
+# commands, so every long command below is started as `cmd & wait $!`.
+trap 'echo "[!] Stop requested before the pipeline started"; exit 143' TERM
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -105,8 +111,8 @@ if [ ! -f "$RESOLVER_FILE" ] || [ $(find "$RESOLVER_FILE" -mtime +7 2>/dev/null 
     # -f refuses an HTTP error page, a cut transfer fails curl, and scans copy
     # this file into the shared list, so it is never seen half-written.
     RESOLVER_TMP="$(dirname "$RESOLVER_FILE")/.resolvers.txt.$$.tmp"
-    if curl -fsSL https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt \
-            -o "$RESOLVER_TMP" 2>/dev/null \
+    if { curl -fsSL https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt \
+            -o "$RESOLVER_TMP" 2>/dev/null & wait $!; } \
             && grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' "$RESOLVER_TMP" \
             && mv -f "$RESOLVER_TMP" "$RESOLVER_FILE"; then
         echo -e "${GREEN}[+][Puredns] Resolvers downloaded ($(wc -l < "$RESOLVER_FILE") entries)${NC}"
@@ -161,9 +167,9 @@ for IMAGE in "${IMAGES[@]}"; do
     else
         echo -e "${YELLOW}[*] Pulling $IMAGE...${NC}"
         if [[ "$IMAGE" == "sxcurity/gau:latest" ]] && [[ "$(uname -m)" =~ ^(arm64|aarch64)$ ]]; then
-            docker pull --platform linux/amd64 "$IMAGE" 2>/dev/null || echo -e "${RED}[!] Failed to pull $IMAGE${NC}"
+            { docker pull --platform linux/amd64 "$IMAGE" 2>/dev/null & wait $!; } || echo -e "${RED}[!] Failed to pull $IMAGE${NC}"
         else
-            docker pull "$IMAGE" 2>/dev/null || echo -e "${RED}[!] Failed to pull $IMAGE${NC}"
+            { docker pull "$IMAGE" 2>/dev/null & wait $!; } || echo -e "${RED}[!] Failed to pull $IMAGE${NC}"
         fi
     fi
 done
@@ -174,5 +180,7 @@ done
 echo -e "${GREEN}[*] Starting reconnaissance pipeline...${NC}"
 echo ""
 
-# Execute the main command (default: python /app/recon/main.py)
+# Execute the main command (default: python /app/recon/main.py). Python installs
+# its own SIGTERM handler first thing (recon/helpers/shutdown.py).
+trap - TERM
 exec "$@"

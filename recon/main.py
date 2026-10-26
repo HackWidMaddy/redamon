@@ -30,6 +30,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Before the settings load below: a stop that arrives while the webapp answers
+# slowly must still run the end-of-run steps (recon/helpers/shutdown.py). Only
+# as the container's command, never when a test or a module imports this file.
+from recon.helpers import shutdown as _shutdown
+if __name__ == "__main__":
+    _shutdown.install()
+
 from recon.project_settings import get_settings, log_scope
 
 # Load settings from the webapp API (PROJECT_ID/WEBAPP_API_URL set) or the
@@ -228,8 +235,15 @@ _graph_futures = []
 
 
 def _graph_reset():
-    """Create a fresh background executor for a new pipeline run."""
+    """Create a fresh background executor for a new pipeline run.
+
+    A writer still live from an earlier group (one that raised before its
+    _graph_wait_all) is drained first: replacing it would run two writers at
+    once, against the one-writer rule.
+    """
     global _graph_executor, _graph_futures
+    if _graph_executor is not None:
+        _graph_wait_all()
     _graph_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph-db")
     _graph_futures = []
 
@@ -239,9 +253,13 @@ def _graph_update_bg(update_method_name: str, combined_result: dict,
     """Submit a graph DB update to the background thread.
 
     Takes a deep-copy snapshot of combined_result so the main thread can
-    keep mutating it safely.
+    keep mutating it safely. Once a stop is requested nothing new is queued:
+    the stopper is landing what is already queued within its deadline.
     """
     if not UPDATE_GRAPH_DB or _graph_executor is None:
+        return
+    if _shutdown.stop_requested():
+        print(f"[!][graph-db] Stop requested: {update_method_name} not queued")
         return
     snapshot = copy.deepcopy(combined_result)
 
@@ -281,6 +299,21 @@ def _graph_wait_all():
         if exc:
             print(f"[!][graph-db] Graph update error: {exc}")
     _graph_executor = None
+
+
+def _drain_graph_writes(deadline: float) -> None:
+    """The stopper's drain: let the queued graph writes land, until `deadline`
+    (time.monotonic). What is still running then is cut by the exit."""
+    import time
+    from concurrent.futures import wait
+    pending = [f for f in list(_graph_futures) if not f.done()]
+    if not pending:
+        return
+    print(f"[*][graph-db] Stop: landing {len(pending)} queued graph write(s)", flush=True)
+    _done, not_done = wait(pending, timeout=max(0.0, deadline - time.monotonic()))
+    if not_done:
+        print(f"[!][graph-db] Stop: {len(not_done)} queued graph write(s) did not land "
+              f"before the deadline", flush=True)
 
 
 # RoE excluded-host matching lives in recon.helpers.roe_scope so active scanners
@@ -610,10 +643,17 @@ _save_lock = threading.Lock()
 
 
 def save_recon_file(data: dict, output_file: Path):
-    """Save recon data to JSON file (thread-safe)."""
+    """Save recon data to JSON file (thread-safe).
+
+    Every phase ends here, so once a stop is requested the calling thread parks
+    after the save instead of starting the next phase: a phase that runs in
+    Python (OSINT calls, security checks) would otherwise send new traffic until
+    the stopper ends the process.
+    """
     with _save_lock:
         with open(output_file, 'w') as f:
             json.dump(data, f, indent=2)
+    _shutdown.park()
 
 
 _TLS_HYGIENE_CHECK_SETTINGS = {
@@ -2562,6 +2602,10 @@ def _prune_recon_findings():
     """
     if not UPDATE_GRAPH_DB or not _RUN_STARTED_AT:
         return
+    if _shutdown.stop_requested():
+        # Its killed tools returned empty results, which would read as "gone".
+        print("[!][graph-db] Finding prune skipped: the run was stopped")
+        return
     if _COVERAGE_WRITE_FAILED:
         print("[!][graph-db] Finding prune skipped: this run's coverage record was not written")
         return
@@ -2778,6 +2822,10 @@ def run_domain_batch(groups: list, start_time) -> int:
     failed = []
     for idx, group in enumerate(groups, 1):
         root = group['scanRoot']
+        if _shutdown.stop_requested():
+            print(f"[!][Batch] Stop requested: group(s) {idx}..{total} not started")
+            failed.extend(g['scanRoot'] for g in groups[idx - 1:])
+            break
         # The marker the orchestrator parses into live "Group 2/3" progress;
         # the root stays one token (container_manager BATCH_GROUP_PATTERN).
         print(f"\n[Batch] Group {idx}/{total}: {root}")
@@ -2823,12 +2871,20 @@ def main():
     """Run the pipeline, then sweep node filters over what it wrote, whatever happened.
 
     The sweep sits in a `finally` so an early return or an exception still
-    applies the rules to the findings the run managed to write.
+    applies the rules to the findings the run managed to write. The graph
+    writer is drained first, so the writes still queued land before the sweep
+    reads them. A stopped run leaves both to the stopper, which bounds them by
+    the stop deadline (recon/helpers/shutdown.py).
     """
+    _shutdown.register_drain(_drain_graph_writes)
+    _shutdown.set_sweep(_apply_node_filters)
     try:
         return _run_pipeline()
     finally:
-        _apply_node_filters()
+        if not _shutdown.stop_requested():
+            _graph_wait_all()
+            _shutdown.sweep_once()
+        _shutdown.park()
 
 
 def _run_pipeline():

@@ -56,6 +56,10 @@ class FakeContainer:
         self._record("stop")
         self.status = "exited"
 
+    def wait(self, timeout=None):
+        self._record("wait")
+        return {"StatusCode": self.exit_code}
+
     def remove(self, force=False):
         self._record("remove:force" if force else "remove")
         self.removed = True

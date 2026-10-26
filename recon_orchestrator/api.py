@@ -1224,12 +1224,18 @@ async def get_recon_status(project_id: str):
 
 
 @app.post("/recon/{project_id}/stop", response_model=ReconState)
-async def stop_recon(project_id: str):
-    """Stop a running recon process"""
+async def stop_recon(project_id: str, graceful: bool = True):
+    """Stop a running recon process.
+
+    Answers `stopping` at once: the run lands its queued graph writes and
+    applies the mute rules within RECON_STOP_GRACE_S, then reads `idle`.
+    `?graceful=false` kills it at once and answers when it is gone; the project
+    delete passes it, so a draining run never writes into a deleted project.
+    """
     if not container_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    state = await container_manager.stop_recon(project_id)
+    state = await container_manager.stop_recon(project_id, graceful=graceful)
     return state
 
 
@@ -1433,11 +1439,11 @@ async def get_partial_recon_status(project_id: str, run_id: str):
 
 
 @app.post("/recon/{project_id}/partial/{run_id}/stop", response_model=PartialReconState)
-async def stop_partial_recon(project_id: str, run_id: str):
-    """Stop a specific partial recon run"""
+async def stop_partial_recon(project_id: str, run_id: str, graceful: bool = True):
+    """Stop a specific partial recon run; `stopping` at once, as for /recon/{id}/stop."""
     if not container_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
-    return await container_manager.stop_partial_recon(project_id, run_id)
+    return await container_manager.stop_partial_recon(project_id, run_id, graceful=graceful)
 
 
 @app.get("/recon/{project_id}/partial/{run_id}/logs")

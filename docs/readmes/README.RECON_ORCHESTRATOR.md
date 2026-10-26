@@ -123,7 +123,7 @@ Returns current recon status for a project.
 - `running` - Recon in progress
 - `completed` - Recon finished successfully
 - `error` - Recon failed
-- `stopping` - Container being stopped
+- `stopping` - A stop is draining the run (see Stop Recon); still a live run
 
 ### Stream Logs (SSE)
 
@@ -156,10 +156,38 @@ data: {"status": "completed", "completedAt": "2024-01-15T10:45:00Z", "error": nu
 ### Stop Recon
 
 ```
-POST /recon/{projectId}/stop
+POST /recon/{projectId}/stop[?graceful=false]
+POST /recon/{projectId}/partial/{runId}/stop[?graceful=false]
 ```
 
-Gracefully stops a running recon container.
+The stop is **asynchronous**: it answers `stopping` at once and a background
+task (`_end_run_container` in `container_manager.py`) ends the run:
+
+1. SIGTERM to the recon (or partial-recon) container. Its handler
+   (`recon/helpers/shutdown.py`) sends SIGTERM to its own processes, refuses to
+   start new ones, drops new graph writes, lands the writes already queued,
+   runs the node-filter sweep (the mute rules) and exits 143. The prune never
+   runs on a stopped run.
+2. The run's tool containers are removed at once, and again every 2 s while
+   the recon container drains: they are siblings created through the broker,
+   selected by the `redamon.broker-owned=1` + `redamon.run_id=<run>` labels,
+   never by image name, so another project's scan is never touched.
+3. When the container exits, or after `RECON_STOP_GRACE_S` (default 45 s, set
+   in the orchestrator's `environment:` block), SIGKILL. The exit code is
+   logged (`[stop] ... exited with code 143`), then the container is removed.
+
+While a run is `stopping` it is live everywhere: its exit code is not read as
+`error`, it keeps its memory reservation, and a new full or partial start is
+refused. It then reads `idle`, which the webapp records as a canceled ScanJob.
+`?graceful=false` (the project delete) kills at once and answers only when the
+container is gone, so a draining run never writes into a deleted project; it
+also cuts short a graceful stop already draining. The orchestrator's own
+shutdown stops each run with a 5 s grace.
+
+In-process Python traffic already in flight (security checks, OSINT calls, JS
+downloads) is not killed: the run starts no new phase, and the grace bounds it.
+Tool containers of runs started before run labels existed carry none, so a stop
+leaves them to finish.
 
 ### List Running
 

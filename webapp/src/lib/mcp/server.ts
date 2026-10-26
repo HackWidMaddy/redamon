@@ -1600,8 +1600,12 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
     {
       title: 'Stop a running recon scan',
       description:
-        'Stop the full recon scan running for this project. If the orchestrator cannot be ' +
-        'reached this reports that the outcome is unknown rather than claiming it stopped.',
+        'Stop the full recon scan running for this project. The stop is asynchronous: it answers ' +
+        'with status "stopping" at once, the scan\'s tool containers end at once, and the scan ' +
+        'then lands its queued graph writes and applies the project\'s mute rules within a grace ' +
+        '(45 s by default) before get_recon_status reads idle. A new start is refused until then. ' +
+        'If the orchestrator cannot be reached this reports that the outcome is unknown rather ' +
+        'than claiming it stopped.',
       // Aborting a scan is not an additive update, which is what the spec means
       // by destructiveHint: false.
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },

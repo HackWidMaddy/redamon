@@ -294,8 +294,17 @@ def run_per_root(roots: list, fn, tool: str) -> dict:
     node-filter sweep) is never skipped. A rate-limited root waits and is
     retried once.
     """
+    from recon.helpers import shutdown
     statuses = {}
     for index, root in enumerate(roots):
+        if shutdown.stop_requested():
+            # A stop's handler raises nothing, so this loop is what keeps it
+            # from starting the next root's traffic.
+            print(f"[!][Partial Recon] {tool}: stop requested, "
+                  f"{len(roots) - index} root(s) not started")
+            for skipped in roots[index:]:
+                statuses[skipped] = "stopped"
+            break
         if index:
             time.sleep(ROOT_PAUSE_S)
         print(f"\n[*][Partial Recon] {tool}: root {index + 1}/{len(roots)}: {root}")

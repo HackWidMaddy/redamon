@@ -497,6 +497,8 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
     gotchas: [
       'Stopping mid-flight leaves a partial graph. Say so when reporting anything read from it.',
       'It stops the full recon pipeline, not the other scanners.',
+      'It answers "stopping": poll get_recon_status until idle before starting or queueing the ' +
+        'next scan, since a start is refused while the stopped one drains.',
     ],
     workflowRefs: ['run-a-full-scan'],
   },

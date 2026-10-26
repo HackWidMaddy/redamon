@@ -267,6 +267,40 @@ def _env_size(name: str, default: str) -> str:
     return raw if raw else default
 
 
+def _stop_grace_s() -> float:
+    """How long a stopped recon or partial-recon run may drain before SIGKILL.
+
+    compose passes RECON_STOP_GRACE_S as `${RECON_STOP_GRACE_S:-}`, so blank (or
+    anything that is not a positive number) means 45 s. The value is forwarded
+    to the recon container, whose stopper plans its graph drain and node-filter
+    sweep to end inside it (recon/helpers/shutdown.py).
+    """
+    raw = (os.environ.get("RECON_STOP_GRACE_S") or "").strip()
+    try:
+        value = float(raw) if raw else 45.0
+    except ValueError:
+        value = 45.0
+    return value if value > 0 else 45.0
+
+
+# A run in any of these is live: its container exists and may still write the
+# graph, so it keeps its reservation and blocks a conflicting start. STOPPING is
+# one of them, because a stopped run drains for up to RECON_STOP_GRACE_S.
+_LIVE_RECON_STATUSES = frozenset({ReconStatus.RUNNING, ReconStatus.STARTING,
+                                  ReconStatus.PAUSED, ReconStatus.STOPPING})
+_LIVE_PARTIAL_STATUSES = frozenset({PartialReconStatus.RUNNING, PartialReconStatus.STARTING,
+                                    PartialReconStatus.STOPPING})
+
+RECON_STOP_GRACE_S = _stop_grace_s()
+# While a stopped run drains, its tool containers are removed again at this
+# interval: a `docker run` the run had already issued can create one after the
+# first sweep.
+STOP_TOOL_SWEEP_INTERVAL_S = 2.0
+# The orchestrator's own shutdown stops every scan in turn, so it keeps each
+# stop short rather than waiting out the full grace.
+SHUTDOWN_STOP_GRACE_S = 5
+
+
 class _GvmStopClaim:
     """A GVM stop still waiting out the grace period and its backstop write.
 
@@ -476,12 +510,13 @@ class ContainerManager:
         Used by reconcile() to release reservations for finished/dead scans without
         having to hook every terminal path (leak-proof)."""
         keys = set()
+        # STOPPING too: a stopped recon run still holds its RAM while it drains.
         for pid, st in self.running_states.items():
-            if st.status in (ReconStatus.RUNNING, ReconStatus.STARTING, ReconStatus.PAUSED):
+            if st.status in _LIVE_RECON_STATUSES:
                 keys.add(self._scan_key("full_recon", pid))
         for pid, runs in self.partial_recon_states.items():
             for rid, st in runs.items():
-                if st.status in (PartialReconStatus.RUNNING, PartialReconStatus.STARTING):
+                if st.status in _LIVE_PARTIAL_STATUSES:
                     keys.add(self._scan_key(self._partial_kind(st.tool_id), pid, rid))
         for pid, runs in self.ai_attack_states.items():
             for rid, st in runs.items():
@@ -522,11 +557,10 @@ class ContainerManager:
         rows whose project no longer has any live scan, even with no browser open."""
         projects = set()
         for pid, st in self.running_states.items():
-            if st.status in (ReconStatus.RUNNING, ReconStatus.STARTING, ReconStatus.PAUSED):
+            if st.status in _LIVE_RECON_STATUSES:
                 projects.add(pid)
         for pid, runs in self.partial_recon_states.items():
-            if any(st.status in (PartialReconStatus.RUNNING, PartialReconStatus.STARTING)
-                   for st in runs.values()):
+            if any(st.status in _LIVE_PARTIAL_STATUSES for st in runs.values()):
                 projects.add(pid)
         for pid, runs in self.ai_attack_states.items():
             if any(st.status in (AiAttackSurfaceStatus.RUNNING, AiAttackSurfaceStatus.STARTING)
@@ -880,6 +914,12 @@ class ContainerManager:
         if project_id in self.running_states:
             state = self.running_states[project_id]
 
+            # The stop task owns a stopping run: its exit code (143, or 137 at
+            # the grace) is the stop, not an error, and the task removes the
+            # container itself once it has logged that code.
+            if state.status == ReconStatus.STOPPING:
+                return state
+
             # Check if container is still running
             if state.container_id:
                 try:
@@ -953,9 +993,10 @@ class ContainerManager:
         only forwarded to the container as SCAN_MODE for logs/telemetry.
         """
 
-        # Check if already running or paused
+        # Check if already running, paused or still draining a stop: the
+        # force-remove below would otherwise cut a stopped run's drain short.
         current_state = await self.get_status(project_id)
-        if current_state.status in (ReconStatus.RUNNING, ReconStatus.PAUSED):
+        if current_state.status in (ReconStatus.RUNNING, ReconStatus.PAUSED, ReconStatus.STOPPING):
             raise ValueError(f"Recon already active for project {project_id}")
 
         # Mutual exclusion: block if any partial recon is running
@@ -1029,6 +1070,9 @@ class ContainerManager:
                     # Operator off switch for the recon circuit breakers; only
                     # the exact value "off" disables them (compose defaults "on").
                     "RECON_CIRCUIT_BREAKERS": os.environ.get("RECON_CIRCUIT_BREAKERS", "on"),
+                    # The stopper inside plans its drain and sweep to end within
+                    # the grace this orchestrator waits before its SIGKILL.
+                    "RECON_STOP_GRACE_S": str(RECON_STOP_GRACE_S),
                     **_shodan_base_overrides(),
                     **_governor_overrides(),
                     "RECON_RUN_ID": recon_run_id,
@@ -1397,43 +1441,154 @@ class ContainerManager:
 
         return state
 
-    async def stop_recon(self, project_id: str, timeout: int = 10) -> ReconState:
-        """Stop a running recon process"""
-        state = await self.get_status(project_id)
+    def _stop_tasks_by_run(self) -> dict:
+        """The background stop of each run still draining, by (kind, project[, run])."""
+        tasks = getattr(self, "_stop_tasks", None)
+        if tasks is None:
+            tasks = self._stop_tasks = {}
+        return tasks
 
+    def _hard_stop_events(self) -> dict:
+        """Set to cut a graceful stop short (a project delete arriving mid-drain)."""
+        events = getattr(self, "_hard_stops", None)
+        if events is None:
+            events = self._hard_stops = {}
+        return events
+
+    @staticmethod
+    def _signal_container(container, sig: str) -> None:
+        """Send `sig`; a container that exited a moment ago (409) needs none."""
+        try:
+            container.kill(signal=sig)
+        except NotFound:
+            pass
+        except APIError as e:
+            if "is not running" not in str(e):
+                raise
+
+    async def _end_run_container(self, key: tuple, container_id: Optional[str],
+                                 run_id: Optional[str], label: str,
+                                 graceful: bool, grace: float) -> Optional[int]:
+        """End a recon or partial-recon container and its run's tool containers.
+
+        Graceful: SIGTERM, so the run drains its graph writes and runs its
+        node-filter sweep (recon/helpers/shutdown.py), then the tool containers
+        are removed every STOP_TOOL_SWEEP_INTERVAL_S until the container exits
+        or `grace` ends, and then SIGKILL. Hard: SIGKILL at once. Either way the
+        exit code is logged before the container is removed. Every Docker call
+        goes through _run_blocking. Returns the exit code, or None when the
+        container was already gone.
+        """
+        hard = self._hard_stop_events().setdefault(key, asyncio.Event())
+        if not graceful:
+            hard.set()
+        try:
+            container = await self._run_blocking(self.client.containers.get, container_id) \
+                if container_id else None
+        except NotFound:
+            container = None
+        if container is not None and not run_id:
+            run_id = self._run_id_of(container)
+        if not run_id:
+            logger.warning(f"[stop] {label} carries no run label (started before run labels): "
+                           f"its tool containers are left to finish")
+        if container is None:
+            await self._run_blocking(self._remove_run_tools_sync, run_id)
+            return None
+
+        # A frozen process cannot handle the TERM (and Pause froze the tools too).
+        if container.status == "paused":
+            await self._run_blocking(container.unpause)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + grace
+        if hard.is_set():
+            await self._run_blocking(self._signal_container, container, "SIGKILL")
+        else:
+            await self._run_blocking(self._signal_container, container, "SIGTERM")
+            logger.info(f"[stop] {label}: SIGTERM sent, draining for up to {grace:g}s")
+        while True:
+            await self._run_blocking(self._remove_run_tools_sync, run_id)
+            await self._run_blocking(container.reload)
+            if container.status not in ("running", "paused", "restarting"):
+                break
+            remaining = deadline - loop.time()
+            if hard.is_set() or remaining <= 0:
+                await self._run_blocking(self._signal_container, container, "SIGKILL")
+                break
+            try:
+                await asyncio.wait_for(hard.wait(), timeout=min(STOP_TOOL_SWEEP_INTERVAL_S, remaining))
+            except asyncio.TimeoutError:
+                pass
+        try:
+            result = await self._run_blocking(functools.partial(container.wait, timeout=30))
+            exit_code = (result or {}).get("StatusCode")
+        except Exception as e:  # noqa: BLE001 - the code is for the log; the stop goes on
+            exit_code = None
+            logger.warning(f"[stop] {label}: could not read the exit code: {e}")
+        how = "hard stop" if hard.is_set() else "graceful stop"
+        logger.info(f"[stop] {label} exited with code {exit_code} ({how})")
+        # One last pass: a tool created between the final sweep and the exit.
+        await self._run_blocking(self._remove_run_tools_sync, run_id)
+        try:
+            await self._run_blocking(functools.partial(container.remove, force=True))
+        except NotFound:
+            pass
+        return exit_code
+
+    async def stop_recon(self, project_id: str, graceful: bool = True,
+                         grace: Optional[float] = None, wait: bool = False) -> ReconState:
+        """Stop a recon run. Answers at once with `stopping`; a background task ends it.
+
+        The run drains its queued graph writes and applies the mute rules, inside
+        `grace` (RECON_STOP_GRACE_S by default), then the state goes idle, which
+        the webapp records as a canceled ScanJob. `graceful=False` (a project
+        delete) kills it at once and waits, so nothing more is written; it also
+        cuts short a graceful stop already draining. `wait` waits for the end.
+        """
+        key = ("full_recon", project_id)
+        tasks = self._stop_tasks_by_run()
+        in_flight = tasks.get(key)
+        if in_flight is not None and not in_flight.done():
+            if not graceful:
+                self._hard_stop_events().setdefault(key, asyncio.Event()).set()
+            if not graceful or wait:
+                await in_flight
+            return await self.get_status(project_id)
+
+        state = await self.get_status(project_id)
         if state.status not in (ReconStatus.RUNNING, ReconStatus.PAUSED):
             return state
 
         state.status = ReconStatus.STOPPING
-
-        run_id = None
-        if state.container_id:
-            try:
-                container = self.client.containers.get(state.container_id)
-                run_id = self._run_id_of(container)
-                # Unpause before stopping for Docker version compatibility
-                if container.status == "paused":
-                    container.unpause()
-                container.stop(timeout=timeout)
-                container.remove()
-                state.status = ReconStatus.IDLE
-                state.completed_at = datetime.now(timezone.utc)
-                logger.info(f"Stopped recon container for project {project_id}")
-            except NotFound:
-                state.status = ReconStatus.IDLE
-            except Exception as e:
-                state.status = ReconStatus.ERROR
-                state.error = f"Failed to stop: {e}"
-
-        cleaned = await self._run_blocking(self._remove_run_tools_sync, run_id)
-        if cleaned > 0:
-            logger.info(f"Cleaned up {cleaned} tool container(s) for project {project_id}")
-
-        # Clean up state
-        if project_id in self.running_states:
-            del self.running_states[project_id]
-
+        # An orphan found by name (after an orchestrator restart) is tracked from
+        # here on, so every status read sees it stopping.
+        self.running_states[project_id] = state
+        task = asyncio.create_task(self._finish_recon_stop(
+            key, state, graceful, RECON_STOP_GRACE_S if grace is None else grace))
+        tasks[key] = task
+        if not graceful or wait:
+            await task
         return state
+
+    async def _finish_recon_stop(self, key: tuple, state: ReconState, graceful: bool,
+                                 grace: float) -> None:
+        project_id = state.project_id
+        try:
+            await self._end_run_container(key, state.container_id, None,
+                                          f"recon container for project {project_id}",
+                                          graceful, grace)
+            state.status = ReconStatus.IDLE
+            state.completed_at = datetime.now(timezone.utc)
+        except Exception as e:  # noqa: BLE001
+            state.status = ReconStatus.ERROR
+            state.error = f"Failed to stop: {e}"
+            logger.error(f"[stop] recon for project {project_id}: {e}")
+        finally:
+            # Only the state this stop owns, never a run that replaced it.
+            if self.running_states.get(project_id) is state:
+                del self.running_states[project_id]
+            self._hard_stop_events().pop(key, None)
+            self._stop_tasks_by_run().pop(key, None)
 
     # =======================================================================
     # HTTP traffic capture proxy lifecycle (Phase 1, plan §8.4 / §11)
@@ -1842,13 +1997,13 @@ class ContainerManager:
         """Cleanup all running containers on shutdown"""
         for project_id in list(self.running_states.keys()):
             try:
-                await self.stop_recon(project_id, timeout=5)
+                await self.stop_recon(project_id, grace=SHUTDOWN_STOP_GRACE_S, wait=True)
             except Exception as e:
                 logger.error(f"Error cleaning up recon {project_id}: {e}")
         for project_id, runs in list(self.partial_recon_states.items()):
             for run_id in list(runs.keys()):
                 try:
-                    await self.stop_partial_recon(project_id, run_id, timeout=5)
+                    await self.stop_partial_recon(project_id, run_id, grace=SHUTDOWN_STOP_GRACE_S, wait=True)
                 except Exception as e:
                     logger.error(f"Error cleaning up partial recon {project_id}/{run_id}: {e}")
         for project_id in list(self.gvm_states.keys()):
@@ -1901,17 +2056,19 @@ class ContainerManager:
         return f"redamon-partial-recon-{safe_id}-{run_id[:8]}"
 
     def _count_active_partial_recons(self, project_id: str) -> int:
-        """Count the number of active (running/starting) partial recons for a project"""
+        """Count the live (running, starting or stopping) partial recons of a project"""
         return sum(
             1 for s in self.partial_recon_states.get(project_id, {}).values()
-            if s.status in (PartialReconStatus.RUNNING, PartialReconStatus.STARTING)
+            if s.status in _LIVE_PARTIAL_STATUSES
         )
 
     def _refresh_partial_recon_state(self, state: PartialReconState) -> None:
         """Refresh a partial recon state by checking its Docker container"""
         if not state.container_id:
             return
-        if state.status in (PartialReconStatus.COMPLETED, PartialReconStatus.ERROR, PartialReconStatus.IDLE):
+        # STOPPING belongs to the stop task, as for a full run (_get_status_sync).
+        if state.status in (PartialReconStatus.COMPLETED, PartialReconStatus.ERROR,
+                            PartialReconStatus.IDLE, PartialReconStatus.STOPPING):
             return
 
         try:
@@ -2010,7 +2167,7 @@ class ContainerManager:
 
         # Mutual exclusion with full recon
         recon_state = await self.get_status(project_id)
-        if recon_state.status in (ReconStatus.RUNNING, ReconStatus.PAUSED):
+        if recon_state.status in (ReconStatus.RUNNING, ReconStatus.PAUSED, ReconStatus.STOPPING):
             raise ValueError(f"Full recon is running for project {project_id}. Stop it first.")
 
         run_id = str(uuid.uuid4())
@@ -2079,6 +2236,7 @@ class ContainerManager:
                     "PARTIAL_RECON_CONFIG": f"/tmp/redamon/partial_{project_id}_{run_id}.json",
                     "PARTIAL_RECON_RUN_ID": run_id,
                     "RECON_CIRCUIT_BREAKERS": os.environ.get("RECON_CIRCUIT_BREAKERS", "on"),
+                    "RECON_STOP_GRACE_S": str(RECON_STOP_GRACE_S),
                     **_shodan_base_overrides(),
                     **_governor_overrides(),
                     "UPDATE_GRAPH_DB": "true",
@@ -2153,49 +2311,60 @@ class ContainerManager:
 
         return state
 
-    async def stop_partial_recon(self, project_id: str, run_id: str, timeout: int = 10) -> PartialReconState:
-        """Stop a specific partial recon run"""
-        state = await self.get_partial_recon_status(project_id, run_id)
+    async def stop_partial_recon(self, project_id: str, run_id: str, graceful: bool = True,
+                                 grace: Optional[float] = None,
+                                 wait: bool = False) -> PartialReconState:
+        """Stop one partial recon run, as stop_recon stops a full one: `stopping`
+        at once, then a background drain, sweep and exit inside the grace."""
+        key = ("partial_recon", project_id, run_id)
+        tasks = self._stop_tasks_by_run()
+        in_flight = tasks.get(key)
+        if in_flight is not None and not in_flight.done():
+            if not graceful:
+                self._hard_stop_events().setdefault(key, asyncio.Event()).set()
+            if not graceful or wait:
+                await in_flight
+            return await self.get_partial_recon_status(project_id, run_id)
 
+        state = await self.get_partial_recon_status(project_id, run_id)
         if state.status not in (PartialReconStatus.RUNNING, PartialReconStatus.STARTING):
             return state
 
         state.status = PartialReconStatus.STOPPING
-
-        if state.container_id:
-            try:
-                container = self.client.containers.get(state.container_id)
-                container.stop(timeout=timeout)
-                container.remove()
-                state.status = PartialReconStatus.IDLE
-                state.completed_at = datetime.now(timezone.utc)
-                logger.info(f"Stopped partial recon container for project {project_id}, run {run_id}")
-            except NotFound:
-                state.status = PartialReconStatus.IDLE
-            except Exception as e:
-                state.status = PartialReconStatus.ERROR
-                state.error = f"Failed to stop: {e}"
-
-        cleaned = await self._run_blocking(self._remove_run_tools_sync, run_id)
-        if cleaned > 0:
-            logger.info(f"Cleaned up {cleaned} tool container(s) for partial run {run_id}")
-
-        # Remove from state dict
-        runs = self.partial_recon_states.get(project_id, {})
-        if run_id in runs:
-            del runs[run_id]
-        if not runs and project_id in self.partial_recon_states:
-            del self.partial_recon_states[project_id]
-
-        # Best-effort cleanup of config file
-        try:
-            config_path = Path(f"/tmp/redamon/partial_{project_id}_{run_id}.json")
-            if config_path.exists():
-                config_path.unlink()
-        except Exception:
-            pass
-
+        task = asyncio.create_task(self._finish_partial_stop(
+            key, state, graceful, RECON_STOP_GRACE_S if grace is None else grace))
+        tasks[key] = task
+        if not graceful or wait:
+            await task
         return state
+
+    async def _finish_partial_stop(self, key: tuple, state: PartialReconState, graceful: bool,
+                                   grace: float) -> None:
+        project_id, run_id = state.project_id, state.run_id
+        try:
+            await self._end_run_container(key, state.container_id, run_id,
+                                          f"partial recon {project_id}/{run_id}",
+                                          graceful, grace)
+            state.status = PartialReconStatus.IDLE
+            state.completed_at = datetime.now(timezone.utc)
+        except Exception as e:  # noqa: BLE001
+            state.status = PartialReconStatus.ERROR
+            state.error = f"Failed to stop: {e}"
+            logger.error(f"[stop] partial recon {project_id}/{run_id}: {e}")
+        finally:
+            runs = self.partial_recon_states.get(project_id, {})
+            if runs.get(run_id) is state:
+                del runs[run_id]
+            if not runs:
+                self.partial_recon_states.pop(project_id, None)
+            self._hard_stop_events().pop(key, None)
+            self._stop_tasks_by_run().pop(key, None)
+            try:
+                config_path = Path(f"/tmp/redamon/partial_{project_id}_{run_id}.json")
+                if config_path.exists():
+                    config_path.unlink()
+            except Exception:  # noqa: BLE001 - best effort
+                pass
 
     async def stream_partial_logs(self, project_id: str, run_id: str) -> AsyncGenerator[ReconLogEvent, None]:
         """Stream logs from a specific partial recon container.

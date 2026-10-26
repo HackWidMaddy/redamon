@@ -795,9 +795,23 @@ What follows from that:
   `graph_db/node_filters/normalize.py` and `webapp/src/lib/secrets/publicClientKeys.ts`;
   tests pin all five equal. Readers decide on the flag OR the name, for nodes
   written before the flag.
-- **A stopped scan runs neither step 2 nor step 3.** Stop sends SIGTERM and the
-  process exits without its `finally`, so what it wrote stays unfiltered until
-  the next scan or an apply.
+- **A stopped scan runs step 3, never step 2.** Python is PID 1 in the recon
+  container, so it installs its own SIGTERM handler before anything else
+  (`recon/helpers/shutdown.py`, from the top of `main.py` and
+  `partial_recon.py`). The handler raises nothing (a `SystemExit` would wait on
+  every `with ThreadPoolExecutor`, and partial recon catches it per root); it
+  sets a flag and wakes a stopper thread, which signals the run's own processes,
+  waits for the queued graph writes (`_drain_graph_writes`) until a deadline
+  inside `RECON_STOP_GRACE_S`, runs the sweep once (`sweep_once`, which the
+  normal `finally` shares) and exits 143. Once the flag is up,
+  `subprocess.Popen` refuses (no new tool), `_graph_update_bg` queues nothing,
+  `save_recon_file` parks the thread instead of starting the next phase, a
+  batch or a per-root partial loop starts no further group or root, and
+  `_prune_recon_findings` refuses: the killed tools returned empty results,
+  which would read as "gone".
+- **One graph writer at a time, drained before it is read.** `_graph_reset`
+  drains a writer still live from a group that raised, and `main()`'s `finally`
+  drains before it sweeps, so the sweep sees every write of the run.
 - **Scans and applies exclude each other.** A full scan cannot start while an
   "apply to current graph" runs (`describeScanWriters`), and an apply to the
   current graph cannot start while a scan runs. Arming the rules for new scans
