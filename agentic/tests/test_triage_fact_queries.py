@@ -154,6 +154,49 @@ class TestGoneHostsQuery(unittest.TestCase):
         self.assertIn("WHEN size(split(k, ':')) = 2 THEN split(k, ':')[0]", self.QUERY)
 
 
+class TestGateFactQueries(unittest.TestCase):
+    """Plan 10.4: the facts the reachable-now and attributed gates read."""
+
+    @staticmethod
+    def _query(name):
+        return next(q for q in PROJECT_FACT_QUERIES if q["name"] == name)["query"]
+
+    def test_skipped_hosts_are_read_as_the_gone_query_reads_them(self):
+        """The same keys, normalised the same way: a host the gone query spares
+        because the run skipped it is the host the gate calls unknown."""
+        skipped, gone = self._query("skipped_hosts"), TestGoneHostsQuery.QUERY
+        self.assertIn("(d:Domain {user_id: $userId, project_id: $projectId})", skipped)
+        normalise = gone[gone.index("WITH reduce"):gone.index("AS skipped") + len("AS skipped")]
+        self.assertIn(normalise, skipped)
+
+    def test_name_ownership_reads_forward_dns_of_this_tenant_only(self):
+        query = self._query("name_ownership")
+        self.assertIn("(s:Subdomain {user_id: $userId, project_id: $projectId})-[r:RESOLVES_TO]->(ip:IP)", query)
+        self.assertIn("NOT coalesce(r.source, '') STARTS WITH 'shodan_'", query)
+        self.assertIn("ip.user_id = $userId AND ip.project_id = $projectId", query)
+
+    def test_the_reducers_build_the_two_facts(self):
+        facts = build_project_facts({
+            "skipped_hosts": [{"hosts": ["App.Example.com", None, " ", "203.0.113.4"]}],
+            "name_ownership": [{"name": "App.example.com", "tags": ["dedicated", None]},
+                               {"name": "cdn.example.com", "tags": ["shared_edge"]},
+                               {"name": "", "tags": ["dedicated"]}],
+        })
+        self.assertEqual(facts.skipped_hosts, {"app.example.com", "203.0.113.4"})
+        self.assertEqual(facts.name_ownership, {"app.example.com": {"dedicated", ""},
+                                                "cdn.example.com": {"shared_edge"}})
+
+    def test_a_failed_read_leaves_both_facts_unknown(self):
+        facts = build_project_facts({"skipped_hosts": None, "name_ownership": None})
+        self.assertEqual((facts.skipped_hosts, facts.name_ownership), (set(), {}))
+
+    def test_the_finding_rows_carry_what_the_gates_read(self):
+        self.assertIn("control_check", TestQueryInvariants._aliases("Vulnerability"))
+        self.assertIn("evidence", TestQueryInvariants._aliases("Vulnerability"))
+        self.assertIn("control_check", TestQueryInvariants._aliases("JsReconFinding"))
+        self.assertIn("public_client_key", TestQueryInvariants._aliases("Secret"))
+
+
 # ---------------------------------------------------------------------------
 # Reducers
 # ---------------------------------------------------------------------------

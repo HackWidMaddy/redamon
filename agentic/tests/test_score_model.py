@@ -825,7 +825,188 @@ class TestCombineLayers(unittest.TestCase):
 
     def test_score_returns_its_tier_inputs(self):
         result = sm.score(finding(cisa_kev=True, confirmed_exploits=1))
-        self.assertEqual(result.tier_inputs, sm.TierInputs(proven=True, kev=True))
+        self.assertEqual((result.tier_inputs.proven, result.tier_inputs.kev), (True, True))
+        self.assertEqual(set(result.tier_inputs.gates), set(sm.GATES))
+
+
+# ---------------------------------------------------------------------------
+# The four gates (plan 10.4): reachable now, attributed, controlled, impactful
+# ---------------------------------------------------------------------------
+class TestGateFacts(unittest.TestCase):
+    """Each gate is True, False or None (unknown), measured by the run and stored
+    with the tier inputs. They name a candidate's blocker; they move no score."""
+
+    def gates(self, row, facts=None):
+        return sm.score(row, facts or sm.ProjectFacts()).tier_inputs.gates
+
+    # ---- 1. reachable now -------------------------------------------------
+    def test_a_live_host_is_reachable_now(self):
+        self.assertIs(self.gates(finding(), sm.ProjectFacts(live_hosts={"h1"}))["reachable_now"], True)
+
+    def test_a_gone_host_is_not_reachable_now(self):
+        self.assertIs(self.gates(finding(), sm.ProjectFacts(gone_hosts={"h1"}))["reachable_now"], False)
+
+    def test_a_host_the_run_skipped_is_unknown_not_unreachable(self):
+        facts = sm.ProjectFacts(live_hosts={"h1"}, skipped_hosts={"h1"})
+        self.assertIsNone(self.gates(finding(), facts)["reachable_now"])
+
+    def test_a_skipped_host_is_matched_by_its_name_in_any_spelling(self):
+        for host in ("https://App.Example.com:8443/login", "app.example.com:443", "APP.example.com"):
+            with self.subTest(host=host):
+                facts = sm.ProjectFacts(live_hosts={host}, skipped_hosts={"app.example.com"})
+                self.assertIsNone(self.gates(finding(host=host), facts)["reachable_now"])
+
+    def test_no_reachability_evidence_is_unknown(self):
+        self.assertIsNone(self.gates(finding())["reachable_now"])
+
+    def test_a_local_only_vector_is_not_reachable_now(self):
+        row = finding(cvss_vector="CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+        self.assertIs(self.gates(row, sm.ProjectFacts(live_hosts={"h1"}))["reachable_now"], False)
+
+    def test_a_passive_cve_is_reachable_only_when_a_port_scan_confirmed_its_port(self):
+        # A live website on the host says nothing about the port Shodan saw.
+        facts = sm.ProjectFacts(live_hosts={"h1"})
+        for verdict, want in ((True, True), ("true", True), (None, None), ("", None)):
+            with self.subTest(port_confirmed=verdict):
+                row = finding(source="shodan", target_port=8080, port_confirmed=verdict)
+                self.assertIs(self.gates(row, facts)["reachable_now"], want)
+        closed = finding(source="shodan", target_port=8080, port_confirmed=False)
+        self.assertIs(self.gates(closed, facts)["reachable_now"], False)
+
+    def test_a_login_wall_is_reachable_and_shows_no_impact(self):
+        facts = sm.ProjectFacts(live_hosts={"h1"}, auth_required_hosts={"h1"})
+        gates = self.gates(finding(), facts)
+        self.assertIs(gates["reachable_now"], True)
+        self.assertIs(gates["impactful"], False)
+
+    def test_a_shared_edge_is_an_attribution_blocker_not_a_reach_one(self):
+        ip = "198.51.100.7"
+        facts = sm.ProjectFacts(live_hosts={ip}, shared_edge_hosts={ip},
+                                ip_ownership={ip: "shared_edge"})
+        result = sm.score(finding(host=ip), facts)
+        self.assertEqual(result.reach.value, sm.SHARED_EDGE_MAX_REACH)
+        self.assertIs(result.tier_inputs.gates["reachable_now"], True)
+        self.assertIs(result.tier_inputs.gates["attributed"], False)
+
+    # ---- 2. attributed ----------------------------------------------------
+    def test_an_ip_is_attributed_by_its_tag(self):
+        ip = "203.0.113.9"
+        for tag, want in (("shared_edge", False), ("dedicated", True), ("unknown", None)):
+            with self.subTest(tag=tag):
+                facts = sm.ProjectFacts(ip_ownership={ip: tag},
+                                        shared_edge_hosts={ip} if tag == "shared_edge" else set())
+                self.assertIs(self.gates(finding(host=ip), facts)["attributed"], want)
+                url = finding(host=f"https://{ip}:8443")
+                self.assertIs(self.gates(url, facts)["attributed"], want)
+
+    def test_an_ip_no_run_attributed_is_unknown(self):
+        self.assertIsNone(self.gates(finding(host="203.0.113.9"))["attributed"])
+
+    def test_a_name_is_attributed_by_the_ips_it_resolves_to(self):
+        name = "app.example.com"
+        for tags, want in (({"dedicated"}, True), ({"shared_edge"}, False),
+                           ({"dedicated", "shared_edge"}, None), ({"dedicated", ""}, None),
+                           ({"unknown"}, None)):
+            with self.subTest(tags=tags):
+                facts = sm.ProjectFacts(name_ownership={name: set(tags)})
+                self.assertIs(self.gates(finding(host=f"https://{name}"), facts)["attributed"], want)
+
+    def test_a_cdn_only_host_is_not_attributed(self):
+        facts = sm.ProjectFacts(cdn_only_hosts={"app.example.com"},
+                                name_ownership={"app.example.com": {"dedicated"}})
+        self.assertIs(self.gates(finding(host="app.example.com"), facts)["attributed"], False)
+
+    def test_a_confirmed_origin_attributes_a_name_behind_a_cdn(self):
+        facts = sm.ProjectFacts(origin_exposed_hosts={"app.example.com"},
+                                name_ownership={"app.example.com": {"shared_edge"}})
+        self.assertIs(self.gates(finding(host="app.example.com"), facts)["attributed"], True)
+
+    def test_a_host_the_graph_has_no_address_for_is_unknown(self):
+        row = finding(label="GithubSecret", source="github_hunt", host="example-org/site")
+        self.assertIsNone(self.gates(row)["attributed"])
+        self.assertIsNone(self.gates(finding(host=""))["attributed"])
+
+    # ---- 3. controlled ----------------------------------------------------
+    def test_a_passed_control_check_is_controlled(self):
+        row = finding(source="security_check", type="ip_api_exposed", control_check="passed")
+        self.assertIs(self.gates(row)["controlled"], True)
+
+    def test_a_control_that_could_not_be_read_is_no_evidence_either_way(self):
+        for verdict in ("failed", "rate_limited", "", None, "something new"):
+            with self.subTest(control_check=verdict):
+                row = finding(source="security_check", control_check=verdict)
+                self.assertIsNone(self.gates(row)["controlled"])
+
+    def test_a_control_that_contradicted_the_hit_fails_the_gate(self):
+        for verdict in ("canary_on_fresh_slot", "baseline_drift", "not_reproduced"):
+            with self.subTest(control_check=verdict):
+                row = finding(source="cache_poisoning", control_check=verdict)
+                self.assertIs(self.gates(row)["controlled"], False)
+
+    def test_cache_poisoning_keeps_its_control_in_the_evidence(self):
+        row = finding(source="cache_poisoning",
+                      evidence='{"poc_link": "https://example.com/?cb=1", "control_check": "passed"}')
+        self.assertIs(self.gates(row)["controlled"], True)
+        for evidence in ('{"control_check": ""}', "not json", '["passed"]', None):
+            with self.subTest(evidence=evidence):
+                self.assertIsNone(self.gates(finding(source="cache_poisoning", evidence=evidence))["controlled"])
+
+    def test_another_source_s_evidence_is_never_read_as_a_control(self):
+        row = finding(source="nuclei", evidence='{"control_check": "passed"}')
+        self.assertIsNone(self.gates(row)["controlled"])
+
+    def test_a_producer_with_no_control_concept_is_unknown(self):
+        self.assertIsNone(self.gates(finding())["controlled"])
+
+    # ---- 4. impactful -----------------------------------------------------
+    def test_proof_is_impact(self):
+        self.assertIs(self.gates(finding(confirmed_exploits=1))["impactful"], True)
+
+    def test_no_proof_is_unknown_impact_not_no_impact(self):
+        self.assertIsNone(self.gates(finding(), sm.ProjectFacts(live_hosts={"h1"}))["impactful"])
+
+    # ---- storage ----------------------------------------------------------
+    def test_the_gates_round_trip_through_the_stored_json(self):
+        import json
+        facts = sm.ProjectFacts(live_hosts={"h1"}, gone_hosts=set())
+        inputs = sm.score(finding(source="security_check", control_check="passed"), facts).tier_inputs
+        stored = json.loads(json.dumps(inputs.as_dict()))
+        self.assertEqual(stored["gates"], {"reachable_now": True, "attributed": None,
+                                           "controlled": True, "impactful": None})
+        self.assertEqual(sm.TierInputs.from_dict(stored), inputs)
+
+    def test_inputs_stored_before_the_gates_are_not_gated(self):
+        """A pre-v3.10 base: nothing measured the gates, which is not 'all unknown'."""
+        legacy = sm.TierInputs.from_dict({"proven": True, "kev": False})
+        self.assertIsNone(legacy.gates)
+        self.assertNotIn("gates", legacy.as_dict())
+
+    def test_a_stored_gate_that_is_not_a_boolean_reads_as_unknown(self):
+        inputs = sm.TierInputs.from_dict({"gates": {"reachable_now": "yes", "attributed": 1,
+                                                    "controlled": False}})
+        self.assertEqual(inputs.gates, {"reachable_now": None, "attributed": None,
+                                        "controlled": False, "impactful": None})
+
+    def test_a_public_client_key_is_recorded_for_the_disposition(self):
+        cases = ((dict(secret_type="Stripe Publishable Key"), True),
+                 (dict(secret_type="Anything", public_client_key=True), True),
+                 (dict(detector_name="gcp api key"), True),
+                 (dict(secret_type="Stripe Secret Key", public_client_key=False), False))
+        for fields, want in cases:
+            with self.subTest(fields=fields):
+                row = finding(label="Secret", source="js_recon", **fields)
+                inputs = sm.score(row).tier_inputs
+                self.assertIs(inputs.public_client_key, want)
+                self.assertEqual("public_client_key" in inputs.as_dict(), want)
+
+    def test_the_gates_move_no_tier_and_no_score(self):
+        rng = random.Random(TestCombineLayers.SEED + 7)
+        for _ in range(300):
+            inputs = sm.TierInputs(proven=rng.random() < 0.2, kev=rng.random() < 0.3)
+            gated = sm.TierInputs(proven=inputs.proven, kev=inputs.kev,
+                                  gates={g: rng.choice([True, False, None]) for g in sm.GATES})
+            c, l, i, r = (rng.random() for _ in range(4))
+            self.assertEqual(sm.tier_rule(inputs, c, l, i, r), sm.tier_rule(gated, c, l, i, r))
 
 
 # ---------------------------------------------------------------------------

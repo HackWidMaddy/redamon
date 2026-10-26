@@ -205,6 +205,48 @@ class LiveFactQueriesCase(unittest.TestCase):
         self.assertNotIn("192.0.2.12", gone)
         self.assertIn("unskipped.factq.test", gone)
 
+    def _facts(self, *names):
+        from cypherfix_triage.fact_queries import PROJECT_FACT_QUERIES, build_project_facts
+
+        return build_project_facts({q["name"]: self._run(q["query"])
+                                    for q in PROJECT_FACT_QUERIES if q["name"] in names})
+
+    def test_the_gate_reads_the_skipped_hosts_as_one_normalised_set(self):
+        with self.driver.session() as s:
+            s.run("""
+                CREATE (:Domain {name: 'factq.test', user_id: $u, project_id: $p,
+                                 recon_skipped_hosts: ['Skipped.factq.test:443', '[2001:db8::5]:8443']})
+                CREATE (:Domain {name: 'factq.test', user_id: $u, project_id: $other,
+                                 recon_skipped_hosts: ['other.factq.test:443']})
+                """, u=self.uid, p=self.pid, other=self.pid + "_other")
+        try:
+            facts = self._facts("skipped_hosts")
+        finally:
+            with self.driver.session() as s:
+                s.run("MATCH (n {project_id: $other}) DETACH DELETE n", other=self.pid + "_other")
+        self.assertEqual(facts.skipped_hosts, {"skipped.factq.test", "2001:db8::5"})
+
+    def test_a_name_carries_the_tags_of_the_ips_it_resolves_to(self):
+        with self.driver.session() as s:
+            s.run("""
+                CREATE (own:Subdomain {name: 'own.factq.test', user_id: $u, project_id: $p})
+                CREATE (edge:Subdomain {name: 'edge.factq.test', user_id: $u, project_id: $p})
+                CREATE (mixed:Subdomain {name: 'mixed.factq.test', user_id: $u, project_id: $p})
+                CREATE (d:IP {address: '192.0.2.20', ownership: 'dedicated', user_id: $u, project_id: $p})
+                CREATE (e:IP {address: '198.51.100.20', ownership: 'shared_edge', user_id: $u, project_id: $p})
+                CREATE (n:IP {address: '203.0.113.20', user_id: $u, project_id: $p})
+                CREATE (own)-[:RESOLVES_TO]->(d)
+                CREATE (edge)-[:RESOLVES_TO]->(e)
+                // A PTR answer Shodan recorded is not current DNS.
+                CREATE (edge)-[:RESOLVES_TO {source: 'shodan_rdns'}]->(d)
+                CREATE (mixed)-[:RESOLVES_TO]->(d)
+                CREATE (mixed)-[:RESOLVES_TO]->(n)
+                """, u=self.uid, p=self.pid)
+        facts = self._facts("name_ownership")
+        self.assertEqual(facts.name_ownership, {"own.factq.test": {"dedicated"},
+                                                "edge.factq.test": {"shared_edge"},
+                                                "mixed.factq.test": {"dedicated", ""}})
+
 
 if __name__ == "__main__":
     unittest.main()

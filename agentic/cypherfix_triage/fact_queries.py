@@ -40,6 +40,16 @@ from .score_model import (AGENT_CONFIDENCE_DEFAULT, PROOF_MIN_AGENT_CONFIDENCE,
 # ===========================================================================
 # Project fact sets
 # ===========================================================================
+#: The hosts a run skipped (a tripped breaker: the coverage record's `host:port`
+#: keys, normalised as circuit_breaker.hostname_of does for the prune), bound
+#: to `skipped`. Shared by the two queries that read them.
+_SKIPPED_HOSTS = """OPTIONAL MATCH (d:Domain {user_id: $userId, project_id: $projectId})
+WITH reduce(acc = [], hs IN collect(d.recon_skipped_hosts) | acc + coalesce(hs, [])) AS keys
+WITH [k IN [x IN keys | toLower(trim(toString(x)))] |
+      CASE WHEN k STARTS WITH '[' THEN substring(split(k, ']')[0], 1)
+           WHEN size(split(k, ':')) = 2 THEN split(k, ':')[0]
+           ELSE k END] AS skipped"""
+
 # Each query returns rows of simple scalars. `name` selects the reducer in
 # `build_project_facts`. A query that fails leaves its fact set EMPTY, which the
 # model reads as "we do not know" rather than as "it is not true".
@@ -225,16 +235,8 @@ RETURN collect(DISTINCT b.url) AS hosts
         # it. Only forward DNS counts: Shodan's reverse-DNS and domain-DNS
         # answers write the same edge with source 'shodan_rdns' / 'shodan_dns',
         # and a PTR record does not say the host resolves today. A host the run
-        # skipped (a tripped breaker: the coverage record's `host:port` keys,
-        # normalised as circuit_breaker.hostname_of does for the prune) was not
-        # re-checked, so its absence proves nothing.
-        "query": """
-OPTIONAL MATCH (d:Domain {user_id: $userId, project_id: $projectId})
-WITH reduce(acc = [], hs IN collect(d.recon_skipped_hosts) | acc + coalesce(hs, [])) AS keys
-WITH [k IN [x IN keys | toLower(trim(toString(x)))] |
-      CASE WHEN k STARTS WITH '[' THEN substring(split(k, ']')[0], 1)
-           WHEN size(split(k, ':')) = 2 THEN split(k, ':')[0]
-           ELSE k END] AS skipped
+        # skipped was not re-checked, so its absence proves nothing.
+        "query": _SKIPPED_HOSTS + """
 MATCH (n {user_id: $userId, project_id: $projectId})
 WHERE (n:Subdomain OR n:IP)
   AND NOT EXISTS {
@@ -253,6 +255,26 @@ WHERE (n:Subdomain OR n:IP)
   AND coalesce(n.is_live, false) = false
   AND NOT toLower(coalesce(n.name, n.address, '')) IN skipped
 RETURN collect(DISTINCT coalesce(n.name, n.address)) AS hosts
+""",
+    },
+    {
+        "name": "skipped_hosts",
+        "description": "hosts the run could not re-check (a tripped breaker)",
+        "query": _SKIPPED_HOSTS + """
+RETURN skipped AS hosts
+""",
+    },
+    {
+        "name": "name_ownership",
+        "description": "the attribution tags of the IPs each DNS name currently resolves to",
+        # Forward DNS only, as in gone_hosts: a PTR answer Shodan recorded does
+        # not say the name points there today. An IP no run attributed yet
+        # comes back as '' and keeps the name's attribution unknown.
+        "query": """
+MATCH (s:Subdomain {user_id: $userId, project_id: $projectId})-[r:RESOLVES_TO]->(ip:IP)
+WHERE ip.user_id = $userId AND ip.project_id = $projectId
+  AND NOT coalesce(r.source, '') STARTS WITH 'shodan_'
+RETURN s.name AS name, collect(DISTINCT coalesce(ip.ownership, '')) AS tags
 """,
     },
     {
@@ -328,7 +350,7 @@ RETURN v.id AS id, 'Vulnerability' AS label,
        v.matcher_status AS matcher_status, v.matched_at AS matched_at,
        v.matcher_name AS matcher_name, v.fuzzing_parameter AS fuzzing_parameter,
        v.target_port AS target_port, v.solution_type AS solution_type,
-       v.port_confirmed AS port_confirmed,
+       v.port_confirmed AS port_confirmed, v.control_check AS control_check,
        v.extracted_results AS extracted_results, v.is_dast_finding AS is_dast_finding,
        v.template_id AS template_id, v.tags AS tags, v.state AS state,
        coalesce(v.oid, v.nvt_oid) AS oid,
@@ -415,7 +437,7 @@ RETURN s.id AS id, 'Secret' AS label, coalesce(s.source, 'js_recon') AS source,
        coalesce(s.secret_type, s.key_type) AS detector_name,
        s.matched_text AS matched_text, s.context AS context,
        s.validation_status AS validation_status, s.validated_at AS validated_at,
-       s.validation_info AS validation_info,
+       s.validation_info AS validation_info, s.public_client_key AS public_client_key,
        s.stale_since AS stale_since, s.confidence AS confidence,
        s.triage_status AS triage_status, s.triage_source AS triage_source,
        s.triage_evidence_hash AS triage_evidence_hash,
@@ -435,7 +457,7 @@ RETURN j.id AS id, 'JsReconFinding' AS label, 'js_recon' AS source,
        coalesce(j.title, j.finding_type) AS name,
        coalesce(j.severity, 'low') AS severity,
        j.finding_type AS finding_type, j.confidence AS confidence,
-       j.detail AS description, j.evidence AS evidence,
+       j.detail AS description, j.evidence AS evidence, j.control_check AS control_check,
        j.package_name AS package_name, j.stale_since AS stale_since,
        j.triage_status AS triage_status, j.triage_source AS triage_source,
        j.triage_evidence_hash AS triage_evidence_hash,
@@ -619,6 +641,13 @@ def build_project_facts(raw: dict) -> ProjectFacts:
         facts.injectable_auth_hosts |= _clean(row.get("hosts"))
     for row in raw.get("gone_hosts") or []:
         facts.gone_hosts |= _clean(row.get("hosts"))
+    for row in raw.get("skipped_hosts") or []:
+        facts.skipped_hosts |= {h.lower() for h in _clean(row.get("hosts"))}
+    for row in raw.get("name_ownership") or []:
+        name = str(row.get("name") or "").strip().lower()
+        if name:
+            facts.name_ownership.setdefault(name, set()).update(
+                str(t or "").strip() for t in row.get("tags") or [None])
 
     for row in raw.get("port_hosts") or []:
         host = str(row.get("host") or "").strip()

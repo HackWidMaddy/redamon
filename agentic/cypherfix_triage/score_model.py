@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
 
@@ -80,6 +80,9 @@ IMPACT_UNKNOWN = 0.45
 #: findings sit on assets a scanner reached, and assuming the worst about
 #: missing data would make R meaningless.
 REACH_UNKNOWN = 0.8
+#: The evidence that default carries. The reachable-now gate reads it as
+#: "unknown": a guess good enough to rank by is not a fact to report on.
+REACH_NO_EVIDENCE = "no reachability evidence either way"
 
 
 def normalise_severity(value: Any) -> Optional[str]:
@@ -715,6 +718,12 @@ class ProjectFacts:
     #: IP addresses no current DNS name of the target points at (never an
     #: IP-mode target, which the operator listed by address)
     no_dns_name_hosts: set = field(default_factory=set)
+    #: hosts the run skipped (a tripped breaker), lower-case names and
+    #: addresses: not re-checked, so their reachability is unknown
+    skipped_hosts: set = field(default_factory=set)
+    #: DNS name -> the attribution tags of the IPs it currently resolves to,
+    #: '' for an IP no run has attributed yet
+    name_ownership: dict = field(default_factory=dict)
     #: detector key -> {"real": n, "fp": n}, this USER's own verdicts across
     #: every project of theirs. Never shared between users: one operator's
     #: "that detector is noise here" is about their estate, not about the
@@ -1470,7 +1479,143 @@ def _reach(finding: dict, facts: ProjectFacts, cvss: Cvss) -> Factor:
     if host and host in facts.cdn_only_hosts:
         return Factor(0.7, "behind a CDN with no origin found")
 
-    return Factor(REACH_UNKNOWN, "no reachability evidence either way")
+    return Factor(REACH_UNKNOWN, REACH_NO_EVIDENCE)
+
+
+# ===========================================================================
+# The four gates (plan 10.4): what a finding still lacks to be reported
+# ===========================================================================
+#: Asked of every finding, in this order, before it goes in a report. Each is
+#: True, False or None (unknown). They name a candidate's blocker
+#: (`disposition`); no tier and no score reads them.
+GATES = ("reachable_now", "attributed", "controlled", "impactful")
+
+#: R at or above this is reachable now: the bar the KEV and "Act soon" rules use.
+REACHABLE_NOW_MIN_REACH = 0.7
+
+#: A control that ran and showed the hit was not the target's doing: the cache
+#: confirmation's verdicts (recon/cache_scan/confirm.py). That check drops such
+#: a hit today, so only an older or another writer could store one.
+_CONTROL_CONTRADICTED = frozenset({"canary_on_fresh_slot", "baseline_drift", "not_reproduced"})
+
+
+def _gate_name(host: str) -> str:
+    """The host's name or address, lower-case, with no scheme, port or IPv6
+    brackets: how the coverage record spells a skipped host
+    (circuit_breaker.hostname_of) and how the IP and DNS facts are keyed."""
+    text = str(host or "").strip()
+    if "://" in text:
+        try:
+            text = urlparse(text).hostname or ""
+        except ValueError:
+            return ""
+    elif text.startswith("["):
+        text = text[1:].split("]", 1)[0]
+    elif text.count(":") == 1:
+        text = text.split(":", 1)[0]
+    return text.lower()
+
+
+def _behind_a_login(facts: ProjectFacts, host: str) -> bool:
+    """The matched URL answered, with 401/403: `_reach`'s login rule."""
+    return bool(host) and host in facts.live_hosts and host in facts.auth_required_hosts
+
+
+def _reachable_now(finding: dict, facts: ProjectFacts, cvss: Cvss, host: str,
+                   name: str) -> Optional[bool]:
+    if host and host in facts.gone_hosts:
+        return False
+    if name and name in facts.skipped_hosts:
+        return None
+    if _lower(finding.get("source")) in PASSIVE_CVE_SOURCES:
+        # A banner is as current as the port scan that found its port again,
+        # whatever else on the host answers.
+        verdict = finding.get("port_confirmed")
+        if verdict is True or _lower(verdict) == "true":
+            return True
+        if verdict is False or _lower(verdict) == "false":
+            return False
+        return None
+    if _behind_a_login(facts, host):
+        # It answered: the login is the impact gate's business.
+        return True
+    # Before reach()'s caps: a shared edge is the attribution gate's business.
+    raw = _reach(finding, facts, cvss)
+    if raw.evidence == REACH_NO_EVIDENCE:
+        return None
+    return raw.value >= REACHABLE_NOW_MIN_REACH
+
+
+def _attributed(facts: ProjectFacts, host: str, name: str) -> Optional[bool]:
+    """Does the finding sit on the target's own server, as far as the IP
+    attribution tag (plan 11) shows? False means a shared edge may be what
+    answered, never "not the target's"."""
+    if not name:
+        return None
+    tag = facts.ip_ownership.get(name)
+    if name in facts.shared_edge_hosts or tag == "shared_edge":
+        return False
+    if tag is not None:
+        return True if tag == "dedicated" else None
+    if name in facts.origin_exposed_hosts or host in facts.origin_exposed_hosts:
+        return True
+    if name in facts.cdn_only_hosts or host in facts.cdn_only_hosts:
+        return False
+    tags = facts.name_ownership.get(name)
+    if tags == {"dedicated"}:
+        return True
+    if tags == {"shared_edge"}:
+        return False
+    return None
+
+
+def _evidence_field(value: Any, key: str) -> Any:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value) if value.strip() else None
+        except ValueError:
+            return None
+    return value.get(key) if isinstance(value, dict) else None
+
+
+def _controlled(finding: dict) -> Optional[bool]:
+    """Did a made-up request get a different answer? Only a check that ran and
+    read its control says either way: "failed" (the control got no answer) and
+    a producer with no control both leave it unknown."""
+    verdict = _lower(finding.get("control_check"))
+    if not verdict and _lower(finding.get("source")) == "cache_poisoning":
+        verdict = _lower(_evidence_field(finding.get("evidence"), "control_check"))
+    if verdict == "passed":
+        return True
+    if verdict in _CONTROL_CONTRADICTED:
+        return False
+    return None
+
+
+def _impactful(facts: ProjectFacts, host: str, proven: bool) -> Optional[bool]:
+    if proven:
+        return True
+    if _behind_a_login(facts, host):
+        # A 401 is the protection working.
+        return False
+    return None
+
+
+def gate_facts(finding: dict, facts: ProjectFacts, proven: bool) -> dict:
+    """{gate: True | False | None} for one finding. Pure."""
+    finding = finding or {}
+    host = str(finding.get("triage_host") or finding.get("host") or "")
+    name = _gate_name(host)
+    return {
+        "reachable_now": _reachable_now(finding, facts, _cvss_of(finding), host, name),
+        "attributed": _attributed(facts, host, name),
+        "controlled": _controlled(finding),
+        "impactful": _impactful(facts, host, proven),
+    }
+
+
+def _gate_value(value: Any) -> Optional[bool]:
+    return value if isinstance(value, bool) else None
 
 
 # ===========================================================================
@@ -1490,25 +1635,44 @@ class TierInputs:
     #: C to PASSIVE_REVIEW_MAX_CONFIDENCE at most. Stored only when set, so
     #: every other finding keeps its stored inputs as they were.
     passive_unconfirmed: bool = False
+    #: A key that is public by design: its disposition is info whatever its
+    #: tier. Stored only when set.
+    public_client_key: bool = False
+    #: {gate: True | False | None} for each of GATES. None as a whole on inputs
+    #: stored before the gates were measured: unmeasured, which is not unknown.
+    gates: Optional[dict] = None
 
     def as_dict(self) -> dict:
         out = {"proven": bool(self.proven), "kev": bool(self.kev)}
         if self.passive_unconfirmed:
             out["passive_unconfirmed"] = True
+        if self.public_client_key:
+            out["public_client_key"] = True
+        if self.gates is not None:
+            out["gates"] = {g: _gate_value(self.gates.get(g)) for g in GATES}
         return out
 
     @classmethod
     def from_dict(cls, value) -> "TierInputs":
         value = value if isinstance(value, dict) else {}
+        gates = value.get("gates")
         return cls(proven=bool(value.get("proven")), kev=bool(value.get("kev")),
-                   passive_unconfirmed=bool(value.get("passive_unconfirmed")))
+                   passive_unconfirmed=bool(value.get("passive_unconfirmed")),
+                   public_client_key=bool(value.get("public_client_key")),
+                   gates=({g: _gate_value(gates.get(g)) for g in GATES}
+                          if isinstance(gates, dict) else None))
 
 
 def tier_inputs(finding: dict, facts: ProjectFacts, intel: dict) -> TierInputs:
-    cves = [str(x).upper() for x in _as_list((finding or {}).get("cve_ids"))]
-    kev = _truthy((finding or {}).get("cisa_kev")) or _best_cve_intel(cves, intel or {}).get("kev")
-    return TierInputs(proven=is_proven(finding or {}, facts), kev=bool(kev),
-                      passive_unconfirmed=_passive_unconfirmed(finding or {}))
+    finding = finding or {}
+    cves = [str(x).upper() for x in _as_list(finding.get("cve_ids"))]
+    kev = _truthy(finding.get("cisa_kev")) or _best_cve_intel(cves, intel or {}).get("kev")
+    proven = is_proven(finding, facts)
+    return TierInputs(proven=proven, kev=bool(kev),
+                      passive_unconfirmed=_passive_unconfirmed(finding),
+                      public_client_key=(_is_public_client_key(finding)
+                                         or _truthy(finding.get("public_client_key"))),
+                      gates=gate_facts(finding, facts, proven))
 
 
 def tier_rule(inputs: TierInputs, c: float, l: float, i: float, r: float) -> tuple[str, str]:
@@ -1560,10 +1724,7 @@ def score(finding: dict, facts: Optional[ProjectFacts] = None,
     intel = intel or {}
 
     klass = _class_for(finding)
-    cvss = parse_cvss_vector(
-        finding.get("cvss_vector") or finding.get("cvss_metrics")
-        or finding.get("cve_cvss_vector")
-    )
+    cvss = _cvss_of(finding)
 
     state, state_why = finding_state(finding, facts)
 
@@ -1604,6 +1765,11 @@ def score(finding: dict, facts: Optional[ProjectFacts] = None,
         warnings=warnings,
         tier_inputs=inputs,
     )
+
+
+def _cvss_of(finding: dict) -> Cvss:
+    return parse_cvss_vector(finding.get("cvss_vector") or finding.get("cvss_metrics")
+                             or finding.get("cve_cvss_vector"))
 
 
 def _class_for(finding: dict) -> FindingClass:
@@ -1869,8 +2035,7 @@ def combine_layers(base: BaseLayer, review: Optional[ReviewLayer],
     still not be talked down.
     """
     proven = bool(base.inputs.proven or proven_now)
-    inputs = TierInputs(proven=proven, kev=base.inputs.kev,
-                        passive_unconfirmed=base.inputs.passive_unconfirmed)
+    inputs = replace(base.inputs, proven=proven)
     real_ceiling = (PASSIVE_REVIEW_MAX_CONFIDENCE
                     if base.inputs.passive_unconfirmed and not proven else 0.95)
     evidence = {k: ((base.factors or {}).get(k) or {}).get("evidence", "")

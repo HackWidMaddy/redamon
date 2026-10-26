@@ -345,7 +345,9 @@ class TestHappyPath(unittest.TestCase):
         self.assertEqual(v1["math_score"], v1["score"])
         self.assertEqual(v1["decided_by"], "rules")
         self.assertEqual(len(v1["evidence_hash"]), 40)
-        self.assertEqual(set(v1["tier_inputs"]), {"proven", "kev"})
+        self.assertEqual(set(v1["tier_inputs"]), {"proven", "kev", "gates"})
+        self.assertEqual(set(v1["tier_inputs"]["gates"]),
+                         {"reachable_now", "attributed", "controlled", "impactful"})
 
     def test_the_run_never_writes_a_decision(self):
         for row in self.h.written:

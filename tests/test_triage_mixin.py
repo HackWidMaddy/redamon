@@ -351,6 +351,17 @@ class TestThePublishIsLayered(unittest.TestCase):
         self.assertIsInstance(row["base_factors"], str)
         self.assertIn('"C"', row["base_factors"])
 
+    def test_the_fullest_tier_inputs_are_stored_whole(self):
+        """A cut JSON string reads back as {}: proof and the gates would be
+        lost at the next verdict's rescore. Every key set at once must fit."""
+        import json
+        fullest = {"proven": False, "kev": False, "passive_unconfirmed": True,
+                   "public_client_key": True,
+                   "gates": {"reachable_now": False, "attributed": False,
+                             "controlled": False, "impactful": False}}
+        row = TriageMixin._clean_layer_row(_layer_row(tier_inputs=fullest))
+        self.assertEqual(json.loads(row["tier_inputs"]), fullest)
+
     def test_it_is_one_managed_transaction_that_locks_before_it_reads(self):
         client = FakeClient(records=[])
         client.publish_triage_layers(UID, PID, [_layer_row()], _combine_stub)
