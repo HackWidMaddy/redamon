@@ -791,4 +791,20 @@ describe('disposition on the board (plan 10.2b)', () => {
     expect(await within(panel).findByTestId('disposition-line'))
       .toHaveTextContent('Disposition: Candidate, not triaged yet')
   })
+
+  test('a row a v3.10 run rescored shows the blocker the run stored (plan 10.5)', async () => {
+    const row = { ...rows[1], triage_disposition: 'candidate', triage_blocker: 'shared edge' }
+    serve({
+      findings: board([row]),
+      finding: () => ({ body: detailOf(row) }),
+      evidence: () => ({ body: EVIDENCE }),
+    })
+    render(<TriageTable projectId="p1" />)
+    await screen.findByRole('button', { name: 'Outdated banner' })
+    expect(chipOf('Outdated banner')!.title.startsWith('Candidate, blocked by shared edge')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Outdated banner' }))
+    const panel = screen.getByRole('complementary', { name: 'Finding details' })
+    expect(await within(panel).findByTestId('disposition-line'))
+      .toHaveTextContent('Disposition: Candidate, blocked by shared edge')
+  })
 })

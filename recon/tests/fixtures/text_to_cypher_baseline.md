@@ -1230,7 +1230,8 @@ machine reading the evidence: the built-in AI during a run, or an external
 agent over MCP (`triage_ai_*`). DECISION is a person's Real or False positive
 (`triage_status`, `triage_source`, `triage_verdict_*`). The FINAL values
 (`triage_priority_score`, `triage_tier`, `triage_state`, `triage_factors`,
-`triage_decided_by`) are computed from the three; nobody writes them directly.
+`triage_decided_by`, `triage_disposition`, `triage_blocker`) are computed from
+the three; nobody writes them directly.
 
 Suppression is a HUMAN action and triage never performs it: a triage run
 ranks a finding, it never hides one. A suppressed finding carries the
@@ -1258,6 +1259,8 @@ not so you can query for one.
 - triage_signals (list[string]): The readable fact chips: `KEV`, `EPSS 0.94`, `live endpoint`
 - triage_state (string): `open` | `fixed` | `gone` | `inactive` | `false_positive`. Only `open` is ranked. `false_positive` comes from a person's decision or a still-valid review
 - triage_decided_by (string): Which layer set the final values: `rules` | `review` | `person`
+- triage_disposition (string): Can this go in a report? `reportable` (proven, or a person's Real) | `candidate` (might be real; `triage_blocker` says what is missing) | `info` (no impact even if real: nothing here has any impact, or a key public by design) | `excluded` (a person's False positive, or fixed / gone / inactive). An AI review's false positive is a `candidate`, never `excluded`. Absent on a node no v3.10 run has rescored: the webapp then computes it from the props above
+- triage_blocker (string): What a `candidate` still lacks, null otherwise: `AI review: likely false positive` when a review called it one; else the first report gate that failed (`not reachable now`, `shared edge`, `failed its control check`, `no impact shown`); else the first one the run could not tell (`unknown: reachable now` | `unknown: attributed` | `unknown: controlled` | `unknown: impactful`); else the tier rule. `shared edge` says a CDN edge may be what answered, never that the target does not own it
 - triage_rescored_at (datetime): When the final values were last computed
 - triage_host (string): The host the model resolved and scored against, deterministically
 - triage_group_key (string): One problem, one fix. Replaces `triage_cluster_id`

@@ -504,9 +504,13 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'their `total` is exact.\n\n' +
         '`disposition` answers "can this go in a report?", as the RedAmon report counts it. ' +
         'Report ONLY `reportable` findings (proven by an exploit or a validator, or confirmed by ' +
-        'a person). Treat `candidate` as "verify first": its `blocker` says what is missing ' +
-        '(not triaged yet, the tier rule that held it back, or an AI review that called it a ' +
-        'likely false positive, which is NOT a person\'s verdict). `info` has no impact even if ' +
+        'a person). Treat `candidate` as "verify first": its `blocker` says what is missing: the ' +
+        'first report gate the run found failing (`not reachable now`, `shared edge`, `failed ' +
+        'its control check`, `no impact shown`) or could not tell (`unknown: <gate>`); an AI ' +
+        'review that called it a likely false positive, which is NOT a person\'s verdict; or, ' +
+        'on a finding no current run has rescored, its tier rule or `not triaged yet`. ' +
+        '`shared edge` means a CDN edge may be what answered, never that the target does not ' +
+        'own the finding. `info` has no impact even if ' +
         'real; `excluded` was judged a false positive by a person, or resolved. The ' +
         '`disposition`, `severity` and `section` filters apply to the highest-ranked window this ' +
         'tool reads; `totalIsPartial` says when that window was full.\n\n' +

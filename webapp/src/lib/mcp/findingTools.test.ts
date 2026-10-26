@@ -401,6 +401,35 @@ describe('list_findings says whether a finding can go in a report (plan 10.3)', 
     }
   })
 
+  test('the answer a run stored is what it returns and filters on (plan 10.5)', async () => {
+    const stored = [
+      finding({ id: 's1', section: 0, triage_run_id: 'run-2', triage_tier_rule: 'credible, with impact worth planning for',
+        triage_disposition: 'candidate', triage_blocker: 'shared edge',
+        triage_tier_inputs: '{"proven": false, "kev": false, "gates": {"reachable_now": true, "attributed": false, "controlled": null, "impactful": null}}' }),
+      // Rescored before a person's False positive: the live exclusion wins.
+      finding({ id: 's2', triage_status: 'likely_noise', triage_source: 'human', section: 2,
+        triage_disposition: 'candidate', triage_blocker: 'unknown: controlled' }),
+      // A node no v3.10 run has rescored yet: the read-side rules.
+      finding({ id: 's3', section: 0, triage_run_id: 'run-1', triage_tier_rule: 'no rule placed this higher' }),
+    ]
+    agentReturns({ findings: stored, total: stored.length })
+    const r = await listFindings(ctx(), 'p1')
+    const by = Object.fromEntries(r.findings.map(f => [f.id, [f.disposition, f.blocker]]))
+    expect(by).toEqual({
+      s1: ['candidate', 'shared edge'],
+      s2: ['excluded', undefined],
+      s3: ['candidate', 'no rule placed this higher'],
+    })
+    for (const f of r.findings) {
+      expect(f).not.toHaveProperty('triage_disposition')
+      expect(f).not.toHaveProperty('triage_blocker')
+      expect(f).not.toHaveProperty('triage_tier_inputs')
+    }
+    agentReturns({ findings: stored, total: stored.length })
+    const excluded = await listFindings(ctx(), 'p1', { disposition: 'excluded' })
+    expect(excluded.findings.map(f => f.id)).toEqual(['s2'])
+  })
+
   test('the disposition filter keeps one disposition and reports the matched total', async () => {
     agentReturns({ findings: rows, total: rows.length })
     const r = await listFindings(ctx(), 'p1', { disposition: 'candidate' })

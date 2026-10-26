@@ -317,6 +317,7 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
       '`triage_priority_score` is the FINAL score; `triage_math_score` is the rules-only one, and `triage_decided_by` says which layer set the final (`rules`, `review`, `person`). A finding in `likely_false_positive` with `triage_decided_by: review` was called noise by a review, not by a person.',
       'Filter by `decidedBy`, `reviewedVia` or `reviewCurrent` to find the findings a layer decided; those filters give an exact total.',
       'Report only `disposition: reportable` findings: proven, or confirmed by a person. A `candidate` is unverified; its `blocker` says what to check first. `info` has no impact even if real. An AI review\'s "likely false positive" leaves a finding a `candidate`, never `excluded`.',
+      'A `blocker` that starts with `unknown:` names a gate the run could not measure (reachable now, attributed, controlled, impactful): verify that gate yourself before reporting. `shared edge` means a CDN edge may be what answered, not that the finding belongs to someone else.',
       'Suppressed findings are not here at all. Without checking the muted list you cannot tell "nothing found" from "somebody hid it".',
       'A finding carrying `stale_since` was dropped by a later scan but kept because a human had touched it. It is not current, and it is not fixed.',
       'The list is capped. Read the returned and total counts and page, or say the answer is partial.',

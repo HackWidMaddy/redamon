@@ -6,20 +6,33 @@
  *   info        no impact, even if real
  *   excluded    a person judged it a false positive, or a rule resolved it
  *
- * Computed from what the Priority Board already stores, in this order, so the
- * first rule that matches wins. An AI review alone decides none of them: its
- * false positive stays a candidate with a blocker that says so, because the
- * reviewer reads target-controlled text (see reportable.ts). Unknown or missing
- * values make a candidate "not triaged yet", never a reportable finding.
+ * A Priority Board run (score model v3.10+) stores the answer on the node,
+ * `triage_disposition` and `triage_blocker`, and every reader shows that. For a
+ * node no such run has rescored, the same rules run here on what the board
+ * already stores, in this order, so the first rule that matches wins. An AI
+ * review alone decides none of them: its false positive stays a candidate with
+ * a blocker that says so, because the reviewer reads target-controlled text
+ * (see reportable.ts). Unknown or missing values make a candidate "not triaged
+ * yet", never a reportable finding.
  *
- * "Excluded" and "AI review" are reportable.ts's buckets, and the public-key
- * test is publicClientKeys.ts's, so a finding's disposition can never disagree
- * with the report's "not counted" lines or its public-key list.
+ * "Excluded" is always reportable.ts's own bucket, read live before any stored
+ * answer, and the public-key test is publicClientKeys.ts's, so a finding's
+ * disposition can never disagree with the report's "not counted" lines or its
+ * public-key list.
  *
- * Both halves are built from the same constants: the board and MCP decide in
- * TypeScript, the report and Insights group in Cypher. The live parity check
- * over the shared vectors is disposition.integration.test.ts. Neither Cypher
- * half names the `Muted` label or binds a parameter, so any query can carry it.
+ * A candidate's blocker is the first of the four gates (reachable now,
+ * attributed, controlled, impactful) its run found failing, else the first it
+ * could not tell, else its tier rule. score_model.disposition_of is the stored
+ * half; agentic/tests/test_disposition_parity.py runs it over the vector files
+ * this half is tested on.
+ *
+ * Both halves here are built from the same constants: the board and MCP decide
+ * in TypeScript, the report and Insights group in Cypher. The live parity check
+ * over the shared vectors is disposition.integration.test.ts. The Cypher half
+ * cannot read the gates inside the stored tier inputs (a JSON string), and needs
+ * not: a run writes them together with the stored answer it prefers. Neither
+ * Cypher half names the `Muted` label or binds a parameter, so any query can
+ * carry it.
  */
 import { reportBucket, reportBucketCypher, reportCountable, type ReportTriageProps } from './reportable'
 import { agentCandidateConfirmedOrNA, notMuted } from '@/lib/graphMute'
@@ -54,6 +67,18 @@ export const TIER_RULE_NO_IMPACT = 'nothing here has any impact'
 export const BLOCKER_NOT_TRIAGED = 'not triaged yet'
 export const BLOCKER_AI_FALSE_POSITIVE = 'AI review: likely false positive'
 
+/** The four gates, in the order a blocker names them (score_model.GATES). */
+export const GATES = ['reachable_now', 'attributed', 'controlled', 'impactful'] as const
+export type Gate = (typeof GATES)[number]
+
+/** Each gate's blocker when it fails, and when the run could not tell. */
+export const GATE_BLOCKERS: Record<Gate, { failed: string; unknown: string }> = {
+  reachable_now: { failed: 'not reachable now', unknown: 'unknown: reachable now' },
+  attributed: { failed: 'shared edge', unknown: 'unknown: attributed' },
+  controlled: { failed: 'failed its control check', unknown: 'unknown: controlled' },
+  impactful: { failed: 'no impact shown', unknown: 'unknown: impactful' },
+}
+
 /** The board's own info-level severities (the triage mixin's severity rank). */
 export const INFO_SEVERITIES = ['info', 'informational', 'none'] as const
 
@@ -69,7 +94,15 @@ export interface DispositionProps extends ReportTriageProps {
   severity?: unknown
   public_client_key?: unknown
   secret_type?: unknown
+  /** JSON: the run's tier inputs, with its `gates` and `public_client_key`. */
+  triage_tier_inputs?: unknown
+  /** The answer a run stored, preferred when it is whole. */
+  triage_disposition?: unknown
+  triage_blocker?: unknown
 }
+
+/** The answers a run may store; "excluded" is always decided live. */
+const STORED = ['reportable', 'candidate', 'info'] as const
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 
@@ -91,7 +124,50 @@ function infoSeverity(p: DispositionProps): boolean {
     (INFO_SEVERITIES as readonly string[]).includes(p.severity.trim().toLowerCase())
 }
 
-export function disposition(p: DispositionProps): DispositionResult {
+interface StoredInputs {
+  gates: Record<Gate, boolean | null> | null
+  publicClientKey: boolean
+}
+
+/** The run's tier inputs, as score_model.TierInputs.from_dict reads them. */
+function storedInputs(p: DispositionProps): StoredInputs {
+  let raw: unknown = p.triage_tier_inputs
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { raw = null }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { gates: null, publicClientKey: false }
+  const inputs = raw as Record<string, unknown>
+  const g = inputs.gates
+  const gates = g && typeof g === 'object' && !Array.isArray(g)
+    ? Object.fromEntries(GATES.map((k) => {
+      const v = (g as Record<string, unknown>)[k]
+      return [k, typeof v === 'boolean' ? v : null]
+    })) as Record<Gate, boolean | null>
+    : null
+  return { gates, publicClientKey: inputs.public_client_key === true }
+}
+
+/** The first gate that failed, else the first unknown one; null if all passed or none was measured. */
+function gateBlocker(gates: Record<Gate, boolean | null> | null): string | null {
+  if (!gates) return null
+  for (const g of GATES) if (gates[g] === false) return GATE_BLOCKERS[g].failed
+  for (const g of GATES) if (gates[g] === null) return GATE_BLOCKERS[g].unknown
+  return null
+}
+
+function storedDisposition(p: DispositionProps): DispositionResult | null {
+  const d = p.triage_disposition
+  if (!(STORED as readonly unknown[]).includes(d)) return null
+  if (d !== 'candidate') return { disposition: d as Disposition, blocker: null }
+  const b = p.triage_blocker
+  return typeof b === 'string' && b !== '' ? { disposition: 'candidate', blocker: b } : null
+}
+
+/**
+ * The rules on their own, ignoring a stored answer: what a reader shows for a
+ * node no v3.10 run has rescored, and what a run's stored answer must equal.
+ */
+export function readSideDisposition(p: DispositionProps): DispositionResult {
   const bucket = reportBucket(p)
   if (bucket === 'resolved' || bucket === 'person_false_positive') {
     return { disposition: 'excluded', blocker: null }
@@ -100,12 +176,21 @@ export function disposition(p: DispositionProps): DispositionResult {
   if (rule === TIER_RULE_PROVEN || personConfirmed(p)) {
     return { disposition: 'reportable', blocker: null }
   }
+  const inputs = storedInputs(p)
   if (rule === TIER_RULE_NO_IMPACT || isPublicClientKey(p.public_client_key, p.secret_type) ||
-      (rule === '' && infoSeverity(p))) {
+      inputs.publicClientKey || (rule === '' && infoSeverity(p))) {
     return { disposition: 'info', blocker: null }
   }
   if (bucket === 'ai_flagged') return { disposition: 'candidate', blocker: BLOCKER_AI_FALSE_POSITIVE }
-  return { disposition: 'candidate', blocker: rule || BLOCKER_NOT_TRIAGED }
+  return { disposition: 'candidate', blocker: gateBlocker(inputs.gates) || rule || BLOCKER_NOT_TRIAGED }
+}
+
+export function disposition(p: DispositionProps): DispositionResult {
+  const bucket = reportBucket(p)
+  if (bucket === 'resolved' || bucket === 'person_false_positive') {
+    return { disposition: 'excluded', blocker: null }
+  }
+  return storedDisposition(p) ?? readSideDisposition(p)
 }
 
 /** Null when there are no props to read: a reader then shows nothing, never a default. */
@@ -131,12 +216,25 @@ function tierRuleCypher(v: string): string {
   return `coalesce(${v}.triage_tier_rule, '')`
 }
 
+/**
+ * The stored answer is whole: an answer a run may store, and a candidate names
+ * its blocker. `> ''` is null, so false, for a missing or non-string blocker,
+ * where trim() would fail the whole query.
+ */
+function storedCypher(v: string): string {
+  return (
+    `(${v}.triage_disposition IN ${quoted(STORED.filter((d) => d !== 'candidate'))} ` +
+    `OR (${v}.triage_disposition = 'candidate' AND ${v}.triage_blocker > ''))`
+  )
+}
+
 /** A Cypher expression yielding the `Disposition` of the finding bound to `v`. */
 export function dispositionCypher(v: string): string {
   checked(v)
   const rule = tierRuleCypher(v)
   return (
     `CASE WHEN NOT (${reportCountable(v)}) THEN 'excluded' ` +
+    `WHEN ${storedCypher(v)} THEN ${v}.triage_disposition ` +
     `WHEN ${rule} = '${TIER_RULE_PROVEN}' ` +
     `OR (coalesce(${v}.triage_status, '') = 'confirmed' AND coalesce(${v}.triage_source, '') = 'human') ` +
     `THEN 'reportable' ` +
@@ -152,7 +250,8 @@ export function blockerCypher(v: string): string {
   const rule = tierRuleCypher(v)
   return (
     `CASE WHEN ${dispositionCypher(v)} = 'candidate' THEN ` +
-    `CASE WHEN ${reportBucketCypher(v)} = 'ai_flagged' THEN '${BLOCKER_AI_FALSE_POSITIVE}' ` +
+    `CASE WHEN ${storedCypher(v)} THEN ${v}.triage_blocker ` +
+    `WHEN ${reportBucketCypher(v)} = 'ai_flagged' THEN '${BLOCKER_AI_FALSE_POSITIVE}' ` +
     `WHEN ${rule} <> '' THEN ${v}.triage_tier_rule ELSE '${BLOCKER_NOT_TRIAGED}' END END`
   )
 }

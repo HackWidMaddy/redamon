@@ -732,7 +732,8 @@ class TestCombineLayers(unittest.TestCase):
         repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         allowed = {os.path.join("graph_db", "mixins", "recon", "triage_mixin.py")}
         pattern = re.compile(
-            r"\bSET\b[^;]*?\b[A-Za-z_]\w*\.(triage_priority_score|triage_tier|triage_state)\s*=(?!=)",
+            r"\bSET\b[^;]*?\b[A-Za-z_]\w*\.(triage_priority_score|triage_tier|triage_state"
+            r"|triage_disposition|triage_blocker)\s*=(?!=)",
             re.S)
         offenders = []
         for top in ("graph_db", "agentic"):
@@ -1007,6 +1008,154 @@ class TestGateFacts(unittest.TestCase):
                                   gates={g: rng.choice([True, False, None]) for g in sm.GATES})
             c, l, i, r = (rng.random() for _ in range(4))
             self.assertEqual(sm.tier_rule(inputs, c, l, i, r), sm.tier_rule(gated, c, l, i, r))
+
+
+# ---------------------------------------------------------------------------
+# Disposition (plan 10.5): combine_layers' answer to "can this go in a report?"
+# ---------------------------------------------------------------------------
+def _gated(gates=None, **kwargs):
+    """A scored open candidate whose stored gates are exactly `gates`."""
+    from dataclasses import replace
+    base = _base(**kwargs)
+    full = {g: None for g in sm.GATES}
+    full.update(gates or {})
+    return replace(base, inputs=replace(base.inputs, gates=full))
+
+
+class TestDisposition(unittest.TestCase):
+    def combine(self, base, review=None, decision=None, **kw):
+        return sm.combine_layers(base, review, decision, HASH, **kw)
+
+    def test_each_failing_gate_names_its_blocker(self):
+        want = {"reachable_now": "not reachable now", "attributed": "shared edge",
+                "controlled": "failed its control check", "impactful": "no impact shown"}
+        for gate, blocker in want.items():
+            with self.subTest(gate=gate):
+                passing = {g: True for g in sm.GATES if g != "impactful"}
+                final = self.combine(_gated({**passing, gate: False}))
+                self.assertEqual((final.disposition, final.blocker), ("candidate", blocker))
+
+    def test_a_failing_gate_is_named_before_an_unknown_one(self):
+        final = self.combine(_gated({"reachable_now": None, "attributed": None,
+                                     "controlled": False}))
+        self.assertEqual(final.blocker, "failed its control check")
+
+    def test_the_first_unknown_gate_is_named_when_none_fails(self):
+        cases = (({}, "unknown: reachable now"),
+                 ({"reachable_now": True}, "unknown: attributed"),
+                 ({"reachable_now": True, "attributed": True}, "unknown: controlled"),
+                 ({"reachable_now": True, "attributed": True, "controlled": True},
+                  "unknown: impactful"))
+        for gates, blocker in cases:
+            with self.subTest(gates=gates):
+                self.assertEqual(self.combine(_gated(gates)).blocker, blocker)
+
+    def test_with_every_gate_passed_the_tier_rule_is_the_blocker(self):
+        """Unreachable through a run (impact shown is proof, which is
+        reportable); a stored set can still say it, so it must not crash."""
+        final = self.combine(_gated({g: True for g in sm.GATES}))
+        self.assertEqual((final.disposition, final.blocker), ("candidate", final.tier_rule))
+
+    def test_a_person_s_real_is_reportable_whatever_the_gates_say(self):
+        final = self.combine(_gated({g: False for g in sm.GATES}),
+                             decision=sm.DecisionLayer("confirmed"))
+        self.assertEqual((final.disposition, final.blocker), ("reportable", None))
+
+    def test_a_person_s_false_positive_is_excluded(self):
+        for review in (None, _review(verdict="real")):
+            with self.subTest(review=review):
+                final = self.combine(_gated(), review, sm.DecisionLayer("likely_noise"))
+                self.assertEqual((final.disposition, final.blocker), ("excluded", None))
+
+    def test_proof_is_reportable_from_the_base_or_read_live(self):
+        proven = self.combine(_gated(confirmed_exploits=1))
+        self.assertEqual((proven.disposition, proven.blocker), ("reportable", None))
+        live = self.combine(_gated(), _review(verdict="false_positive"), proven_now=True)
+        self.assertEqual((live.disposition, live.blocker), ("reportable", None))
+
+    def test_a_resolved_finding_is_excluded_whatever_anyone_said(self):
+        row = finding(remediated=True, severity="critical")
+        base = sm.BaseLayer.from_result(sm.score(row))
+        self.assertIsNotNone(base.inputs.gates)
+        for decision in (None, sm.DecisionLayer("confirmed")):
+            with self.subTest(decision=decision):
+                final = self.combine(base, _review(verdict="real"), decision)
+                self.assertEqual((final.disposition, final.blocker), ("excluded", None))
+
+    def test_no_impact_and_a_public_key_are_info(self):
+        from dataclasses import replace
+        no_impact = sm.BaseLayer.from_result(sm.score(finding(severity="info", tags=["tech"])))
+        self.assertEqual(no_impact.tier_rule, sm.TIER_RULE_NO_IMPACT)
+        self.assertEqual(self.combine(no_impact).disposition, "info")
+        public = _gated()
+        public = replace(public, inputs=replace(public.inputs, public_client_key=True))
+        final = self.combine(public)
+        self.assertEqual((final.disposition, final.blocker), ("info", None))
+
+    def test_security_an_ai_false_positive_is_a_candidate_never_excluded(self):
+        """The reviewer reads target-controlled text: its false positive is
+        labelled, never a removal and never a promotion."""
+        for channel in ("builtin", "mcp"):
+            with self.subTest(channel=channel):
+                final = self.combine(_gated({"reachable_now": False}),
+                                     _review(verdict="false_positive", channel=channel))
+                self.assertEqual(final.state, "false_positive")
+                self.assertEqual((final.disposition, final.blocker),
+                                 ("candidate", sm.BLOCKER_AI_FALSE_POSITIVE))
+
+    def test_an_ai_false_positive_on_a_public_key_stays_info(self):
+        from dataclasses import replace
+        public = _gated()
+        public = replace(public, inputs=replace(public.inputs, public_client_key=True))
+        final = self.combine(public, _review(verdict="false_positive"))
+        self.assertEqual(final.disposition, "info")
+
+    def test_a_review_cannot_set_the_disposition(self):
+        """Real, doubtful and unclear move factors, never the answer or its
+        blocker: those come from the gates, the base and a person."""
+        rng = random.Random(TestCombineLayers.SEED + 11)
+        for _ in range(200):
+            gates = {g: rng.choice([True, False, None]) for g in sm.GATES}
+            gates["impactful"] = rng.choice([False, None])
+            base = _gated(gates, severity=rng.choice(["low", "medium", "high", "critical"]))
+            plain = self.combine(base)
+            review = _review(verdict=rng.choice(["real", "doubtful", "unclear"]),
+                             impact_multiplier=rng.uniform(0.5, 1.5), impact_quote="q",
+                             disputed_facts=[{"fact": "reachable"}])
+            reviewed = self.combine(base, review)
+            self.assertEqual((reviewed.disposition, reviewed.blocker),
+                             (plain.disposition, plain.blocker))
+            self.assertNotEqual(reviewed.disposition, "reportable")
+
+    def test_a_base_stored_before_the_gates_stores_no_disposition(self):
+        """Readers keep computing it for such a node until a run rescores it."""
+        from dataclasses import replace
+        base = _base()
+        legacy = replace(base, inputs=sm.TierInputs(proven=False, kev=False))
+        for decision in (None, sm.DecisionLayer("confirmed"), sm.DecisionLayer("likely_noise")):
+            with self.subTest(decision=decision):
+                final = self.combine(legacy, decision=decision)
+                self.assertEqual((final.disposition, final.blocker), (None, None))
+
+    def test_only_a_candidate_names_a_blocker(self):
+        rng = random.Random(TestCombineLayers.SEED + 13)
+        for _ in range(200):
+            base = _gated({g: rng.choice([True, False, None]) for g in sm.GATES},
+                          confirmed_exploits=rng.choice([0, 0, 1]))
+            review = rng.choice([None, _review(verdict=rng.choice(sm.REVIEW_VERDICTS))])
+            decision = rng.choice([None, sm.DecisionLayer("confirmed"),
+                                   sm.DecisionLayer("likely_noise")])
+            final = self.combine(base, review, decision)
+            self.assertIn(final.disposition, sm.DISPOSITIONS)
+            self.assertEqual(final.blocker is not None, final.disposition == "candidate")
+
+    def test_the_final_dict_carries_both(self):
+        out = self.combine(_gated()).as_dict()
+        self.assertEqual((out["disposition"], out["blocker"]), ("candidate", "unknown: reachable now"))
+
+    def test_the_rescore_bumped_the_model_version(self):
+        """Stored dispositions arrive at the next run only because of this bump."""
+        self.assertNotIn(sm.SCORE_MODEL_VERSION, ("v3.9.0",))
 
 
 # ---------------------------------------------------------------------------

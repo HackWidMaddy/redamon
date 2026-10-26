@@ -10,11 +10,14 @@
  */
 import { describe, test, expect, vi } from 'vitest'
 import vectors from './disposition.vectors.json'
+import gateVectors from './disposition.gates.vectors.json'
 import {
   BLOCKER_AI_FALSE_POSITIVE,
   BLOCKER_NOT_TRIAGED,
   DISPOSITIONS,
   DISPOSITION_LABELS,
+  GATES,
+  GATE_BLOCKERS,
   INFO_SEVERITIES,
   TIER_RULE_NO_IMPACT,
   TIER_RULE_PROVEN,
@@ -26,6 +29,7 @@ import {
   inSeverityBreakdown,
   queryDispositionSummary,
   readDisposition,
+  readSideDisposition,
   topBlockers,
 } from './disposition'
 import { PUBLIC_CLIENT_KEY_TYPES } from '@/lib/secrets/publicClientKeys'
@@ -82,6 +86,64 @@ describe('disposition rules that matter for safety', () => {
     for (const v of vectors as Vector[]) {
       expect(v.blocker === null).toBe(v.disposition !== 'candidate')
     }
+  })
+})
+
+describe('the answer a run stored (plan 10.5)', () => {
+  const stored = (vectors as Vector[]).filter((v) => 'triage_disposition' in v.props)
+
+  test('the shared vectors carry stored answers, whole and broken', () => {
+    expect(stored.length).toBeGreaterThanOrEqual(8)
+  })
+
+  test('the read-side rules ignore it: they are what a stored answer is checked against', () => {
+    const p = { triage_tier_rule: 'credible, with impact worth planning for',
+      triage_disposition: 'candidate', triage_blocker: 'shared edge' }
+    expect(disposition(p)).toEqual({ disposition: 'candidate', blocker: 'shared edge' })
+    expect(readSideDisposition(p)).toEqual({ disposition: 'candidate', blocker: 'credible, with impact worth planning for' })
+  })
+
+  test('SECURITY: a stored answer never excludes, and never outlives a live exclusion', () => {
+    expect(disposition({ triage_disposition: 'excluded' }).disposition).toBe('candidate')
+    expect(disposition({ triage_state: 'gone', triage_disposition: 'reportable' }).disposition).toBe('excluded')
+    expect(disposition({ triage_status: 'likely_noise', triage_source: 'human',
+      triage_disposition: 'reportable' }).disposition).toBe('excluded')
+  })
+})
+
+describe('the gates a run measured, over the shared gate vectors', () => {
+  const SCORE_MODEL = join(__dirname, '../../../../agentic/cypherfix_triage/score_model.py')
+
+  test.each((gateVectors as Vector[]).map((v) => [v.why, v] as const))('%s', (_why, v) => {
+    const want = { disposition: v.disposition, blocker: v.blocker }
+    expect(readSideDisposition(v.props)).toEqual(want)
+    expect(disposition(v.props)).toEqual(want)
+  })
+
+  test('every gate blocker is reached, failing and unknown', () => {
+    const blockers = new Set((gateVectors as Vector[]).map((v) => v.blocker))
+    for (const g of GATES) {
+      expect(blockers.has(GATE_BLOCKERS[g].failed)).toBe(true)
+    }
+    expect(blockers.has(GATE_BLOCKERS.reachable_now.unknown)).toBe(true)
+    expect(blockers.has(GATE_BLOCKERS.impactful.unknown)).toBe(true)
+  })
+
+  test('the gates, their order and their words are score_model\'s', () => {
+    const src = readFileSync(SCORE_MODEL, 'utf8')
+    expect(src).toContain(`GATES = (${GATES.map((g) => `"${g}"`).join(', ')})`)
+    for (const g of GATES) {
+      expect(src).toContain(`"${g}": ("${GATE_BLOCKERS[g].failed}", "${GATE_BLOCKERS[g].unknown}")`)
+    }
+  })
+
+  test('tier inputs given as an object are read like the stored JSON string', () => {
+    const inputs = { proven: false, gates: { reachable_now: true, attributed: false } }
+    const rule = 'credible, with impact worth planning for'
+    expect(readSideDisposition({ triage_tier_rule: rule, triage_tier_inputs: inputs }).blocker)
+      .toBe(GATE_BLOCKERS.attributed.failed)
+    expect(readSideDisposition({ triage_tier_rule: rule, triage_tier_inputs: JSON.stringify(inputs) }).blocker)
+      .toBe(GATE_BLOCKERS.attributed.failed)
   })
 })
 
@@ -160,6 +222,16 @@ describe('the Cypher half', () => {
 
   test('the blocker is null outside candidates', () => {
     expect(blockerCypher('n')).toMatch(/^CASE WHEN .* = 'candidate' THEN .* END$/s)
+  })
+
+  test('a whole stored answer is read right after the live exclusion, with no call that can fail', () => {
+    const q = dispositionCypher('n')
+    const stored = "WHEN (n.triage_disposition IN ['reportable', 'info'] OR (n.triage_disposition = 'candidate' AND n.triage_blocker > '')) THEN n.triage_disposition"
+    expect(q).toContain(stored)
+    expect(q.indexOf(stored)).toBeLessThan(q.indexOf(`= '${TIER_RULE_PROVEN}'`))
+    expect(q.indexOf("THEN 'excluded'")).toBeLessThan(q.indexOf(stored))
+    // trim() on a property some writer stored as a number fails the whole query.
+    expect(q + blockerCypher('n')).not.toMatch(/trim\(n\.triage_blocker/)
   })
 
   test('the severity breakdowns keep reportable and candidate findings only', () => {

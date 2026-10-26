@@ -37,7 +37,10 @@ let totalElements = 0
  * verdict changes these and nothing structural, so without them a revalidation
  * got a 304 and the node drawer kept the disposition from before the run.
  */
-const TRIAGE_ETAG_PROPS = ['triage_tier_rule', 'triage_state', 'triage_status', 'triage_source'] as const
+const TRIAGE_ETAG_PROPS = [
+  'triage_tier_rule', 'triage_state', 'triage_status', 'triage_source',
+  'triage_disposition', 'triage_blocker',
+] as const
 
 /**
  * Generate a fast ETag from graph data.

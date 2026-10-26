@@ -448,6 +448,59 @@ class TestThePublishIsLayered(unittest.TestCase):
             client.publish_triage_layers(UID, PID, [_layer_row()], _combine_stub)
 
 
+class TestTheDispositionIsAFinalValue(unittest.TestCase):
+    """Plan 10.5: `triage_disposition` and `triage_blocker` come from combine
+    only, through the same two statements as every other final value."""
+
+    def test_both_are_triage_properties(self):
+        self.assertIn("triage_disposition", TRIAGE_PROPS)
+        self.assertIn("triage_blocker", TRIAGE_PROPS)
+
+    def test_the_enum_is_the_score_model_s(self):
+        from cypherfix_triage import score_model
+        from graph_db.mixins.recon.triage_mixin import VALID_DISPOSITION
+        self.assertEqual(VALID_DISPOSITION, score_model.DISPOSITIONS)
+
+    def test_the_rescore_and_the_publish_write_them_from_combine(self):
+        self.assertIn("n.triage_disposition    = $final.disposition", TriageMixin._FINAL_SET)
+        self.assertIn("n.triage_blocker        = $final.blocker", TriageMixin._FINAL_SET)
+        client = SeqClient([_lock_record()], [])
+        combine = lambda row, props, proven_now: {  # noqa: E731
+            "final": {**FINAL, "disposition": "candidate", "blocker": "shared edge"}, "review": None}
+        client.publish_triage_layers(UID, PID, [_layer_row()], combine)
+        self.assertIn("n.triage_disposition    = row.final.disposition", client.queries[-1])
+        self.assertIn("n.triage_blocker        = row.final.blocker", client.queries[-1])
+        final = client.params[-1]["rows"][0]["final"]
+        self.assertEqual((final["disposition"], final["blocker"]), ("candidate", "shared edge"))
+
+    def test_they_are_clamped_like_every_final(self):
+        clean = TriageMixin._clean_final
+        cases = (
+            ({"disposition": "reportable", "blocker": "leftover"}, ("reportable", None)),
+            ({"disposition": "candidate", "blocker": "x" * 500}, ("candidate", "x" * 200)),
+            ({"disposition": "published", "blocker": "shared edge"}, (None, None)),
+            ({"disposition": "candidate", "blocker": 7}, (None, None)),
+            ({"disposition": "candidate", "blocker": "  "}, (None, None)),
+            ({}, (None, None)),
+        )
+        for final, want in cases:
+            with self.subTest(final=final):
+                out = clean({**FINAL, **final})
+                self.assertEqual((out["disposition"], out["blocker"]), want)
+
+    def test_a_review_cannot_write_them(self):
+        review = {"triage_ai_verdict": "false_positive", "triage_ai_channel": "mcp",
+                  "triage_disposition": "excluded", "triage_blocker": "hidden by the page"}
+        written = TriageMixin._clean_review(review)
+        self.assertNotIn("triage_disposition", written)
+        self.assertNotIn("triage_blocker", written)
+
+    def test_the_board_row_carries_the_stored_answer(self):
+        for query in (TriageMixin._board_row(), TriageMixin._board_row(", 1 AS x")):
+            self.assertIn("n.triage_disposition               AS triage_disposition", query)
+            self.assertIn("n.triage_blocker                   AS triage_blocker", query)
+
+
 class TestAPersonsDecision(unittest.TestCase):
     """set_human_verdict: one transaction, locked, one node, rescored."""
 

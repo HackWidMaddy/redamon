@@ -285,6 +285,8 @@ TRIAGE_PROPS = (
     "triage_factors",         # JSON, the factors after review and decision
     "triage_state",           # open | fixed | gone | inactive | false_positive
     "triage_decided_by",      # rules | review | person
+    "triage_disposition",     # reportable | candidate | info | excluded (plan 10)
+    "triage_blocker",         # what a candidate still lacks; null otherwise
     "triage_rescored_at",
 )
 
@@ -399,6 +401,10 @@ VALID_TRIAGE_STATE = ("open", "fixed", "gone", "inactive", "false_positive")
 
 #: What the AI review may conclude.
 VALID_AI_VERDICT = ("real", "doubtful", "false_positive", "unclear", "not_reviewed")
+
+#: score_model.DISPOSITIONS. graph_db cannot import the agent's model, so a
+#: test pins the two equal.
+VALID_DISPOSITION = ("reportable", "candidate", "info", "excluded")
 
 #: The board's four sections, in the order they are always shown.
 SECTION_RANKED = 0
@@ -1096,6 +1102,9 @@ class TriageMixin:
                coalesce(n.triage_base_tier_rule, '') AS triage_base_tier_rule,
                n.triage_base_state                 AS triage_base_state,
                n.triage_tier_inputs                AS triage_tier_inputs,
+               // combine's answer; absent until a v3.10 run rescores the node
+               n.triage_disposition               AS triage_disposition,
+               n.triage_blocker                   AS triage_blocker,
                decided_by                          AS triage_decided_by,
                CASE WHEN {_PERSON_DECIDED}
                     THEN coalesce(n.triage_verdict_channel, 'app') ELSE '' END AS decided_via,
@@ -1470,6 +1479,13 @@ class TriageMixin:
                 factors = _json.dumps(factors or {}, default=str)
             except (TypeError, ValueError):
                 factors = "{}"
+        # Null for both unless they make a whole answer: a reader then computes
+        # it, which beats storing a candidate with no reason.
+        disposition = final.get("disposition")
+        blocker = final.get("blocker")
+        blocker = blocker.strip()[:200] if isinstance(blocker, str) else ""
+        if disposition not in VALID_DISPOSITION or (disposition == "candidate" and not blocker):
+            disposition = None
         return {
             "score": _float(final.get("score"), 0.0, 100.0),
             "tier": tier,
@@ -1478,6 +1494,8 @@ class TriageMixin:
             "factors": factors[:8000],
             "state": state,
             "decided_by": decided_by,
+            "disposition": disposition,
+            "blocker": blocker if disposition == "candidate" else None,
         }
 
     _FINAL_SET = """n.triage_priority_score = $final.score,
@@ -1487,6 +1505,8 @@ class TriageMixin:
             n.triage_factors        = $final.factors,
             n.triage_state          = $final.state,
             n.triage_decided_by     = $final.decided_by,
+            n.triage_disposition    = $final.disposition,
+            n.triage_blocker        = $final.blocker,
             n.triage_rescored_at    = datetime()"""
 
     #: What a review may write, and nothing else.
@@ -1667,6 +1687,8 @@ class TriageMixin:
             n.triage_factors        = row.final.factors,
             n.triage_state          = row.final.state,
             n.triage_decided_by     = row.final.decided_by,
+            n.triage_disposition    = row.final.disposition,
+            n.triage_blocker        = row.final.blocker,
             n.triage_rescored_at    = datetime()
         FOREACH (_ IN CASE WHEN row.proof IS NOT NULL THEN [1] ELSE [] END |
           SET n.triage_proof = row.proof)

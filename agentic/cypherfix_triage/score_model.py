@@ -53,7 +53,7 @@ from urllib.parse import urlparse
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.9.0"
+SCORE_MODEL_VERSION = "v3.10.0"
 
 
 # ===========================================================================
@@ -1943,13 +1943,76 @@ class Final:
     factors: dict
     state: str
     decided_by: str
+    #: One of DISPOSITIONS, and a candidate's blocker. None when the base was
+    #: stored before the gates were measured: the readers compute it then.
+    disposition: Optional[str] = None
+    blocker: Optional[str] = None
 
     def as_dict(self) -> dict:
         return {
             "score": self.score, "tier": self.tier, "tier_rule": self.tier_rule,
             "risk": self.risk, "factors": self.factors, "state": self.state,
-            "decided_by": self.decided_by,
+            "decided_by": self.decided_by, "disposition": self.disposition,
+            "blocker": self.blocker,
         }
+
+
+# ---------------------------------------------------------------------------
+# Disposition (plan 10.5): can this go in a report?
+# ---------------------------------------------------------------------------
+# The same rules, in the same order and words, as the webapp's read-side
+# disposition (webapp/src/lib/triage/disposition.ts), pinned by
+# tests/test_disposition_parity.py over its vector files: a finding keeps its
+# bucket when a run starts storing the answer.
+DISPOSITIONS = ("reportable", "candidate", "info", "excluded")
+
+#: tier_rule's own strings, as the webapp reads them.
+TIER_RULE_PROVEN = "proven"
+TIER_RULE_NO_IMPACT = "nothing here has any impact"
+
+BLOCKER_NOT_TRIAGED = "not triaged yet"
+BLOCKER_AI_FALSE_POSITIVE = "AI review: likely false positive"
+
+#: gate -> (its blocker when it fails, its blocker when it is unknown).
+GATE_BLOCKERS = {
+    "reachable_now": ("not reachable now", "unknown: reachable now"),
+    "attributed": ("shared edge", "unknown: attributed"),
+    "controlled": ("failed its control check", "unknown: controlled"),
+    "impactful": ("no impact shown", "unknown: impactful"),
+}
+
+
+def gate_blocker(gates: Optional[dict]) -> Optional[str]:
+    """The first gate that fails, else the first unknown one. None for
+    unmeasured gates, or when every gate passed."""
+    if gates is None:
+        return None
+    for gate in GATES:
+        if gates.get(gate) is False:
+            return GATE_BLOCKERS[gate][0]
+    for gate in GATES:
+        if gates.get(gate) is None:
+            return GATE_BLOCKERS[gate][1]
+    return None
+
+
+def disposition_of(state: str, tier_rule: str, person_status: Optional[str],
+                   inputs: TierInputs) -> tuple[str, Optional[str]]:
+    """(disposition, blocker) from a finding's final values. Pure.
+
+    `person_status` is a person's decision only (`confirmed` | `likely_noise`).
+    A review never decides here: its false positive is a candidate that says so,
+    because the reviewer reads target-controlled text.
+    """
+    if state in RESOLVED_STATES or person_status == "likely_noise":
+        return "excluded", None
+    if tier_rule == TIER_RULE_PROVEN or person_status == "confirmed":
+        return "reportable", None
+    if tier_rule == TIER_RULE_NO_IMPACT or inputs.public_client_key:
+        return "info", None
+    if state == STATE_FALSE_POSITIVE:
+        return "candidate", BLOCKER_AI_FALSE_POSITIVE
+    return "candidate", gate_blocker(inputs.gates) or tier_rule or BLOCKER_NOT_TRIAGED
 
 
 def factor_values(factors: dict) -> dict:
@@ -2033,7 +2096,24 @@ def combine_layers(base: BaseLayer, review: Optional[ReviewLayer],
     `proven_now` is proof read live when the combine happens outside a run (a
     verdict or a review write), so a finding proven after the last run can
     still not be talked down.
+
+    The disposition is decided last, from the other final values and the
+    base's gates, so a review reaches it only through the false-positive state
+    it can set, and a person's decision always wins.
     """
+    final = _final_values(base, review, decision, evidence_hash, proven_now)
+    inputs = replace(base.inputs, proven=bool(base.inputs.proven or proven_now))
+    if inputs.gates is None:
+        return final
+    status = decision.status if decision is not None else None
+    disposition, blocker = disposition_of(
+        final.state, final.tier_rule, status if status in DECISION_STATUSES else None, inputs)
+    return replace(final, disposition=disposition, blocker=blocker)
+
+
+def _final_values(base: BaseLayer, review: Optional[ReviewLayer],
+                  decision: Optional[DecisionLayer], evidence_hash: str,
+                  proven_now: bool) -> Final:
     proven = bool(base.inputs.proven or proven_now)
     inputs = replace(base.inputs, proven=proven)
     real_ceiling = (PASSIVE_REVIEW_MAX_CONFIDENCE

@@ -116,6 +116,10 @@ describe('the ETag', () => {
     ['triage_state', 'gone'],
     ['triage_status', 'confirmed'],
     ['triage_source', 'human'],
+    // A rescore can move the stored blocker (a gate a new run measured) and
+    // leave the tier rule as it was.
+    ['triage_disposition', 'reportable'],
+    ['triage_blocker', 'shared edge'],
   ])('a change to %s changes it', (key, value) => {
     expect(setCached('p', graph({}))).not.toBe(setCached('p', graph({ [key]: value })))
   })

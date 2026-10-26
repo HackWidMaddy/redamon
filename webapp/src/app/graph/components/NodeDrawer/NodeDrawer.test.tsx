@@ -258,6 +258,12 @@ describe('NodeDrawer disposition line (plan 10.2b)', () => {
     expect(screen.getByTestId('drawer-disposition')).toHaveTextContent('Candidate, not triaged yet')
   })
 
+  it('a node a v3.10 run rescored shows the blocker the run stored (plan 10.5)', () => {
+    renderDrawer({ node: finding({ severity: 'high', triage_tier_rule: 'credible, with impact worth planning for',
+      triage_disposition: 'candidate', triage_blocker: 'unknown: attributed' }) })
+    expect(screen.getByTestId('drawer-disposition')).toHaveTextContent('Candidate, blocked by unknown: attributed')
+  })
+
   it('proof makes it reportable, a person\'s False positive excludes it', () => {
     renderDrawer({ node: finding({ triage_tier_rule: 'proven' }) })
     expect(screen.getByTestId('drawer-disposition')).toHaveTextContent('Reportable')
