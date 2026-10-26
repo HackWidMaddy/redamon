@@ -222,9 +222,12 @@ RETURN collect(DISTINCT b.url) AS hosts
         "name": "gone_hosts",
         "description": "no live endpoint, no open port, nothing resolves",
         # RESOLVES_TO runs Subdomain -> IP, so each label reads its own end of
-        # it. A host the run skipped (a tripped breaker: the coverage record's
-        # `host:port` keys, normalised as circuit_breaker.hostname_of does for
-        # the prune) was not re-checked, so its absence proves nothing.
+        # it. Only forward DNS counts: Shodan's reverse-DNS and domain-DNS
+        # answers write the same edge with source 'shodan_rdns' / 'shodan_dns',
+        # and a PTR record does not say the host resolves today. A host the run
+        # skipped (a tripped breaker: the coverage record's `host:port` keys,
+        # normalised as circuit_breaker.hostname_of does for the prune) was not
+        # re-checked, so its absence proves nothing.
         "query": """
 OPTIONAL MATCH (d:Domain {user_id: $userId, project_id: $projectId})
 WITH reduce(acc = [], hs IN collect(d.recon_skipped_hosts) | acc + coalesce(hs, [])) AS keys
@@ -241,8 +244,12 @@ WHERE (n:Subdomain OR n:IP)
   AND NOT EXISTS {
     MATCH (n)-[:HAS_PORT]->(p:Port) WHERE toLower(coalesce(p.state, 'open')) = 'open'
   }
-  AND NOT (n:Subdomain AND EXISTS { MATCH (n)-[:RESOLVES_TO]->(:IP) })
-  AND NOT (n:IP AND EXISTS { MATCH (n)<-[:RESOLVES_TO]-(:Subdomain) })
+  AND NOT (n:Subdomain AND EXISTS {
+    MATCH (n)-[r:RESOLVES_TO]->(:IP) WHERE NOT coalesce(r.source, '') STARTS WITH 'shodan_'
+  })
+  AND NOT (n:IP AND EXISTS {
+    MATCH (n)<-[r:RESOLVES_TO]-(:Subdomain) WHERE NOT coalesce(r.source, '') STARTS WITH 'shodan_'
+  })
   AND coalesce(n.is_live, false) = false
   AND NOT toLower(coalesce(n.name, n.address, '')) IN skipped
 RETURN collect(DISTINCT coalesce(n.name, n.address)) AS hosts

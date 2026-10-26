@@ -136,8 +136,8 @@ class TestGoneHostsQuery(unittest.TestCase):
     def test_resolution_is_read_in_the_direction_the_edge_runs(self):
         # RESOLVES_TO runs Subdomain -> IP, so an outgoing pattern from an IP
         # never matched and the "nothing resolves" clause was always true.
-        self.assertIn("n:Subdomain AND EXISTS { MATCH (n)-[:RESOLVES_TO]->(:IP) }", self.QUERY)
-        self.assertIn("n:IP AND EXISTS { MATCH (n)<-[:RESOLVES_TO]-(:Subdomain) }", self.QUERY)
+        self.assertRegex(self.QUERY, r"n:Subdomain AND EXISTS \{\s*MATCH \(n\)-\[r:RESOLVES_TO\]->\(:IP\)")
+        self.assertRegex(self.QUERY, r"n:IP AND EXISTS \{\s*MATCH \(n\)<-\[r:RESOLVES_TO\]-\(:Subdomain\)")
         self.assertNotIn("MATCH (n)-[:RESOLVES_TO]->()", self.QUERY)
 
     def test_hosts_the_run_skipped_are_not_gone(self):

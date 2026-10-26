@@ -385,7 +385,9 @@ class DomainMixin:
                                     )
                                     stats["ips_created"] += 1
 
-                                    # Create relationship: Subdomain -[:RESOLVES_TO]-> IP
+                                    # Create relationship: Subdomain -[:RESOLVES_TO]-> IP.
+                                    # DNS resolved it, so an edge Shodan's reverse DNS
+                                    # created first (source 'shodan_rdns') is forward DNS now.
                                     record_type = "A" if ip_version == "ipv4" else "AAAA"
                                     session.run(
                                         """
@@ -393,6 +395,7 @@ class DomainMixin:
                                         MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                         MERGE (s)-[r:RESOLVES_TO]->(i)
                                         SET r.record_type = coalesce(r.record_type, $record_type)
+                                        REMOVE r.source
                                         """,
                                         subdomain=subdomain, ip=ip_addr, record_type=record_type,
                                         user_id=user_id, project_id=project_id
@@ -649,7 +652,8 @@ class DomainMixin:
                             """
                             MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                             MATCH (i:IP {address: $ip, user_id: $uid, project_id: $pid})
-                            MERGE (s)-[:RESOLVES_TO]->(i)
+                            MERGE (s)-[r:RESOLVES_TO]->(i)
+                            REMOVE r.source
                             """,
                             sub=subdomain_name, ip=ip, uid=user_id, pid=project_id
                         )

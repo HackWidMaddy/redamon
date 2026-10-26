@@ -404,7 +404,7 @@ const IpAttribution = (
   <div style={wrapperStyle}>
     <div style={firstSectionTitleStyle}>How input is generated</div>
     <p style={paraStyle}>
-      IP Attribution reads every <strong>IP</strong> node linked to an in-scope Subdomain (via <span style={codeStyle}>RESOLVES_TO</span>), with its open <strong>Port</strong> nodes and the CDN name a scanner already put on it.
+      IP Attribution reads every <strong>IP</strong> node linked to an in-scope Subdomain (via <span style={codeStyle}>RESOLVES_TO</span>), with its open <strong>Port</strong> nodes and the CDN name a scanner already put on it. A link written by Shodan&apos;s reverse DNS does not count as a name resolving to the IP.
     </p>
     <p style={paraStyle}>
       The only traffic is one TLS handshake without SNI to port 443 of each IP with 443 open, to read the certificate the IP presents when no name is asked for. It is capped per scan, paced at the engagement rate ceiling, never sent to a host the rules of engagement exclude, and skipped in stealth mode. There is no custom input: the step tags IPs already in the graph.

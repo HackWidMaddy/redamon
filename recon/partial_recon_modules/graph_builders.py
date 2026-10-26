@@ -27,6 +27,13 @@ def declared_only_unsafe(alias: str = "e") -> str:
     return DECLARED_ONLY_UNSAFE.format(a=alias)
 
 
+#: True for a RESOLVES_TO edge `r` that is forward DNS. Shodan's reverse-DNS
+#: and domain-DNS answers write the same edge with source 'shodan_rdns' /
+#: 'shodan_dns'; a partial run reading them would take a PTR record for the
+#: name's current address. An edge with no source (DNS, or older) counts.
+FORWARD_DNS = "NOT coalesce(r.source, '') STARTS WITH 'shodan_'"
+
+
 #: A BaseURL is a thin service-identity node: httpx writes the response data
 #: (status, content type, CDN flags) onto the Endpoint it probed, never onto the
 #: BaseURL. Reading `b.status_code` therefore always saw null, so every partial
@@ -280,8 +287,8 @@ def _apex_rows(session, user_id: str, project_id: str, apex_roots: list, returns
     by_lower = {r.lower(): r for r in apex_roots}
     rows = session.run(
         """
-        MATCH (s:Subdomain {user_id: $uid, project_id: $pid})-[:RESOLVES_TO]->(i:IP)
-        WHERE toLower(s.name) IN $apex_roots
+        MATCH (s:Subdomain {user_id: $uid, project_id: $pid})-[r:RESOLVES_TO]->(i:IP)
+        WHERE toLower(s.name) IN $apex_roots AND """ + FORWARD_DNS + """
         """ + returns.replace("{ROOT}", "s.name AS root"),
         apex_roots=list(by_lower), uid=user_id, pid=project_id,
     )
@@ -593,8 +600,8 @@ def _build_recon_data_from_graph(domains, user_id: str, project_id: str,
                 """
                 MATCH (d:Domain {user_id: $uid, project_id: $pid})
                       -[:HAS_SUBDOMAIN]->(s:Subdomain)
-                      -[:RESOLVES_TO]->(i:IP)
-                WHERE toLower(d.name) IN $domains
+                      -[r:RESOLVES_TO]->(i:IP)
+                WHERE toLower(d.name) IN $domains AND """ + FORWARD_DNS + """
                 RETURN d.name AS root, s.name AS subdomain, i.address AS address, i.version AS version
                 """,
                 domains=scope.orgs, uid=user_id, pid=project_id,
@@ -758,8 +765,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
             result = session.run(
                 """
                 MATCH (d:Domain {user_id: $uid, project_id: $pid})
-                      -[:HAS_SUBDOMAIN]->(s:Subdomain)-[:RESOLVES_TO]->(i:IP)
-                WHERE toLower(d.name) IN $domains
+                      -[:HAS_SUBDOMAIN]->(s:Subdomain)-[r:RESOLVES_TO]->(i:IP)
+                WHERE toLower(d.name) IN $domains AND """ + FORWARD_DNS + """
                 OPTIONAL MATCH (i)-[:HAS_PORT]->(p:Port)
                 RETURN d.name AS root, s.name AS subdomain, i.address AS ip, i.version AS version,
                        i.is_cdn AS is_cdn, i.cdn_name AS cdn_name,
@@ -859,8 +866,8 @@ def _build_http_probe_data_from_graph(domains, user_id: str, project_id: str,
                 """
                 MATCH (d:Domain {user_id: $uid, project_id: $pid})
                       -[:HAS_SUBDOMAIN]->(s:Subdomain)
-                      -[:RESOLVES_TO]->(i:IP)
-                WHERE toLower(d.name) IN $domains
+                      -[r:RESOLVES_TO]->(i:IP)
+                WHERE toLower(d.name) IN $domains AND """ + FORWARD_DNS + """
                 RETURN d.name AS root, s.name AS subdomain, i.address AS address, i.version AS version
                 """,
                 domains=scope.orgs, uid=user_id, pid=project_id,
@@ -1018,8 +1025,8 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                 """
                 MATCH (d:Domain {user_id: $uid, project_id: $pid})
                       -[:HAS_SUBDOMAIN]->(s:Subdomain)
-                      -[:RESOLVES_TO]->(i:IP)
-                WHERE toLower(d.name) IN $domains
+                      -[r:RESOLVES_TO]->(i:IP)
+                WHERE toLower(d.name) IN $domains AND """ + FORWARD_DNS + """
                 RETURN d.name AS root, s.name AS subdomain, i.address AS address, i.version AS version,
                        i.is_cdn AS is_cdn, i.cdn_name AS cdn_name, i.asn AS asn
                 """,

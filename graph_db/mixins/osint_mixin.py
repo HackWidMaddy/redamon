@@ -313,6 +313,10 @@ class OsintMixin:
                     stats["errors"].append(f"Failed to enrich IP {ip}: {e}")
 
             # ── 2. Reverse DNS → Subdomain or ExternalDomain nodes ──
+            # A PTR answer is not forward DNS: the edge it creates carries
+            # source 'shodan_rdns' (and a domain-DNS record's 'shodan_dns'), so
+            # readers that mean "resolves now" skip it. ON CREATE only: an edge
+            # DNS wrote first stays forward DNS.
             for ip, hostnames in shodan_data.get("reverse_dns", {}).items():
                 for hostname in hostnames:
                     if not hostname:
@@ -329,7 +333,7 @@ class OsintMixin:
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                 SET i.updated_at = datetime()
                                 MERGE (s)-[r:RESOLVES_TO]->(i)
-                                ON CREATE SET r.timestamp = datetime()
+                                ON CREATE SET r.timestamp = datetime(), r.source = 'shodan_rdns'
                                 SET r.last_seen_at = datetime(),
                                     r.record_type = coalesce(r.record_type,
                                         CASE WHEN $ip CONTAINS ':' THEN 'AAAA' ELSE 'A' END)
@@ -454,7 +458,7 @@ class OsintMixin:
                             MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                             SET i.updated_at = datetime()
                             MERGE (s)-[r:RESOLVES_TO]->(i)
-                            ON CREATE SET r.timestamp = datetime()
+                            ON CREATE SET r.timestamp = datetime(), r.source = 'shodan_dns'
                             SET r.last_seen_at = datetime(),
                                 r.record_type = coalesce(r.record_type, $type)
                             """,
