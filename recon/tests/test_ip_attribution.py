@@ -267,6 +267,14 @@ def test_stealth_mode_makes_no_handshake(_offline):
     assert combined["ip_attribution"]["summary"]["tls_handshakes"] == 0
 
 
+def test_stealth_is_the_reason_even_where_443_was_not_found(_offline):
+    # Stealth's port scan is passive: "443 not found open" would claim a look it
+    # never took. Found on the FP lab's stealth run (plan 11.E).
+    by_ip = _run(STEALTH_MODE=True, IP_ATTRIBUTION_TLS_MAX_PROBES=0)
+    assert "default certificate not checked (stealth mode)" in by_ip[NO_TLS]["ownership_reasons"]
+    assert not any("port 443" in r for r in by_ip[NO_TLS]["ownership_reasons"])
+
+
 def test_a_zero_cap_turns_the_probe_off(_offline):
     by_ip = _run(IP_ATTRIBUTION_TLS_MAX_PROBES=0)
     assert _offline.calls == []

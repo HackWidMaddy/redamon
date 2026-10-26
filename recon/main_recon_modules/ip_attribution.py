@@ -273,19 +273,23 @@ def _max_probes(settings: dict) -> int:
 
 
 def _probe_plan(ips: list, tls_open: set, settings: dict) -> tuple[list, dict]:
-    """(IPs to dial, {ip: why its certificate is not checked}). Deterministic."""
+    """(IPs to dial, {ip: why its certificate is not checked}). Deterministic.
+
+    Stealth and a zero cap come first: no handshake would have been made
+    anywhere, and stealth's passive port scan cannot say 443 is closed.
+    """
     stealth = bool(settings.get("STEALTH_MODE"))
     cap = _max_probes(settings)
     excluded = settings.get("ROE_EXCLUDED_HOSTS") or [] if settings.get("ROE_ENABLED") else []
     to_probe: list = []
     skipped: dict = {}
     for ip in ips:
-        if ip not in tls_open:
-            skipped[ip] = f"port {TLS_PORT} not found open"
-        elif stealth:
+        if stealth:
             skipped[ip] = "stealth mode"
         elif cap <= 0:
             skipped[ip] = "the TLS probe is off"
+        elif ip not in tls_open:
+            skipped[ip] = f"port {TLS_PORT} not found open"
         elif excluded and _is_roe_excluded(ip, excluded):
             skipped[ip] = "excluded by the rules of engagement"
         elif is_never_scannable_ip(ip):
