@@ -425,10 +425,12 @@ def _san_resolve_cache():
 def _resolves_to_routable(hostname: str) -> bool:
     """Resolve-and-check for a SAN-derived name.
 
-    Returns False ONLY when the name resolves to at least one non-routable
-    address (the SSRF / scope-escape case we must drop). An unresolvable name
-    returns True: it is in scope and cannot be an internal pivot; it simply will
-    not be probed if nothing answers.
+    Returns False when the name resolves to at least one non-routable address
+    (the SSRF / scope-escape case we must drop), and while the resolver is
+    known down: then the name cannot be checked, and httpx and Nuclei would
+    resolve it themselves, so it is recorded as a skipped host and not
+    injected. An unresolvable name returns True: it is in scope and cannot be
+    an internal pivot; it simply will not be probed if nothing answers.
     """
     import socket
     from recon.main_recon_modules.ip_filter import is_non_routable_ip
@@ -444,11 +446,16 @@ def _resolves_to_routable(hostname: str) -> bool:
             cache.put(hostname, result)
         return result
 
-    # A resolver already proven down would make every getaddrinfo a timeout;
-    # an unresolved name is in scope anyway, so keep it without resolving (and
-    # don't cache it - the resolver may recover and a later pass can resolve it).
+    # A resolver already proven down would make every getaddrinfo a timeout.
+    # Fail closed, uncached: the resolver may recover and a later pass can
+    # resolve the name.
     if _resolver_down():
-        return True
+        try:
+            from recon.main_recon_modules.domain_recon import resolver_breaker
+            resolver_breaker.note_skipped(hostname)
+        except Exception:  # noqa: BLE001
+            pass
+        return False
 
     try:
         infos = socket.getaddrinfo(hostname, None)

@@ -971,6 +971,23 @@ first, each name is asked once per run, and a resolver failure fails the group
 closed with the resolver's message instead of reading as "no record". The
 preview lists both accepted record names per group.
 
+**The DNS resolver latch is per group, not per process**
+(`_ResolverBreaker` in `domain_recon.py`). One transient failure that a
+re-probe of the canary (the most recent root that answered) confirms opens it,
+and the open latch skips this module's lookups, the ownership TXT lookup,
+reverse DNS and the certificate-name check. `recheck()` runs at the start of
+every `run_domain_group` and of every partial root (`run_per_root`): one
+canary probe closes a recovered latch (`[+][DNS] Resolver answering again:
+lookups resumed`) or keeps it open and records the DNS gap again for this group
+(`[!][DNS] Resolver still down: skipping this group's lookups`). Inside a
+group an open latch is probed again after 120 s, doubling up to 1800 s, by one
+thread. Each hostname whose lookup is skipped is recorded with
+`note_degraded("domain_recon", hosts=[...], host_source="dns")`, so its
+findings are kept for every source; and a certificate name that cannot be
+resolved is recorded, never injected unchecked (`_resolves_to_routable` fails
+closed). Do not call `reset()` per group: it also drops the canary, and with a
+dead resolver every lookup would then wait out dnspython's 5 s timeout.
+
 **Org-level work runs once per registrable domain per run** (`recon/helpers/org_work.py`):
 WHOIS, Shodan domain DNS, OTX/VirusTotal/Criminal IP domain reports and FOFA
 `domain=` are asked for the org by the org's first group that passed RoE and

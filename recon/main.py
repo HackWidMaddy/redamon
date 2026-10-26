@@ -3020,6 +3020,11 @@ def run_domain_group(group: dict, start_time=None) -> int:
     coverage_group = circuit_breaker.group_scope()
     target_domain = group['scanRoot']
 
+    # One bad moment in an earlier group must not leave this one unresolved;
+    # before ownership, whose TXT lookup the latch would otherwise refuse.
+    from recon.main_recon_modules.domain_recon import resolver_breaker
+    resolver_breaker.recheck()
+
     # RoE before ownership: an excluded root gets no TXT lookup either.
     if _roe_refuses_root(target_domain):
         print(f"\n[RoE] BLOCKED: Root domain '{target_domain}' is in ROE excluded hosts list.")

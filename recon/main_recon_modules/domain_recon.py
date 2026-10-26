@@ -73,33 +73,134 @@ def _cb_enabled() -> bool:
         return False
 
 
+# Inside one batch group (or partial root), an open latch is probed again after
+# this long, doubling up to the maximum, by one thread at a time; the same
+# half-open rhythm as circuit_breaker.Breaker.
+RESOLVER_COOLDOWN_S = 120.0
+RESOLVER_COOLDOWN_MAX_S = 1800.0
+
+
 class _ResolverBreaker:
-    """Shared DNS resolver liveness, canary-gated (see the block comment)."""
+    """Shared DNS resolver liveness, canary-gated (see the block comment).
+
+    It used to latch for the rest of the process, and batch groups and partial
+    roots run one after another in one process: after one bad moment, every
+    later group resolved nothing (so it scanned nothing), had its ownership
+    check refused, and recorded no DNS gap. Now recheck() gives each group and
+    each root a fresh canary probe, an open latch is probed again after a
+    cooldown inside a group, and every lookup it skips is recorded by host.
+    """
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._open = False
-        self._canary = None
-        self._noted = False
+        self._clock = time.monotonic
+        self.reset()
 
     def reset(self):
+        """Tests only: forget everything, the canary included."""
         with self._lock:
             self._open = False
             self._canary = None
             self._noted = False
+            self._probing = False
+            self._cooldown = RESOLVER_COOLDOWN_S
+            self._retry_at = 0.0
+            self._skipped = set()
 
     def set_canary(self, name: str):
+        """The most recent root that answered: the likeliest to answer again."""
         if not name:
             return
         with self._lock:
-            if self._canary is None:
-                self._canary = name
+            self._canary = name
 
     def is_open(self) -> bool:
         if not _cb_enabled():
             return False
         with self._lock:
-            return self._open
+            if not self._open:
+                return False
+            if self._probing or self._clock() < self._retry_at:
+                return True
+            self._probing = True
+        alive = self._probe()
+        with self._lock:
+            if alive:
+                self._close_locked()
+            else:
+                self._cooldown = min(self._cooldown * 2, RESOLVER_COOLDOWN_MAX_S)
+                self._retry_at = self._clock() + self._cooldown
+        if alive:
+            print("[+][DNS] Resolver answering again: lookups resumed")
+        return not alive
+
+    def recheck(self) -> bool:
+        """At the start of a batch group or a partial root: one canary probe
+        if the latch is open. True when lookups may run. Either way a new trip
+        in this group is noted in this group's coverage."""
+        if not _cb_enabled():
+            return True
+        with self._lock:
+            self._noted = False
+            self._skipped = set()
+            if not self._open:
+                return True
+            if self._probing:
+                return False
+            self._probing = True
+        alive = self._probe()
+        with self._lock:
+            if alive:
+                self._close_locked()
+            else:
+                self._noted = True
+                self._retry_at = self._clock() + self._cooldown
+        if alive:
+            print("[+][DNS] Resolver answering again: lookups resumed")
+            return True
+        print("[!][DNS] Resolver still down: skipping this group's lookups")
+        self._note_gap()
+        return False
+
+    def note_skipped(self, hostname: str) -> None:
+        """A lookup skipped because the latch is open: nothing re-checked this
+        host, so its findings are kept for every source (the note_degraded
+        default for hosts). Once per host per group."""
+        if not hostname:
+            return
+        with self._lock:
+            if hostname in self._skipped:
+                return
+            self._skipped.add(hostname)
+        try:
+            from recon.helpers import circuit_breaker as cb
+            cb.note_degraded("domain_recon", hosts=[hostname], host_source="dns",
+                             reason="DNS resolver down")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _close_locked(self):
+        self._open = False
+        self._noted = False
+        self._cooldown = RESOLVER_COOLDOWN_S
+        self._retry_at = 0.0
+        self._probing = False
+
+    def _probe(self) -> bool:
+        """One canary probe; the caller set _probing."""
+        try:
+            return self._canary_responds()
+        finally:
+            with self._lock:
+                self._probing = False
+
+    @staticmethod
+    def _note_gap():
+        try:
+            from recon.helpers import circuit_breaker as cb
+            cb.note_degraded("domain_recon", sources=["dns"], reason="DNS resolver down")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _canary_responds(self) -> bool:
         """True if the canary root gets ANY definitive DNS response (even
@@ -119,29 +220,30 @@ class _ResolverBreaker:
 
     def note_transient(self) -> bool:
         """Record a transient resolution failure. Returns True when the resolver
-        is now considered DOWN (the caller should stop retrying this run)."""
+        is now considered DOWN (the caller should stop retrying this group).
+        One thread asks the canary at a time; the others retry as usual."""
         if not _cb_enabled():
             return False
         with self._lock:
             if self._open:
                 return True
-            have_canary = self._canary is not None
-        if not have_canary:
-            return False  # can't distinguish a dead resolver from a dead name
-        if self._canary_responds():
+            if self._canary is None:
+                return False  # can't distinguish a dead resolver from a dead name
+            if self._probing:
+                return False
+            self._probing = True
+        if self._probe():
             return False  # resolver is fine; this specific name is unreachable
         with self._lock:
             self._open = True
+            self._cooldown = RESOLVER_COOLDOWN_S
+            self._retry_at = self._clock() + self._cooldown
             noted = self._noted
             self._noted = True
         if not noted:
             print("[!][DNS] Resolver appears down (canary root did not answer) - "
-                  "skipping remaining lookups this run")
-            try:
-                from recon.helpers import circuit_breaker as cb
-                cb.note_degraded("domain_recon", sources=["dns"], reason="DNS resolver down")
-            except Exception:  # noqa: BLE001
-                pass
+                  "skipping remaining lookups this group")
+            self._note_gap()
         return True
 
 
@@ -944,9 +1046,10 @@ def dns_lookup_single(hostname: str, rtype: str, max_retries: int = 3) -> list:
         List of DNS records or None if not found/failed
     """
     
-    # A resolver already proven down this run: skip immediately, don't retry
+    # A resolver already proven down this group: skip immediately, don't retry
     # into a timeout wall (inert under the off switch).
     if resolver_breaker.is_open():
+        resolver_breaker.note_skipped(hostname)
         return None
 
     definitive = _dns_definitive_errors()
@@ -962,8 +1065,9 @@ def dns_lookup_single(hostname: str, rtype: str, max_retries: int = 3) -> list:
         except (dns.resolver.NoNameservers, dns.resolver.Timeout,
                 dns.resolver.LifetimeTimeout) as e:
             # Transient. The canary decides whether the resolver itself is down;
-            # if so, stop retrying every remaining record type/host this run.
+            # if so, stop retrying every remaining record type/host this group.
             if resolver_breaker.note_transient():
+                resolver_breaker.note_skipped(hostname)
                 return None
             if attempt < max_retries - 1:
                 delay = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
@@ -974,6 +1078,7 @@ def dns_lookup_single(hostname: str, rtype: str, max_retries: int = 3) -> list:
             # An unexpected resolver error is treated as transient (canary-gated)
             # but a dns.name syntax error was already handled above.
             if resolver_breaker.note_transient():
+                resolver_breaker.note_skipped(hostname)
                 return None
             if attempt < max_retries - 1:
                 delay = 2 ** attempt

@@ -285,6 +285,16 @@ def _run_one_root(fn, root: str) -> str:
     return STATUS_OK
 
 
+def _recheck_resolver() -> None:
+    """Give the shared DNS resolver latch a fresh canary probe for this root:
+    one bad moment on an earlier root must not leave this one unresolved."""
+    try:
+        from recon.main_recon_modules.domain_recon import resolver_breaker
+        resolver_breaker.recheck()
+    except Exception:  # noqa: BLE001 - the latch is an optimisation, never a failure
+        pass
+
+
 def run_per_root(roots: list, fn, tool: str) -> dict:
     """Run `fn(root)` once per root and return {root: status}.
 
@@ -308,6 +318,7 @@ def run_per_root(roots: list, fn, tool: str) -> dict:
         if index:
             time.sleep(ROOT_PAUSE_S)
         print(f"\n[*][Partial Recon] {tool}: root {index + 1}/{len(roots)}: {root}")
+        _recheck_resolver()
         status = _run_one_root(fn, root)
         if status == STATUS_RATE_LIMITED:
             print(f"[!][Partial Recon] {tool}: {root} was rate limited, "
