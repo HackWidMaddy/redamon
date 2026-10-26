@@ -177,10 +177,11 @@ class TestRunVulnScanIsolated(unittest.TestCase):
 # ============================================================================
 
 class TestBuildGraphqlDataFromGraph(unittest.TestCase):
-    """Verifies the graph builder assembles the exact shape graphql_scan reads:
-    http_probe.by_url + resource_enum.endpoints + resource_enum.parameters + js_recon.findings."""
+    """Verifies the graph builder assembles the shapes the full pipeline writes,
+    which is what discovery reads (plan 12.12): http_probe.by_url +
+    resource_enum.by_base_url + js_recon.endpoints."""
 
-    def _mock_neo4j(self, baseurl_rows=None, endpoint_rows=None, parameter_rows=None, js_rows=None):
+    def _mock_neo4j(self, baseurl_rows=None, endpoint_rows=None, js_rows=None):
         """Build a Neo4jClient mock whose session.run returns the given rows per query."""
         client = MagicMock()
         client.verify_connection.return_value = True
@@ -188,7 +189,6 @@ class TestBuildGraphqlDataFromGraph(unittest.TestCase):
         responses = [
             iter([MagicMock(__getitem__=lambda self, k, r=r: r[k]) for r in (baseurl_rows or [])]),
             iter([MagicMock(__getitem__=lambda self, k, r=r: r[k]) for r in (endpoint_rows or [])]),
-            iter([MagicMock(__getitem__=lambda self, k, r=r: r[k]) for r in (parameter_rows or [])]),
             iter([MagicMock(__getitem__=lambda self, k, r=r: r[k]) for r in (js_rows or [])]),
         ]
         session.run.side_effect = responses
@@ -217,12 +217,45 @@ class TestBuildGraphqlDataFromGraph(unittest.TestCase):
             self.assertIn('http_probe', result)
             self.assertIn('by_url', result['http_probe'])
             self.assertIn('resource_enum', result)
-            self.assertIn('endpoints', result['resource_enum'])
-            self.assertIn('parameters', result['resource_enum'])
+            self.assertIn('by_base_url', result['resource_enum'])
             self.assertIn('js_recon', result)
-            self.assertIn('findings', result['js_recon'])
+            self.assertIn('endpoints', result['js_recon'])
             self.assertIn('metadata', result)
             self.assertIn('roe', result['metadata'])
+
+    def test_builder_rows_land_in_the_full_pipeline_shapes(self):
+        """Endpoint + Parameter rows become by_base_url[base].endpoints[path];
+        JS Recon's GraphQL Endpoint nodes become js_recon.endpoints, and
+        discovery finds both."""
+        rows = dict(
+            baseurl_rows=[{'url': 'https://www.example.com', 'host': 'www.example.com',
+                           'status_code': 200, 'content_type': 'text/html'}],
+            endpoint_rows=[
+                {'base_url': 'https://www.example.com', 'path': '/data', 'method': 'POST',
+                 'parameters': ['query', 'variables']},
+                {'base_url': 'https://www.example.com', 'path': '/data', 'method': 'GET',
+                 'parameters': ['query']},
+            ],
+            js_rows=[{'base_url': 'https://www.example.com', 'path': '/v2/graphql',
+                      'type': 'graphql', 'full_url': ''}],
+        )
+        with patch('recon.project_settings.get_settings', return_value={'ROE_ENABLED': False, 'ROE_EXCLUDED_HOSTS': []}), \
+             patch('graph_db.Neo4jClient') as MockClient, \
+             patch('recon.partial_recon_modules.graph_builders.graph_url_scope', return_value=lambda host: True):
+            MockClient.return_value = self._mock_neo4j(**rows)
+            from recon.partial_recon_modules.graph_builders import _build_graphql_data_from_graph
+            result = _build_graphql_data_from_graph('example.com', 'u1', 'p1')
+
+        endpoint = result['resource_enum']['by_base_url']['https://www.example.com']['endpoints']['/data']
+        self.assertEqual(endpoint['methods'], ['POST', 'GET'])
+        self.assertEqual(endpoint['parameters']['query'], [{'name': 'query'}, {'name': 'variables'}])
+        self.assertEqual(result['js_recon']['endpoints'], [
+            {'type': 'graphql', 'path': '/v2/graphql', 'full_url': '', 'source_js': 'https://www.example.com'}])
+
+        from recon.graphql_scan.discovery import discover_graphql_endpoints
+        found = discover_graphql_endpoints(result, {})
+        self.assertIn('https://www.example.com/data', found)
+        self.assertIn('https://www.example.com/v2/graphql', found)
 
     def test_builder_populates_roe_from_settings(self):
         """RoE settings flow through to metadata.roe for filter_by_roe()."""
@@ -251,7 +284,7 @@ class TestBuildGraphqlDataFromGraph(unittest.TestCase):
             result = _build_graphql_data_from_graph('example.com', 'u1', 'p1')
             # Should not raise; should return empty structure
             self.assertEqual(result['http_probe']['by_url'], {})
-            self.assertEqual(result['resource_enum']['endpoints'], {})
+            self.assertEqual(result['resource_enum']['by_base_url'], {})
 
 
 # ============================================================================

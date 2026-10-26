@@ -1189,13 +1189,17 @@ def _build_graphql_data_from_graph(domains, user_id: str, project_id: str,
     """
     Build recon_data for GraphQL security scanning.
 
-    Populates the three sections discover_graphql_endpoints() reads:
-      - http_probe.by_url        (from BaseURL nodes -- headers, status_code)
-      - resource_enum.endpoints  ({base_url: [{path, method}]} -- from Endpoint nodes)
-      - resource_enum.parameters ({base_url: [{name}]}         -- from Parameter nodes)
-      - js_recon.findings        ([{type, path, method}]       -- GraphQL-tagged JsReconFindings)
-    Plus metadata.roe so filter_by_roe() still works. `settings` is the run's
-    preloaded settings (partial_settings); only a direct caller omits it.
+    Populates the sections discover_graphql_endpoints() reads, in the shapes
+    the full pipeline's writers produce, so one discovery serves both:
+      - http_probe.by_url          ({url: {status_code, content_type}} -- BaseURL nodes)
+      - resource_enum.by_base_url  ({base: {endpoints: {path: {path, methods,
+                                     parameters: {query, body, path}}}}} -- Endpoint
+                                     nodes and their Parameter nodes)
+      - js_recon.endpoints         ([{type, path, full_url, source_js}] -- the
+                                     GraphQL Endpoint nodes JS Recon wrote)
+    Plus metadata.roe, the fallback discovery reads when the settings carry no
+    RoE. `settings` is the run's preloaded settings (partial_settings); only a
+    direct caller omits it.
 
     BaseURLs, Endpoints and Parameters are read project-wide; with
     domain_groups, those on a host under a Domain this run does not cover, or a
@@ -1212,8 +1216,8 @@ def _build_graphql_data_from_graph(domains, user_id: str, project_id: str,
         "domain": roots[0] if roots else "",
         "domains": roots,
         "http_probe": {"by_url": {}},
-        "resource_enum": {"endpoints": {}, "parameters": {}, "discovered_urls": []},
-        "js_recon": {"findings": []},
+        "resource_enum": {"by_base_url": {}, "discovered_urls": []},
+        "js_recon": {"endpoints": []},
         "metadata": {
             "roe": {
                 "ROE_ENABLED": settings.get("ROE_ENABLED", False),
@@ -1256,63 +1260,57 @@ def _build_graphql_data_from_graph(domains, user_id: str, project_id: str,
                     "headers": {},
                 }
 
-            # 2) Endpoints grouped by BaseURL -> resource_enum.endpoints
+            # 2) Endpoints and their parameters -> resource_enum.by_base_url
             result = session.run(
                 """
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
                       -[:HAS_ENDPOINT]->(e:Endpoint)
                 WHERE e.path IS NOT NULL AND NOT """ + declared_only_unsafe("e") + """
-                RETURN b.url AS base_url,
-                       collect(DISTINCT {path: e.path, method: coalesce(e.method, 'GET')}) AS endpoints
+                OPTIONAL MATCH (e)-[:HAS_PARAMETER]->(p:Parameter)
+                RETURN b.url AS base_url, e.path AS path,
+                       coalesce(e.method, 'GET') AS method,
+                       [n IN collect(DISTINCT p.name) WHERE n IS NOT NULL] AS parameters
                 """,
                 uid=user_id, pid=project_id,
             )
+            by_base = recon_data["resource_enum"]["by_base_url"]
             for record in result:
                 base = record["base_url"]
-                if base and keep(url_host(base)):
-                    recon_data["resource_enum"]["endpoints"][base] = list(record["endpoints"] or [])
+                if not base or not keep(url_host(base)):
+                    continue
+                endpoints = by_base.setdefault(base, {"endpoints": {}})["endpoints"]
+                entry = endpoints.setdefault(record["path"], {
+                    "path": record["path"], "methods": [],
+                    "parameters": {"query": [], "body": [], "path": []},
+                })
+                if record["method"] not in entry["methods"]:
+                    entry["methods"].append(record["method"])
+                known = {p["name"] for p in entry["parameters"]["query"]}
+                entry["parameters"]["query"].extend(
+                    {"name": name} for name in record["parameters"] or [] if name not in known)
 
-            # 3) Parameters grouped by BaseURL -> resource_enum.parameters
+            # 3) The GraphQL endpoints JS Recon found -> js_recon.endpoints.
+            # js_recon_mixin writes them as Endpoint nodes with endpoint_type;
+            # a JsReconFinding never carries them.
             result = session.run(
                 """
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
                       -[:HAS_ENDPOINT]->(e:Endpoint)
-                      -[:HAS_PARAMETER]->(p:Parameter)
-                WHERE p.name IS NOT NULL
-                RETURN b.url AS base_url,
-                       collect(DISTINCT {name: p.name}) AS parameters
+                WHERE e.endpoint_type IN ['graphql', 'graphql_introspection']
+                RETURN b.url AS base_url, e.path AS path, e.endpoint_type AS type,
+                       coalesce(e.full_url, '') AS full_url
                 """,
                 uid=user_id, pid=project_id,
             )
             for record in result:
                 base = record["base_url"]
-                if base and keep(url_host(base)):
-                    recon_data["resource_enum"]["parameters"][base] = list(record["parameters"] or [])
-
-            # 4) GraphQL-tagged JsReconFindings -> js_recon.findings
-            result = session.run(
-                """
-                MATCH (jr:JsReconFinding {user_id: $uid, project_id: $pid})
-                WHERE (jr.finding_type IN ['graphql', 'graphql_introspection']
-                   OR (jr.finding_type = 'rest' AND toLower(coalesce(jr.path, '')) CONTAINS 'graphql'))
-                  // An operator's mute keeps a finding out of the target list. A
-                  // node-filter RULE mute does not: it hides noise from display,
-                  // and full recon scans its in-memory results either way.
-                  AND NOT (jr:Muted AND NOT coalesce(jr.muted_by, '') STARTS WITH 'rule:')
-                RETURN jr.finding_type AS type,
-                       jr.path AS path,
-                       coalesce(jr.method, 'POST') AS method
-                """,
-                uid=user_id, pid=project_id,
-            )
-            for record in result:
-                path = record["path"]
-                if not path:
+                if not base or not record["path"] or not keep(url_host(base)):
                     continue
-                recon_data["js_recon"]["findings"].append({
-                    "type": record["type"] or "rest",
-                    "path": path,
-                    "method": record["method"] or "POST",
+                recon_data["js_recon"]["endpoints"].append({
+                    "type": record["type"],
+                    "path": record["path"],
+                    "full_url": record["full_url"],
+                    "source_js": base,
                 })
 
     return recon_data
