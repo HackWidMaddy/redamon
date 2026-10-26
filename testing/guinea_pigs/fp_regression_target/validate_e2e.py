@@ -27,6 +27,11 @@ Plan 10A, disposition, on the main project after its Priority Board run:
 `--disposition decided`. Each prints CANDIDATES=<n>, the count the report's
 candidate total must equal. These read through list_findings as well.
 
+Plan 11, IP attribution: `--ip-ownership` on the e2e_fp.py --ip-ownership
+project, `--ip-ownership-stealth <recon.log>` on its stealth twin (the log
+e2e_fp.py --log wrote), `--ip-ownership-nwlab` on the domain-mode project over
+the nested-wildcard lab (e2e_fp.py --ip-ownership-nwlab).
+
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
 when every assertion holds. Case ids match README.md.
@@ -42,7 +47,8 @@ import mcp_client as mcp  # noqa: E402
 USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer"
          " | --passive-cves baseline|partial|unscanned|off | --js-coverage first | --js-coverage capped <n>"
          " | --vhost-origin | --coverage stamps|clean|lost | --coverage import <originalProjectId>"
-         " | --disposition before|decided]")
+         " | --disposition before|decided | --ip-ownership | --ip-ownership-stealth <recon.log>"
+         " | --ip-ownership-nwlab]")
 if len(sys.argv) not in (2, 3, 4, 5):
     sys.exit(USAGE)
 P = sys.argv[1]
@@ -448,7 +454,114 @@ def disposition_checks(stage):
     print(f"CANDIDATES={counted['candidate']} REPORTABLE={counted['reportable']} INFO={counted['info']}")
 
 
+EDGE_SCANNER = "a scanner's CDN check named an edge CDN"
+NOT_IN_TARGET = "default certificate covers no target domain"
+STEALTH_SKIP = "default certificate not checked (stealth mode)"
+NO_443 = "default certificate not checked (port 443 not found open)"
+
+
+def _ownership(addresses):
+    listed_ = ", ".join(f"'{a}'" for a in addresses)
+    return {r["ip"]: r for r in q(f"""MATCH (i:IP) WHERE i.address IN [{listed_}]
+                                     RETURN i.address AS ip, i.ownership AS own, i.ownership_reasons AS why,
+                                            i.cdn_name AS cdn, i.is_cdn AS is_cdn, i.cdn_source AS src,
+                                            i.default_cert_names AS certs, i.current_dns_names AS dns""")}
+
+
+def _schema_lists_the_tag(case):
+    out, err = mcp.call("graph_schema", {})
+    text = json.dumps(out)
+    names = ("ownership_reasons", "default_cert_names", "current_dns_names", "shodan_rdns")
+    check(case, not err and all(n in text for n in names),
+          f"graph_schema mentions {[n for n in names if n in text]} (expect all of {list(names)})")
+
+
+def ip_ownership_checks():
+    """Plan 11 on the IP-mode project: .32 behind a Cloudflare-issued certificate,
+    .31 with the lab's own, .10 with no 443; the Shodan stub gives .31 and .32
+    the same CVE."""
+    ips = _ownership([f"{NET}.10", f"{NET}.31", f"{NET}.32"])
+    edge, plain, web = (ips.get(f"{NET}.{n}") or {} for n in (32, 31, 10))
+    check("O-01", edge.get("own") == "shared_edge" and edge.get("cdn") == "cloudflare"
+          and EDGE_SCANNER in (edge.get("why") or []),
+          f".32: {edge.get('own')} {edge.get('cdn')} {edge.get('why')} (expect shared_edge, cloudflare, "
+          f"tlsx's CDN flag as the reason)")
+    check("O-02", plain.get("own") == "unknown" and web.get("own") == "unknown",
+          f".31: {plain.get('own')}, .10: {web.get('own')} (expect unknown: IP mode has no target domain, "
+          f"so never dedicated, and never 'not ours')")
+    check("O-03", plain.get("certs") == [f"*.{APEX}"] and NOT_IN_TARGET in (plain.get("why") or [])
+          and edge.get("certs"),
+          f"default certificates read without SNI: .31 {plain.get('certs')}, .32 {edge.get('certs')}")
+    check("O-04", NO_443 in (web.get("why") or []) and not web.get("certs"),
+          f".10 (no 443): {web.get('why')} {web.get('certs')} (expect not checked, no certificate)")
+    check("O-05", [ips.get(f"{NET}.{n}", {}).get("dns") for n in (10, 31, 32)] == [0, 0, 0],
+          f"current_dns_names: {[ips.get(f'{NET}.{n}', {}).get('dns') for n in (10, 31, 32)]} "
+          f"(expect 0: the lab IPs have no PTR, and a Shodan PTR name is not this run's DNS)")
+    cves = {r["ip"]: r["cves"] for r in q(f"""MATCH (i:IP)-[:HAS_VULNERABILITY]->(v:Vulnerability)
+                                            WHERE v.source IN {PASSIVE} AND i.address IN ['{NET}.31', '{NET}.32']
+                                            RETURN i.address AS ip, collect(DISTINCT v.name) AS cves""")}
+    check("O-06", not cves.get(f"{NET}.32") and "CVE-2023-44487" in json.dumps(cves.get(f"{NET}.31")),
+          f"Shodan CVEs: {cves} (expect none on the shared edge .32, CVE-2023-44487 on .31)")
+    _schema_lists_the_tag("O-07")
+
+
+def ip_ownership_stealth_checks(log_path):
+    ips = _ownership([f"{NET}.31", f"{NET}.32"])
+    edge, plain = ips.get(f"{NET}.32") or {}, ips.get(f"{NET}.31") or {}
+    check("O-S1", all(STEALTH_SKIP in (r.get("why") or []) and not r.get("certs") for r in (edge, plain)),
+          f".31 {plain.get('why')}, .32 {edge.get('why')} (expect 'not checked (stealth mode)', no certificate)")
+    # The lab edge's only CDN signal is tlsx's certificate issuer, an active
+    # handshake stealth turns off: with no evidence the tag stays unknown, never
+    # "not ours". (A real CDN address is still a shared edge by its published
+    # range, which needs no traffic; recon/tests/test_ip_attribution.py.)
+    check("O-S2", edge.get("own") == "unknown" and plain.get("own") == "unknown",
+          f".32 {edge.get('own')}, .31 {plain.get('own')} (expect unknown: no traffic, no edge evidence)")
+    try:
+        text = open(log_path, encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        text = f"<{e}>"
+    line = next((ln for ln in text.splitlines() if "[IpAttribution]" in ln and "handshake" in ln), "")
+    check("O-S3", "0 TLS handshake(s) without SNI (stealth mode: none)" in line,
+          f"recon log: {line.strip() or 'no IpAttribution summary line'}")
+
+
+NWLAB_WEB1, NWLAB_WEB2 = "192.88.99.60", "192.88.99.61"
+
+
+def ip_ownership_nwlab_checks():
+    """Plan 11 on the domain-mode project over the nested-wildcard lab: web1's
+    default certificate covers nwlab.test; the Shodan stub answers a PTR name for
+    web1 and a domain-DNS record pointing a Shodan-only name at web2."""
+    web1 = _ownership([NWLAB_WEB1]).get(NWLAB_WEB1) or {}
+    check("N-01", web1.get("own") == "dedicated" and "default certificate covers nwlab.test" in (web1.get("why") or [])
+          and any(c.endswith(".nwlab.test") for c in web1.get("certs") or []),
+          f"web1: {web1.get('own')} {web1.get('why')} {web1.get('certs')} (expect dedicated)")
+    edges = {r["sub"]: r["src"] for r in q(f"""MATCH (s:Subdomain)-[r:RESOLVES_TO]->(i:IP)
+                                             WHERE i.address IN ['{NWLAB_WEB1}', '{NWLAB_WEB2}']
+                                             RETURN s.name AS sub, r.source AS src""")}
+    check("N-02", edges.get("ptr.nwlab.test") == "shodan_rdns" and edges.get("shodan-only.nwlab.test") == "shodan_dns",
+          f"Shodan-made edges: ptr {edges.get('ptr.nwlab.test')}, shodan-only {edges.get('shodan-only.nwlab.test')} "
+          f"(expect shodan_rdns and shodan_dns)")
+    forward = sorted(s for s, src in edges.items() if src is None)
+    # The run resolves the apex even when it is no target (no Subdomain edge for
+    # it), so the count may be one above the forward edges; the PTR name would
+    # make it two above.
+    dns = web1.get("dns")
+    check("N-03", forward and isinstance(dns, int) and len(forward) <= dns <= len(forward) + 1,
+          f"forward-DNS names {forward}, current_dns_names {dns} (expect the forward names, plus the apex at "
+          f"most; never the PTR name)")
+
+
 if len(sys.argv) > 2:
+    if sys.argv[2] == "--ip-ownership" and len(sys.argv) == 3:
+        ip_ownership_checks()
+        sys.exit(report())
+    if sys.argv[2] == "--ip-ownership-stealth" and len(sys.argv) == 4:
+        ip_ownership_stealth_checks(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--ip-ownership-nwlab" and len(sys.argv) == 3:
+        ip_ownership_nwlab_checks()
+        sys.exit(report())
     if sys.argv[2] == "--js-count" and len(sys.argv) == 3:
         print(f"JS_RECON_COUNT={js_recon_count()}")
         sys.exit(0)

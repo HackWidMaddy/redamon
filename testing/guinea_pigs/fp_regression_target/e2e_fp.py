@@ -18,6 +18,9 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --vhost-origin        # the plan-07 vhost-naming / tlsx CDN-tag project (.31, .32)
     python3 e2e_fp.py --coverage --no-triage        # plan 09: per-host coverage (.10 .13 .20 .22 .33)
     python3 e2e_fp.py --coverage-clean --no-triage  # plan 09: JS Recon finds nothing (.34)
+    python3 e2e_fp.py --ip-ownership --no-triage    # plan 11: IP attribution (.10 .31 .32) + Shodan stub
+    python3 e2e_fp.py --ip-ownership-stealth --no-triage --log stealth.log   # the same, stealth mode
+    python3 e2e_fp.py --ip-ownership-nwlab --no-triage   # plan 11, domain mode, nested-wildcard lab up
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
 never prints it.
@@ -25,6 +28,7 @@ never prints it.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -169,6 +173,78 @@ COVERAGE_CLEAN_SETTINGS = {
 }
 
 
+# IP attribution (plan 11) runs as its own project: .32 behind a Cloudflare-
+# issued certificate (tlsx tags it), .31 with the lab's own certificate, .10 with
+# no 443. The Shodan stub gives .31 and .32 the same CVE and a PTR name each.
+IP_OWNERSHIP_TARGETS = [f"{NET}.{n}" for n in (10, 31, 32)]
+IP_OWNERSHIP_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe"],
+    "naabuCustomPorts": "80,443",
+    "tlsxEnabled": True, "tlsxIncludeHttpPorts": True,
+    "katanaEnabled": False, "jsReconEnabled": False, "vhostSniEnabled": False,
+    "webCachePoisonEnabled": False,
+    "shodanEnabled": True, "shodanHostLookup": True, "shodanPassiveCves": True, "shodanReverseDns": True,
+    "ipAttributionEnabled": True, "ipAttributionTlsMaxProbes": 500,
+}
+
+
+# The same step in domain mode, over the nested-wildcard lab (its own DNS):
+# web1's default certificate covers nwlab.test. Shodan is on ONLY because the
+# orchestrator forwards it to the stub (require_shodan_stub): a real lookup would
+# send .test names and a public 6to4 address to Shodan. The other settings are
+# the lab's own (nested_wildcard_lab/README.md, "Lab project settings").
+NWLAB_SUBDOMAINS = ["www", "api"]
+NWLAB_SETTINGS = {
+    "scanModules": ["domain_discovery", "http_probe"],
+    "masscanEnabled": False, "naabuEnabled": False, "purednsEnabled": False,
+    "useBruteforceForSubdomains": False, "knockpyReconEnabled": False, "crtshEnabled": False,
+    "hackerTargetEnabled": False, "subfinderEnabled": False, "urlscanEnabled": False, "otxEnabled": False,
+    "httpxProbeTlsInfo": False, "jsReconEnabled": False, "nmapEnabled": False, "tlsxEnabled": False,
+    "vhostSniEnabled": False, "nucleiEnabled": False, "securityCheckEnabled": False, "whoisEnabled": False,
+    "shodanEnabled": True, "shodanHostLookup": True, "shodanReverseDns": True, "shodanDomainDns": True,
+    "shodanPassiveCves": False,
+    "ipAttributionEnabled": True,
+    "triageReviewBudget": 0,
+    **{k: False for k in AI_OFF},
+}
+
+
+def require_shodan_stub():
+    """Refuse to run unless the orchestrator forwards Shodan to the lab stub.
+    Reads only the two override names from its environment; prints no value."""
+    raw = subprocess.run(["docker", "inspect", "-f", "{{json .Config.Env}}", "redamon-recon-orchestrator"],
+                         capture_output=True, text=True).stdout
+    env = dict(e.split("=", 1) for e in json.loads(raw or "[]") if "=" in e)
+    want = {"SHODAN_API_BASE": f"http://{NET}.30", "SHODAN_INTERNETDB_BASE": f"http://{NET}.30/internetdb"}
+    if any(env.get(k) != v for k, v in want.items()):
+        raise SystemExit("[!] the orchestrator does not forward Shodan to the lab stub: restart it with "
+                         "SHODAN_API_BASE / SHODAN_INTERNETDB_BASE (README.md, step 1). Not scanning.")
+    print("[*] Shodan goes to the lab stub", flush=True)
+
+
+def nwlab_routing_gate():
+    """The nested lab's own gate: its prefix is public, so stop unless it routes
+    through the lab bridge and the lab DNS answers."""
+    route = subprocess.run(["ip", "route", "get", "192.88.99.60"], capture_output=True, text=True).stdout
+    dns = subprocess.run(["resolvectl", "query", "www.nwlab.test"], capture_output=True, text=True).stdout
+    if " dev br-" not in route or "192.88.99.60" not in dns:
+        raise SystemExit("[!] nested-wildcard lab routing gate failed (nested_wildcard_lab/README.md). Not scanning.")
+    print("[*] nested-wildcard lab routing gate ok", flush=True)
+
+
+def follow_logs(project_id, path):
+    """Follow the recon container's log into `path` (the stealth case reads it)."""
+    name = "redamon-recon-" + re.sub(r"[^a-zA-Z0-9_.-]", "_", project_id)
+    for _ in range(90):
+        if subprocess.run(["docker", "inspect", name], capture_output=True).returncode == 0:
+            return subprocess.Popen(["docker", "logs", "-f", name], stdout=open(path, "w"),
+                                    stderr=subprocess.STDOUT)
+        time.sleep(2)
+    print(f"[!] container {name} never appeared: no log", flush=True)
+    return None
+
+
 def spa_state(query=""):
     """Which .20 paths answer with the SPA shell for the next run ('' resets it)."""
     with urllib.request.urlopen(f"{SPA_STATE}?{query}", timeout=10) as resp:
@@ -296,12 +372,23 @@ def main():
                     help="create the plan-09 project where JS Recon finds nothing")
     ap.add_argument("--disposition-decide", metavar="PROJECT_ID",
                     help="plan 10A: make three decisions on a scanned project, then exit")
+    ap.add_argument("--ip-ownership", action="store_true",
+                    help="create the plan-11 IP attribution project instead of the main one")
+    ap.add_argument("--ip-ownership-stealth", action="store_true",
+                    help="the plan-11 IP attribution project in stealth mode")
+    ap.add_argument("--ip-ownership-nwlab", action="store_true",
+                    help="the plan-11 IP attribution project in domain mode, over the nested-wildcard lab")
+    ap.add_argument("--log", metavar="PATH", help="follow the recon container's log into PATH")
     args = ap.parse_args()
 
     mcp.init()
     if args.disposition_decide:
         disposition_decide(args.disposition_decide)
         return
+    if args.ip_ownership or args.ip_ownership_stealth or args.ip_ownership_nwlab:
+        require_shodan_stub()
+    if args.ip_ownership_nwlab:
+        nwlab_routing_gate()
     reset_lab()
     if args.rerun:
         project_id = args.rerun
@@ -309,7 +396,8 @@ def main():
         kind = (" (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else
                 " (JS coverage)" if args.js_coverage else " (vhost and CDN tag)" if args.vhost_origin else
                 " (host coverage)" if args.coverage else " (host coverage, clean)" if args.coverage_clean
-                else "")
+                else " (IP ownership, stealth)" if args.ip_ownership_stealth
+                else " (IP ownership)" if args.ip_ownership else "")
         targets, settings = ((HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
                              (PASSIVE_TARGETS, PASSIVE_SETTINGS) if args.passive_cves else
                              (JS_COVERAGE_TARGETS, {**JS_COVERAGE_SETTINGS,
@@ -318,11 +406,19 @@ def main():
                              (VHOST_ORIGIN_TARGETS, VHOST_ORIGIN_SETTINGS) if args.vhost_origin else
                              (COVERAGE_TARGETS, COVERAGE_SETTINGS) if args.coverage else
                              (COVERAGE_CLEAN_TARGETS, COVERAGE_CLEAN_SETTINGS) if args.coverage_clean else
+                             (IP_OWNERSHIP_TARGETS, {**IP_OWNERSHIP_SETTINGS, "stealthMode": True})
+                             if args.ip_ownership_stealth else
+                             (IP_OWNERSHIP_TARGETS, IP_OWNERSHIP_SETTINGS) if args.ip_ownership else
                              (TARGETS, SETTINGS))
         name = f"FP regression lab{kind} {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        if args.ip_ownership_nwlab:
+            name = f"FP regression lab (IP ownership, nwlab domain mode) {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            target = {"targetDomain": "nwlab.test", "subdomainList": NWLAB_SUBDOMAINS, "settings": NWLAB_SETTINGS}
+        else:
+            target = {"targetIps": targets, "settings": settings}
         out = call("create_project", {"name": name, "engagementKind": "internal",
                                       "description": "Guinea pig: testing/guinea_pigs/fp_regression_target",
-                                      "targetIps": targets, "settings": settings})
+                                      **target})
         project_id = (out.get("project") or {}).get("id") or out.get("id") or out.get("projectId")
         print(f"[+] project {project_id} ({name})", flush=True)
     if args.set:
@@ -335,9 +431,13 @@ def main():
               flush=True)
         started = start_recon(project_id)
         print("[+] start_recon:", json.dumps(started)[:400], flush=True)
+        tail = follow_logs(project_id, args.log) if args.log else None
         time.sleep(20)
         final = wait("get_recon_status", project_id, _recon_done, args.timeout)
         print("[+] recon finished:", json.dumps(final)[:600], flush=True)
+        if tail:
+            time.sleep(3)
+            tail.terminate()
     finally:
         if args.shodan_state:
             shodan_state("")

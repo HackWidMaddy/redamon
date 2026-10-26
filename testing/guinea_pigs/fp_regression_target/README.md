@@ -153,6 +153,34 @@ the host.
     total, and run `testing/e2e/tests/dispositionBoard.spec.ts` with
     `REDAMON_EXPECT_CANDIDATES=<n>`.
 
+11. **IP attribution (plan 11).** With the Shodan stub forwarded (step 1;
+    `e2e_fp.py` refuses to scan otherwise):
+
+    ```bash
+    python3 e2e_fp.py --ip-ownership --no-triage                         # .10 .31 .32, IP mode
+    python3 validate_e2e.py <id> --ip-ownership
+    python3 e2e_fp.py --ip-ownership-stealth --no-triage --log stealth.log
+    python3 validate_e2e.py <stealthId> --ip-ownership-stealth stealth.log
+    ```
+
+    An IP-mode run has no target domain, so `dedicated` and the `shodan_rdns` /
+    `shodan_dns` edges need a domain-mode run: with the nested-wildcard lab up
+    and routed (`../nested_wildcard_lab/README.md`, "Run it"),
+    `python3 e2e_fp.py --ip-ownership-nwlab --no-triage` then
+    `python3 validate_e2e.py <id> --ip-ownership-nwlab`. The vhost wordlist skip
+    reads the tag in a domain-mode run, so it is checked by running the real
+    attribution step and the real vhost module against `.31` and `.32`:
+
+    ```bash
+    docker run --rm --network host -v "$PWD/../../..:/repo" -w /repo/recon \
+      -e PYTHONPATH=/repo/recon:/repo --entrypoint python redamon-recon:latest \
+      /repo/testing/guinea_pigs/fp_regression_target/ip_ownership_vhost.py
+    ```
+
+    Then, by hand: `.32`'s IP drawer shows "Ownership: Shared edge (Cloudflare): ..."
+    (also at 390 px), and the IP-mode project's report has an Ownership column in
+    its IP Target Map.
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -208,6 +236,10 @@ the host.
 | `.20`, `.22`, `.33` | a host serving JavaScript, a JSON API serving none, and one that answers 503 on every path (coverage project) | CV-01..CV-05 | `.20`'s BaseURL `js_recon_status` complete or partial with files read and findings, `.22`'s `no_input`; `.20` and `.22` carry a Nuclei stamp with URLs sent; `.33`'s BaseURL carries neither; `graph_summary`'s `coverage` has both modules recorded, `.33` among `not_scanned` |
 | `.10`, `.13` | the Shodan stub's CVEs, exported and imported (coverage project) | CV-06, EX-01/02 | the imported copy has the same `INCLUDES_CVE` links as the original, and the CVE nodes' properties are those before the export |
 | `.34` | one page and one script with nothing a detector reports (clean project) | CC-01..CC-03, GL-01 | `js_recon_status` complete, 1 file, 0 findings, and no js_recon finding; once its graph nodes are deleted, `graph_summary` warns `graph_data_missing` |
+| `.32`, `.31`, `.10` | IP attribution in IP mode (`--ip-ownership`): `.32`'s Cloudflare-issued certificate (tlsx's tag), `.31`'s own `*.fplab.test` one, `.10` with no 443; the Shodan stub gives `.31` and `.32` the same CVE on 443 and a PTR name each | O-01..O-07 | `.32` is `shared_edge` (cloudflare, tlsx's flag as the reason); `.31` and `.10` are `unknown`, never "not ours" (IP mode has no target domain); `.31`'s default certificate names are `*.fplab.test`, `.10`'s is "not checked (port 443 not found open)"; no IP has a current DNS name; the CVE is a finding on `.31` only; MCP `graph_schema` lists the new properties |
+| `.31`, `.32` | the same project in stealth mode (`--ip-ownership-stealth`) | O-S1..O-S3 | no handshake: both say "default certificate not checked (stealth mode)" and carry no certificate names; both are `unknown`, since `.32`'s only CDN signal is tlsx's handshake, which stealth turns off; the recon log reads "0 TLS handshake(s) without SNI (stealth mode: none)" |
+| web1 (`192.88.99.60`) | the nested-wildcard lab in domain mode (`--ip-ownership-nwlab`); the stub answers a PTR name `ptr.nwlab.test` for web1 and a domain-DNS record `shodan-only.nwlab.test` → web2 | N-01..N-03 | web1 is `dedicated` (its default certificate covers nwlab.test); the Shodan-made edges carry `source` `shodan_rdns` and `shodan_dns`; web1's `current_dns_names` counts the forward names, never the PTR one |
+| `.31`, `.32` | the real attribution step, then the real vhost module with tlsx's flag removed (`ip_ownership_vhost.py`) | V-15 | two real handshakes; `.32` `shared_edge`, `.31` `dedicated` (its certificate covers fplab.test); the wordlist is skipped on `.32` by the tag alone, run in full on `.31` (portal and split found) |
 | all | `list_findings` after the Priority Board (main project) | D-01, D-09 | every finding has a disposition and only candidates name a blocker; the `disposition` filter's totals equal the unfiltered counts |
 | `.20` | K-08's public keys beside K-01's AWS keys | D-02/D-03 | the public keys are info whatever their tier; the AWS keys are candidates with a tier-rule blocker |
 | `.20` | sourceless DOM sinks beside the high hash sink | D-04 | the info sinks are info; the high and critical sinks are candidates |

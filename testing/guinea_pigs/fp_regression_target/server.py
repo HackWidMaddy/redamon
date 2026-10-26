@@ -481,6 +481,27 @@ SHODAN_HOSTS = {
                   "data": [{"port": 22, "transport": "tcp", "product": "OpenSSH", "version": "7.4",
                             "data": "SSH-2.0-OpenSSH_7.4", "_shodan": {"module": "ssh"},
                             "vulns": {"CVE-2018-15473": {"cvss": 5.3, "verified": False}}}]},
+    # Plan 11: .32 sits behind a Cloudflare-issued certificate (tlsx tags it a
+    # CDN edge, IP attribution a shared edge), .31 does not. Both carry the same
+    # version-matched CVE on 443; only .31's may become a finding. Each has a PTR
+    # name for Shodan's reverse DNS, which must not read as forward DNS.
+    **{f"{NET}.{n}": {"org": "Example Hosting Ltd", "isp": "Example Hosting Ltd", "tags": [], "ports": [443],
+                      "hostnames": [f"rdns-{n}.{APEX}"], "vulns": ["CVE-2023-44487"],
+                      "data": [{"port": 443, "transport": "tcp", "product": "nginx", "version": "1.25.2",
+                                "data": "", "_shodan": {"module": "https"},
+                                "vulns": {"CVE-2023-44487": {"cvss": 7.5, "verified": False}}}]}
+       for n in (31, 32)},
+    # The nested-wildcard lab's web1, scanned in domain mode (plan 11): a PTR name
+    # under nwlab.test that no zone has.
+    "192.88.99.60": {"org": "Example Hosting Ltd", "isp": "Example Hosting Ltd", "tags": [], "ports": [443],
+                     "hostnames": ["ptr.nwlab.test"], "vulns": [], "data": []},
+}
+
+# Shodan's domain DNS for the nested-wildcard lab's org (plan 11): one name only
+# Shodan knows, pointing at web2.
+SHODAN_DOMAIN_DNS = {
+    "nwlab.test": {"subdomains": ["shodan-only"],
+                   "data": [{"subdomain": "shodan-only", "type": "A", "value": "192.88.99.61"}]},
 }
 
 # What the next lookups see, set over /_lab/shodan by e2e_fp.py: IPs whose lookup
@@ -525,9 +546,20 @@ class Shodan(Base):
             host = _shodan_view(ip)
             if not host:
                 return self.send(404, '{"detail":"No information available"}', "application/json")
-            return self.send(200, json.dumps({"ip": ip, "ports": host["ports"], "hostnames": [],
+            return self.send(200, json.dumps({"ip": ip, "ports": host["ports"],
+                                              "hostnames": host.get("hostnames", []),
                                               "cpes": [], "tags": host["tags"], "vulns": host["vulns"]}),
                              "application/json")
+        if path == "/dns/reverse":
+            from urllib.parse import parse_qs
+            ips = [v for raw in parse_qs(query).get("ips", []) for v in raw.split(",") if v]
+            return self.send(200, json.dumps({ip: (SHODAN_HOSTS.get(ip) or {}).get("hostnames", [])
+                                              for ip in ips}), "application/json")
+        if path.startswith("/dns/domain/"):
+            domain = path.rsplit("/", 1)[-1]
+            if domain not in SHODAN_DOMAIN_DNS:
+                return self.send(404, '{"error":"No information available for that domain."}', "application/json")
+            return self.send(200, json.dumps({"domain": domain, **SHODAN_DOMAIN_DNS[domain]}), "application/json")
         if path.startswith("/api-info"):
             return self.send(200, '{"plan":"dev","query_credits":100,"scan_credits":100}', "application/json")
         return self.send(404, '{"error":"not found"}', "application/json")
