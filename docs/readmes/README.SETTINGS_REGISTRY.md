@@ -107,14 +107,26 @@ rather than an empty list.
 
 ## Ordering is load-bearing
 
-`recon/project_settings.py` documents its own pass order:
+`get_settings()` in `recon/project_settings.py` runs the passes in this order:
 
-> Applied AFTER stealth/RoE so those low-resource profiles win first, then the
-> governor tightens further under live memory pressure.
+1. `fetch_project_settings` reads the row and applies `apply_roe_rate_cap` once;
+2. `apply_stealth_overrides`;
+3. `apply_ai_pipeline_overrides` (booleans only);
+4. `apply_roe_rate_cap` **again**: the stealth profile `set`s some `roe_capped`
+   rates (naabu 10, takeover 10, nuclei 5, five others 2), and without this pass
+   they would overwrite the cap. The ceiling therefore always wins over stealth,
+   and CLI mode, which never fetches, is capped too;
+5. `apply_memory_governor`, which only lowers.
 
 A change that reorders stealth, the RoE capper and the memory governor produces
 different effective settings with nothing failing. The golden master is what
-proves it did not.
+proves it did not, and it runs `get_settings()` itself rather than a copy of the
+order.
+
+**The ceiling applies per process.** A tool that runs several processes at once
+multiplies it: FFuf runs up to `FFUF_PARALLELISM` processes, Kiterunner up to
+`KITERUNNER_PARALLELISM`, and Arjun one per HTTP method it tests, each at the
+capped rate. The cap is not divided among them.
 
 ## The golden master
 
