@@ -82,6 +82,11 @@ from recon.helpers import (
     # Security checks
     run_security_checks,
 )
+from recon.helpers.isolated_result import TopLevelKeys
+
+# Every top-level key run_vuln_scan writes; the security checks nest inside
+# vuln_scan. technology_cves exists only when the CVE lookup ran.
+_VULN_SCAN_RESULT_KEYS = ("vuln_scan", "technology_cves")
 
 
 def _nuclei_watch_stats(line: str, label: str, state: dict) -> None:
@@ -1224,17 +1229,21 @@ def enrich_recon_file(recon_file: Path) -> dict:
 
 
 
-def run_vuln_scan_isolated(combined_result: dict, settings: dict) -> dict:
+def run_vuln_scan_isolated(combined_result: dict, settings: dict) -> TopLevelKeys:
     """
     Thread-safe isolated wrapper for Nuclei vuln scanning.
 
     Deep-copies combined_result, runs the scan on the copy (without incremental
-    file saves), and returns only the resulting vuln_scan dict. Used by Group 6
-    Phase A fan-out in main.py so Nuclei and GraphQL can run concurrently
-    without racing on shared state.
+    file saves), and returns a TopLevelKeys holding vuln_scan and, when the CVE
+    lookup ran, its technology_cves. Used by Group 6 Phase A fan-out in main.py
+    so Nuclei and GraphQL can run concurrently without racing on shared state.
     """
     snapshot = copy.deepcopy(combined_result)
     # output_file=None => skip the function's own incremental saves (main.py
     # persists the merged result after the fan-out completes).
     run_vuln_scan(snapshot, output_file=None, settings=settings)
-    return snapshot.get("vuln_scan", {})
+    result = TopLevelKeys(vuln_scan=snapshot.get("vuln_scan", {}))
+    for key in _VULN_SCAN_RESULT_KEYS[1:]:
+        if key in snapshot:
+            result[key] = snapshot[key]
+    return result

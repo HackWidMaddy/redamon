@@ -81,6 +81,7 @@ from recon.main_recon_modules.resource_enum import run_resource_enum
 from recon.main_recon_modules.ai_surface_recon import run_ai_surface_recon
 from recon.main_recon_modules.vuln_scan import run_vuln_scan
 from recon.main_recon_modules.add_mitre import run_mitre_enrichment
+from recon.helpers.isolated_result import TopLevelKeys
 
 # Output directory
 OUTPUT_DIR = Path(__file__).parent / "output"
@@ -1016,6 +1017,50 @@ def merge_nmap_into_port_scan(combined_result: dict) -> None:
         print(f"[+][Nmap] Enriched {enriched_count} port(s) with service version data")
 
 
+def _merge_isolated_result(combined: dict, key: str, result) -> None:
+    """Store one `_isolated` wrapper's answer in combined_result.
+
+    A TopLevelKeys answer carries several top-level keys and each is merged
+    (vuln_scan also hands back the CVE lookup's technology_cves); any other
+    answer is the payload of `key` itself, even a dict that names other keys.
+    """
+    if isinstance(result, TopLevelKeys):
+        combined[key] = result.get(key, {})
+        for name, value in result.items():
+            if name != key:
+                combined[name] = value
+    else:
+        combined[key] = result
+
+
+def _run_phase_a_fan_out(tools: dict, combined_result: dict, settings: dict,
+                         output_file) -> None:
+    """GROUP 6 Phase A: run the active scanners concurrently on deep copies.
+
+    Each answer is merged before its graph update is queued, because the
+    update snapshots combined_result at queue time.
+    """
+    if not tools:
+        return
+    print(f"\n[*][Pipeline] GROUP 6 Phase A: Active Vulnerability Scanning (fan-out: {', '.join(tools.keys())})")
+    print("-" * 40)
+    with ThreadPoolExecutor(max_workers=len(tools)) as pool:
+        futures = {pool.submit(fn, combined_result, settings): key
+                   for key, fn in tools.items()}
+        for fut in as_completed(futures):
+            key = futures[fut]
+            try:
+                _merge_isolated_result(combined_result, key, fut.result())
+                combined_result["metadata"]["modules_executed"].append(key)
+                save_recon_file(combined_result, output_file)
+                _graph_update_bg(f"update_graph_from_{key}", combined_result, USER_ID, PROJECT_ID)
+            except Exception as e:
+                print(f"[!][Pipeline] {key} failed: {e}")
+                combined_result["metadata"].setdefault("phase_errors", {})[key] = str(e)
+                _note_phase_error(key)
+                save_recon_file(combined_result, output_file)
+
+
 def run_ip_recon(target_ips: list, settings: dict) -> dict:
     """
     Run IP-based reconnaissance: expand CIDRs, reverse DNS, IP WHOIS.
@@ -1566,24 +1611,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             from recon.main_recon_modules.origin_discovery import run_origin_discovery_enrichment_isolated
             ip_phase_a['origin_discovery'] = run_origin_discovery_enrichment_isolated
 
-        if ip_phase_a:
-            print(f"\n[*][Pipeline] GROUP 6 Phase A: Active Vulnerability Scanning (fan-out: {', '.join(ip_phase_a.keys())})")
-            print("-" * 40)
-            with ThreadPoolExecutor(max_workers=len(ip_phase_a)) as pool:
-                futures = {pool.submit(fn, combined_result, settings): key
-                           for key, fn in ip_phase_a.items()}
-                for fut in as_completed(futures):
-                    key = futures[fut]
-                    try:
-                        combined_result[key] = fut.result()
-                        combined_result["metadata"]["modules_executed"].append(key)
-                        save_recon_file(combined_result, output_file)
-                        _graph_update_bg(f"update_graph_from_{key}", combined_result, USER_ID, PROJECT_ID)
-                    except Exception as e:
-                        print(f"[!][Pipeline] {key} failed: {e}")
-                        combined_result["metadata"].setdefault("phase_errors", {})[key] = str(e)
-                        _note_phase_error(key)
-                        save_recon_file(combined_result, output_file)
+        _run_phase_a_fan_out(ip_phase_a, combined_result, settings, output_file)
 
     # External Domains -- aggregate from all sources and persist
     try:
@@ -2273,24 +2301,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             from recon.main_recon_modules.origin_discovery import run_origin_discovery_enrichment_isolated
             phase_a_tools['origin_discovery'] = run_origin_discovery_enrichment_isolated
 
-        if phase_a_tools:
-            print(f"\n[*][Pipeline] GROUP 6 Phase A: Active Vulnerability Scanning (fan-out: {', '.join(phase_a_tools.keys())})")
-            print("-" * 40)
-            with ThreadPoolExecutor(max_workers=len(phase_a_tools)) as pool:
-                futures = {pool.submit(fn, combined_result, _settings): key
-                           for key, fn in phase_a_tools.items()}
-                for fut in as_completed(futures):
-                    key = futures[fut]
-                    try:
-                        combined_result[key] = fut.result()
-                        combined_result["metadata"]["modules_executed"].append(key)
-                        save_recon_file(combined_result, output_file)
-                        _graph_update_bg(f"update_graph_from_{key}", combined_result, USER_ID, PROJECT_ID)
-                    except Exception as e:
-                        print(f"[!][Pipeline] {key} failed: {e}")
-                        combined_result["metadata"].setdefault("phase_errors", {})[key] = str(e)
-                        _note_phase_error(key)
-                        save_recon_file(combined_result, output_file)
+        _run_phase_a_fan_out(phase_a_tools, combined_result, _settings, output_file)
 
         # ================================================================
         # GROUP 6 Phase B — MITRE enrichment (depends on Nuclei CVEs)
