@@ -20,8 +20,18 @@ Four layers, in order of cost / reliability:
    Header / body markers visible only at probe time. Used as a safety net
    when prefix and ASN data are missing (e.g. user-injected custom IPs).
 
+classify_ip(ip, ...) combines layers 1, 2 and 4 with the CDN name a scanner
+reported; the IP attribution step labels every IP of a run from it.
+
 Never in any list: a generic cloud provider's ranges or ASN (Amazon, Microsoft,
 Google, Akamai's Linode compute). Real origins run there.
+
+Refreshing the lists: nothing here is fetched at run time except Cloudflare's
+optional live list. Each list names its source and retrieval date beside it;
+refresh one by hand from that source and move the date. CDN_ASNS is checked
+against RDAP (rdap.org/autnum/<n>), the prefixes in cdn_edge_prefixes.py against
+each provider's published list. No script: the sources share no format (JSON
+with different keys, a weekly Azure file under a new name, an HTML page).
 """
 from __future__ import annotations
 
@@ -436,3 +446,56 @@ def edge_from_headers(headers: Optional[Mapping]) -> Optional[str]:
         if token in server:
             return edge
     return None
+
+
+# =============================================================================
+# One verdict per IP
+# =============================================================================
+#
+# The reasons are fixed phrases: they are stored on the IP (ownership_reasons)
+# and shown in the graph drawer, and the attribution step compares them to tell
+# an ASN-only match from the others.
+EDGE_REASON_RANGE = "in a published CDN edge range"
+EDGE_REASON_SCANNER = "a scanner's CDN check named an edge CDN"
+EDGE_REASON_HEADERS = "response headers name an edge CDN"
+EDGE_REASON_ASN = "its ASN belongs to an edge-only CDN"
+
+
+def _asn_value(asn):
+    """httpx -asn reports {"as_number": "AS13335", ...}; every other source a string."""
+    if isinstance(asn, Mapping):
+        return asn.get("as_number")
+    return asn
+
+
+def classify_ip(ip, *, asn=None, headers: Optional[Mapping] = None,
+                cdn_name=None) -> tuple[bool, Optional[str], list[str]]:
+    """(is_edge, provider, reasons): is *ip* a shared CDN edge?
+
+    Any one signal is enough: a published edge prefix, an edge-only CDN a
+    scanner named (naabu, httpx or tlsx's ``cdn_name``), a response header only
+    an edge sets, an edge-only ASN. ``reasons`` lists every signal that fired,
+    in that order, and ``provider`` is the first one's CDN. A cloud label (aws,
+    google, azure) or a header an origin can set itself (Varnish, an on-premises
+    WAF) is no signal. Never fetches.
+    """
+    fired: list[tuple[str, str]] = []
+    in_range = edge_cdn_for_ip(ip) if ip else None
+    if in_range:
+        fired.append((EDGE_REASON_RANGE, in_range))
+    if is_reliable_edge_cdn_name(cdn_name):
+        fired.append((EDGE_REASON_SCANNER, str(cdn_name).strip().lower()))
+    if headers:
+        try:
+            dashed = {str(k).replace("_", "-"): v for k, v in headers.items()}
+        except Exception:  # noqa: BLE001 - a header object we cannot read names nothing
+            dashed = {}
+        by_header = edge_from_headers(dashed)
+        if is_reliable_edge_cdn_name(by_header):
+            fired.append((EDGE_REASON_HEADERS, by_header))
+    by_asn = cdn_name_from_asn(_asn_value(asn))
+    if by_asn:
+        fired.append((EDGE_REASON_ASN, by_asn))
+    if not fired:
+        return False, None, []
+    return True, fired[0][1], [reason for reason, _ in fired]
