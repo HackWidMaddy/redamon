@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.4.0] - 2026-10-27
+
+Fewer false positives, honest coverage, and scans that stop, pause and resume as they should.
+
+### Added
+
+- **Finding disposition.** Each finding is reportable, a candidate (naming what blocks it) or info, and the report and the Priority Board follow it.
+- **IP ownership.** Each IP is a shared edge, dedicated or unknown, so a CDN edge no longer collects passive CVEs or passes for an origin.
+- **Coverage record.** A host or module that was never scanned reads "not scanned", not clean, and a lost graph is flagged.
+
+### Fixed
+
+- **False positives.** A locked Firebase database, catch-all JSON, a 302/401/404 "WAF bypass", a deny page many hosts share, a vhost already in public DNS and wildcard DNS names are no longer findings.
+- **Secrets.** Long or font-adjacent secrets are kept, public-by-design keys are info, each secret keeps its masked context, and "rejected" is stored apart from "could not check".
+- **JS Recon.** It gets every in-scope bundle, shares its budget between hosts, scans source maps, and takes each endpoint's own HTTP method.
+- **Report and Priority Board.** They count findings the way the board judged them; agent proof needs the agent's own confidence; different secrets on one host are separate rows; a host is gone only once re-checked.
+- **Passive CVEs** (Shodan, InternetDB, Netlas, CriminalIP). They are pruned when no longer reported, checked against the open ports, one per IP and port, and refreshed every run.
+- **Exports and version snapshots** keep their CVE, MitreData and Capec links.
+- **Stop, Pause, Resume.** Stop lands the queued graph writes and the mute rules within 45 s (`RECON_STOP_GRACE_S`) and ends only its own scan's tools; Pause freezes the tools too; Resume re-checks the RoE time window.
+- **Domain mode.** The CVE lookup writes its CVEs to the graph, and supply chain runs.
+- **Rules of Engagement.** The rate ceiling wins over stealth mode, AI Surface's window check fails closed, and GraphQL discovery honours the RoE list.
+- **Queue and schedules.** A passing error is retried, a start with no answer goes to review, a failed spawn is a refusal, and a schedule waits for a live agent session.
+- **Also:** the progress label follows the pipeline, DNS resolves again after an outage, banner grab skips web ports and tells SMTP from FTP, and the agent's skills name only tools the Kali image has.
+  - **Upgrade.** Finish or stop running scans, then `./redamon.sh update` (it rebuilds every image). Before the first scan, with `agent`, `webapp` and `recon-orchestrator` stopped, run `tooling/scripts/netlas_finding_rekey.py --all --apply` and `tooling/scripts/js_secret_rekey.py --all --apply` once (both are dry runs without `--apply`). The first triage run re-reviews existing findings once, which costs LLM calls.
+
 ## [7.3.0] - 2026-10-23
 
 ### Fixed
